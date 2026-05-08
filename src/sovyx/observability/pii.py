@@ -179,6 +179,15 @@ _PII_FIELD_CLASSES: Final[dict[str, str]] = {
 }
 
 # Envelope, schema, and routing fields that the sweep must never touch.
+#
+# v0.31.4 GAP 9 closure: extended with structural identifier fields
+# that pre-v0.31.4 went through the global regex sweep. ``task_id``
+# (hex hash) was being classified as Brazilian phone (PHONE_BR_RE)
+# when its value happened to be all-digits, polluting observability
+# logs with ``task_id=[redacted-phone]``. Operator's
+# ``teste_final.txt`` log shows this every dashboard task spawn.
+# These are identifiers, NOT user PII; allowlisting them is a pure
+# observability win with zero privacy risk.
 _PROTECTED_KEYS: Final[frozenset[str]] = frozenset(
     {
         "timestamp",
@@ -194,6 +203,28 @@ _PROTECTED_KEYS: Final[frozenset[str]] = frozenset(
         "cause_id",
         "span_id",
         "trace_id",
+        # v0.31.4 GAP 9: structural identifier fields. All are hex
+        # hashes / opaque IDs / system-generated, never operator PII.
+        "task_id",
+        "task.id",
+        "task_name",
+        "task.name",
+        "task_owner",
+        "request_id",
+        "request.id",
+        "session_id",
+        "session.id",
+        "job_id",
+        "job.id",
+        "profile_id",
+        "profile_id_hash",
+        "mind_id_hash",
+        "fingerprint_hash",
+        "service.instance.id",
+        "service.namespace",
+        "host.arch",
+        "process.runtime.name",
+        "process.runtime.version",
     }
 )
 

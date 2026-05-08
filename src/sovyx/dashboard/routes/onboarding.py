@@ -309,7 +309,18 @@ async def setup_telegram_channel(request: Request) -> JSONResponse:
 
 @router.post("/complete")
 async def complete_onboarding(request: Request) -> JSONResponse:
-    """Mark onboarding as complete."""
+    """Mark onboarding as complete.
+
+    v0.31.4 GAP 8 closure: response now includes ``voice_configured``
+    so the frontend can warn operators when they finished onboarding
+    without enabling voice. Pre-v0.31.4 the operator could finish
+    every onboarding step + reach overview with ``onboarding_complete=true``
+    AND ``voice.enabled=false`` simultaneously. The new
+    ``voice_configured`` field surfaces that mismatch so the
+    dashboard can render a "Voice not configured" banner on the
+    next page rather than silently letting the operator wonder why
+    their assistant doesn't respond to speech.
+    """
     mind_config = getattr(request.app.state, "mind_config", None)
     if mind_config is None:
         return JSONResponse({"ok": False, "error": "No mind loaded"}, status_code=503)
@@ -322,8 +333,30 @@ async def complete_onboarding(request: Request) -> JSONResponse:
 
         _persist_to_yaml(mind_config, mind_yaml_path)
 
-    logger.info("onboarding_completed")
-    return JSONResponse({"ok": True})
+    # GAP 8: voice_configured = mind_config has voice_enabled=true AND
+    # the live registry has a VoicePipeline registered. Either alone
+    # is insufficient: voice_enabled may be persisted but the pipeline
+    # could have failed to come up; pipeline could be running but
+    # voice_enabled=false (legacy path). Both must hold for "voice
+    # is fully configured + working".
+    voice_configured = bool(getattr(mind_config, "voice_enabled", False))
+    registry = getattr(request.app.state, "registry", None)
+    if voice_configured and registry is not None:
+        from sovyx.voice.pipeline._orchestrator import VoicePipeline
+
+        try:
+            voice_configured = registry.is_registered(VoicePipeline)
+        except Exception:  # noqa: BLE001
+            # Registry malfunction shouldn't block onboarding-complete;
+            # default to False so the frontend warns operator + they
+            # can verify on the Voice page.
+            voice_configured = False
+
+    logger.info(
+        "onboarding_completed",
+        voice_configured=voice_configured,
+    )
+    return JSONResponse({"ok": True, "voice_configured": voice_configured})
 
 
 # ── Helpers ──────────────────────────────────────────────────────────

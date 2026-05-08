@@ -283,6 +283,59 @@ class TestPerFieldClassVerbosity:
 class TestProtectedEnvelopeKeys:
     """The sweep must NEVER rewrite envelope/protocol fields."""
 
+    def test_task_id_with_all_digit_value_not_redacted_as_phone(
+        self, tmp_path: Path, _clean_state: None
+    ) -> None:
+        """v0.31.4 GAP 9 closure: ``task_id`` is a structural identifier
+        (hex hash, not user PII). Pre-v0.31.4 the global regex sweep
+        could classify an all-digit task_id as a Brazilian phone via
+        ``PHONE_BR_RE``, polluting observability logs with
+        ``task_id=[redacted-phone]``. The fix adds ``task_id`` to
+        ``_PROTECTED_KEYS``; the sweep must skip it entirely.
+
+        Operator's ``teste_final.txt`` log showed this every dashboard
+        task spawn — making post-mortem traceability painful."""
+        log_file = _setup(tmp_path)
+        # All-digit task_id (10 digits — phone-shaped)
+        get_logger("security.task_id").info(
+            "background_task_running",
+            task_id="1234567890",
+        )
+        shutdown_logging(timeout=3.0)
+        _wait_for_file(log_file)
+
+        rec = next(
+            json.loads(line)
+            for line in log_file.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+            and json.loads(line).get("event") == "background_task_running"
+        )
+        # Task IDs are structural; the literal value MUST land in the
+        # log unredacted.
+        assert rec["task_id"] == "1234567890"
+        # Confirm the broken pre-v0.31.4 marker is NOT present.
+        assert "[redacted-phone]" not in rec["task_id"]
+
+    def test_request_id_not_redacted(
+        self, tmp_path: Path, _clean_state: None
+    ) -> None:
+        """``request_id`` joins task_id in the structural-identifier
+        allowlist."""
+        log_file = _setup(tmp_path)
+        get_logger("security.req_id").info(
+            "request_logged",
+            request_id="9876543210",
+        )
+        shutdown_logging(timeout=3.0)
+        _wait_for_file(log_file)
+        rec = next(
+            json.loads(line)
+            for line in log_file.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+            and json.loads(line).get("event") == "request_logged"
+        )
+        assert rec["request_id"] == "9876543210"
+
     def test_event_name_is_preserved_even_when_email_shaped(
         self, tmp_path: Path, _clean_state: None
     ) -> None:

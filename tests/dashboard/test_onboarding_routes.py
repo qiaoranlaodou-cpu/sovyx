@@ -223,6 +223,57 @@ class TestCompleteOnboarding:
         resp = client.post("/api/onboarding/complete")
         assert resp.status_code == 200  # noqa: PLR2004
 
+    def test_voice_configured_false_when_voice_not_enabled(
+        self, client: TestClient, app
+    ) -> None:
+        """v0.31.4 GAP 8 closure: response carries ``voice_configured``
+        so the frontend can render a "voice not configured" banner
+        when operator finishes onboarding without enabling voice.
+        Default mind_config has voice_enabled=False → response
+        reports voice_configured=False."""
+        # Explicit-set to False (the test fixture mind_config is a
+        # MagicMock so default-attribute reads return mocks, not the
+        # Pydantic default. Real production mind_config has
+        # voice_enabled defaulted to False per MindConfig schema).
+        app.state.mind_config.voice_enabled = False
+        resp = client.post("/api/onboarding/complete")
+        assert resp.status_code == 200  # noqa: PLR2004
+        assert resp.json()["voice_configured"] is False
+
+    def test_voice_configured_true_requires_pipeline_registered(
+        self, client: TestClient, app
+    ) -> None:
+        """voice_configured=True requires BOTH voice_enabled=True
+        AND a registered VoicePipeline. Either alone is insufficient
+        — voice_enabled may be persisted but pipeline failed to come
+        up; pipeline could be running with voice_enabled=false (legacy
+        path)."""
+        from unittest.mock import MagicMock
+
+        app.state.mind_config.voice_enabled = True
+        # Wire a registry that reports VoicePipeline registered.
+        registry = MagicMock()
+        registry.is_registered.return_value = True
+        app.state.registry = registry
+        resp = client.post("/api/onboarding/complete")
+        assert resp.status_code == 200  # noqa: PLR2004
+        assert resp.json()["voice_configured"] is True
+
+    def test_voice_configured_false_when_pipeline_not_registered(
+        self, client: TestClient, app
+    ) -> None:
+        """voice_enabled=True but pipeline not registered → reports
+        voice_configured=False so operator gets the warning banner."""
+        from unittest.mock import MagicMock
+
+        app.state.mind_config.voice_enabled = True
+        registry = MagicMock()
+        registry.is_registered.return_value = False
+        app.state.registry = registry
+        resp = client.post("/api/onboarding/complete")
+        assert resp.status_code == 200  # noqa: PLR2004
+        assert resp.json()["voice_configured"] is False
+
 
 class TestEndToEndFlow:
     """Full onboarding flow: state → provider → personality → complete."""
