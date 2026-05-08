@@ -52,7 +52,12 @@ async def update_config(request: Request) -> JSONResponse:
             status_code=HTTP_503_SERVICE_UNAVAILABLE,
         )
 
-    mind_yaml_path = getattr(request.app.state, "mind_yaml_path", None)
+    # Phase 3.A Layer B — per-request mind_yaml_path resolution (closes
+    # anti-pattern #35 reincidence #6). Pre-fix this read the boot-cached
+    # ``app.state.mind_yaml_path`` hardcoded to ``"aria"``.
+    from sovyx.dashboard._shared import resolve_mind_yaml_path_for_request
+
+    _, mind_yaml_path, _ = await resolve_mind_yaml_path_for_request(request)
     changes = apply_config(mind_config, body, mind_yaml_path=mind_yaml_path)
 
     if changes:

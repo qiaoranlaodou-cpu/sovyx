@@ -11,6 +11,8 @@ from typing import TYPE_CHECKING
 from sovyx.observability.logging import get_logger
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     from starlette.requests import Request
 
     from sovyx.engine.registry import ServiceRegistry
@@ -27,6 +29,7 @@ logger = get_logger(__name__)
 MIND_ID_SOURCE_APP_STATE = "app_state"
 MIND_ID_SOURCE_MIND_MANAGER = "mind_manager"
 MIND_ID_SOURCE_FALLBACK_DEFAULT = "fallback_default"
+MIND_ID_SOURCE_EXPLICIT_REQUEST = "explicit_request"
 
 
 async def get_active_mind_id(registry: ServiceRegistry) -> str:
@@ -103,3 +106,99 @@ async def resolve_active_mind_id_for_request(
         # lookup that returned default".
         return cached, MIND_ID_SOURCE_APP_STATE
     return "default", MIND_ID_SOURCE_FALLBACK_DEFAULT
+
+
+async def resolve_mind_yaml_path_for_request(
+    request: Request,
+    *,
+    explicit_mind_id: str | None = None,
+) -> tuple[str, Path | None, str]:
+    """Resolve ``(mind_id, mind_yaml_path, mind_id_source)`` for a request.
+
+    Closes anti-pattern #35 reincidence #6 cluster Layer B
+    (``MISSION-voice-zero-defect-2026-05-08.md`` Phase 3.A). Pre-fix
+    ``server.py:775`` set ``app.state.mind_yaml_path`` ONCE at boot to
+    ``data_dir / "aria" / "mind.yaml"`` regardless of which mind the
+    operator was actively using; multi-mind operators had voice / config /
+    onboarding / setup / providers persistence written to the phantom
+    ``"aria"`` mind. This per-request resolver routes each persistence
+    operation to the active mind's YAML.
+
+    Mind id resolution:
+        - If ``explicit_mind_id`` is supplied (non-empty, non-``"default"``
+          sentinel), it is honoured as authoritative; source string is
+          :data:`MIND_ID_SOURCE_EXPLICIT_REQUEST`. Used by routes that
+          accept ``mind_id`` directly in the request body (e.g. wake-word
+          training, calibration apply).
+        - Otherwise falls back to :func:`resolve_active_mind_id_for_request`
+          (cached app_state → live MindManager → ``"default"``).
+
+    YAML path resolution order:
+        1. ``request.app.state.mind_yaml_path`` if explicitly set —
+           **test/legacy override**. Production code MUST NOT set this
+           (the boot wire was removed in Phase 3.A); tests may still set
+           it directly via ``application.state.mind_yaml_path = path``
+           for dependency injection.
+        2. ``data_dir / mind_id / "mind.yaml"`` where ``data_dir`` is read
+           from :class:`EngineConfig.database.data_dir` via the registry.
+           Returned only if the parent directory exists (preserving fresh-
+           install + mind-not-initialised behaviour where persistence
+           silently no-ops).
+        3. ``None`` if neither path resolves. Callers MUST treat ``None``
+           as "skip persistence" (matches pre-Phase-3.A semantics).
+
+    Returns:
+        A ``(mind_id, mind_yaml_path, source)`` triple. Never raises —
+        every step is wrapped in best-effort lookups (anti-pattern #33).
+    """
+    from pathlib import Path
+
+    # 1. Resolve mind id (the path depends on it).
+    if explicit_mind_id and isinstance(explicit_mind_id, str) and explicit_mind_id != "default":
+        mind_id, source = explicit_mind_id, MIND_ID_SOURCE_EXPLICIT_REQUEST
+    else:
+        mind_id, source = await resolve_active_mind_id_for_request(request)
+
+    # 2. Test/legacy override: if a path was explicitly set on app.state,
+    # honour it. The pre-Phase-3.A boot wire used to populate this in
+    # production; the wire is removed (server.py no longer sets
+    # ``app.state.mind_yaml_path``) so production code falls through to
+    # step 3. Tests still rely on direct assignment for dependency
+    # injection (``application.state.mind_yaml_path = test_path``).
+    explicit_path = getattr(request.app.state, "mind_yaml_path", None)
+    if explicit_path is not None:
+        return mind_id, Path(explicit_path), source
+
+    # 3. Production path: derive from EngineConfig.database.data_dir.
+    registry = getattr(request.app.state, "registry", None)
+    if registry is None:
+        return mind_id, None, source
+
+    try:
+        from sovyx.engine.config import EngineConfig
+
+        if not registry.is_registered(EngineConfig):
+            return mind_id, None, source
+        eng_cfg = await registry.resolve(EngineConfig)
+        data_dir = eng_cfg.database.data_dir
+    except Exception:  # noqa: BLE001 — defensive per anti-pattern #33
+        logger.debug("resolve_mind_yaml_path_for_request_engine_config_failed")
+        return mind_id, None, source
+
+    # Defensive type check (anti-pattern #33): tests sometimes register a
+    # plain ``MagicMock()`` (no ``spec=EngineConfig``) under is_registered
+    # ``return_value=True``; the resolved object's ``.database.data_dir``
+    # is then itself a MagicMock and not a usable ``Path``. Bail safely
+    # so consumers fall through to the ``mind_yaml_path is None`` skip
+    # branch instead of writing YAML to a phantom MagicMock path.
+    if not isinstance(data_dir, Path):
+        return mind_id, None, source
+
+    yaml_path = data_dir / mind_id / "mind.yaml"
+    # Preserve fresh-install semantics: if the mind directory doesn't
+    # exist yet (no mind initialised), return None so callers skip
+    # persistence rather than creating a phantom file in a non-existent
+    # parent. ``MindManager`` creates the directory on mind creation.
+    if not yaml_path.parent.exists():
+        return mind_id, None, source
+    return mind_id, yaml_path, source

@@ -2175,10 +2175,16 @@ async def _enable_voice_locked(
     ) or effective_device_host_api
     persisted_device_name = effective_device_name
 
-    mind_yaml_path = getattr(request.app.state, "mind_yaml_path", None)
-    if mind_yaml_path is not None:
-        from pathlib import Path
+    # Per-request mind_yaml_path resolution (Phase 3.A Layer B). The route
+    # already has ``resolved_mind_id`` (post-resolver, post-lock); pass it
+    # as the explicit override so the helper can skip the resolver redo.
+    from sovyx.dashboard._shared import resolve_mind_yaml_path_for_request
 
+    _, mind_yaml_path, _ = await resolve_mind_yaml_path_for_request(
+        request,
+        explicit_mind_id=resolved_mind_id,
+    )
+    if mind_yaml_path is not None:
         from sovyx.engine.config_editor import ConfigEditor
 
         editor = ConfigEditor()
@@ -2190,27 +2196,27 @@ async def _enable_voice_locked(
         # field. The nested ``voice:`` section is still written below
         # as legacy back-compat (operator-side tooling may read
         # ``voice.input_device``).
-        await editor.set_scalar(Path(mind_yaml_path), "voice_enabled", True)
+        await editor.set_scalar(mind_yaml_path, "voice_enabled", True)
         voice_cfg: dict[str, object] = {"enabled": True}
         if input_device is not None:
             voice_cfg["input_device"] = input_device
         if output_device is not None:
             voice_cfg["output_device"] = output_device
-        await editor.update_section(Path(mind_yaml_path), "voice", voice_cfg)
+        await editor.update_section(mind_yaml_path, "voice", voice_cfg)
 
         if request_voice_id is not None:
-            await editor.set_scalar(Path(mind_yaml_path), "voice_id", request_voice_id)
+            await editor.set_scalar(mind_yaml_path, "voice_id", request_voice_id)
         if request_language is not None:
-            await editor.set_scalar(Path(mind_yaml_path), "language", request_language)
+            await editor.set_scalar(mind_yaml_path, "language", request_language)
         if persisted_device_name:
             await editor.set_scalar(
-                Path(mind_yaml_path),
+                mind_yaml_path,
                 "voice_input_device_name",
                 persisted_device_name,
             )
         if persisted_host_api:
             await editor.set_scalar(
-                Path(mind_yaml_path),
+                mind_yaml_path,
                 "voice_input_device_host_api",
                 persisted_host_api,
             )
@@ -2311,19 +2317,29 @@ async def disable_voice(request: Request) -> JSONResponse:
             if registry.is_registered(interface):
                 registry.deregister(interface)
 
-    # Persist config
-    mind_yaml_path = getattr(request.app.state, "mind_yaml_path", None)
-    if mind_yaml_path is not None:
-        from pathlib import Path
+    # Persist config (Phase 3.A Layer B — per-request mind_yaml_path).
+    # Pre-Phase-3.A this read ``app.state.mind_yaml_path`` set at boot to
+    # ``data_dir / "aria" / "mind.yaml"``, so multi-mind disable always
+    # returned 503 for any mind ≠ "aria". The new resolver routes the
+    # disable persistence to the active mind's YAML.
+    from sovyx.dashboard._shared import resolve_mind_yaml_path_for_request
 
+    _, mind_yaml_path, _ = await resolve_mind_yaml_path_for_request(request)
+    if mind_yaml_path is not None:
         from sovyx.engine.config_editor import ConfigEditor
 
         editor = ConfigEditor()
         await editor.update_section(
-            Path(mind_yaml_path),
+            mind_yaml_path,
             "voice",
             {"enabled": False},
         )
+        # v0.31.4 GAP 2 mirror — also flip the top-level scalar that
+        # bootstrap reads for auto-resume (the enable path persists it
+        # as ``voice_enabled = True``; disable must persist as False so
+        # the next daemon start doesn't auto-resume voice for a mind
+        # the operator just turned it off on).
+        await editor.set_scalar(mind_yaml_path, "voice_enabled", False)
         logger.info("voice_disabled_via_wizard")
         return JSONResponse({"ok": True})
 

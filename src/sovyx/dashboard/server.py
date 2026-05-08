@@ -765,19 +765,23 @@ class DashboardServer:
             except Exception:  # noqa: BLE001
                 logger.debug("mind_config_wire_failed")
 
-            # Wire mind.yaml path for LLM config persistence (PUT /api/providers)
-            try:
-                from sovyx.engine.config import EngineConfig
-
-                if self._registry.is_registered(EngineConfig):
-                    eng_cfg = await self._registry.resolve(EngineConfig)
-                    # v0.5: single mind "aria" — resolve path from data_dir
-                    yaml_path = eng_cfg.database.data_dir / "aria" / "mind.yaml"
-                    if yaml_path.exists():
-                        self._app.state.mind_yaml_path = yaml_path
-                        logger.debug("mind_yaml_path_wired", path=str(yaml_path))
-            except Exception:  # noqa: BLE001
-                logger.debug("mind_yaml_path_wire_failed")
+            # ── mind.yaml path resolution: per-request, NOT boot-time ──
+            #
+            # Pre-Phase-3.A this block hardcoded ``data_dir / "aria" / "mind.yaml"``
+            # at boot and cached it onto ``app.state.mind_yaml_path``. Multi-mind
+            # operators had voice / config / onboarding / setup / providers
+            # persistence written to the phantom ``"aria"`` mind regardless of
+            # which mind they were actively using.
+            #
+            # The replacement pattern lives in
+            # :func:`sovyx.dashboard._shared.resolve_mind_yaml_path_for_request`
+            # — every consumer route resolves the path per-request via the
+            # active-mind resolver + ``EngineConfig.database.data_dir``. Tests
+            # may still set ``application.state.mind_yaml_path = path`` for
+            # dependency injection (the resolver honours that override).
+            #
+            # Mission: ``MISSION-voice-zero-defect-2026-05-08.md`` Phase 3.A
+            # Layer B — closes anti-pattern #35 reincidence #6 cluster.
 
             # Wire active mind_id for downstream routes (Mission
             # ``MISSION-voice-linux-silent-mic-remediation-2026-05-04.md``

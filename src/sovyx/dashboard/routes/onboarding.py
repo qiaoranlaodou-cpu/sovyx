@@ -248,8 +248,10 @@ async def configure_personality(request: Request) -> JSONResponse:
     if companion_name and isinstance(companion_name, str) and companion_name.strip():
         mind_config.name = companion_name.strip()
 
-    # Persist
-    mind_yaml_path = getattr(request.app.state, "mind_yaml_path", None)
+    # Persist (Phase 3.A Layer B — per-request mind_yaml_path).
+    from sovyx.dashboard._shared import resolve_mind_yaml_path_for_request
+
+    _, mind_yaml_path, _ = await resolve_mind_yaml_path_for_request(request)
     if mind_yaml_path is not None:
         from sovyx.dashboard.config import _persist_to_yaml
 
@@ -344,7 +346,10 @@ async def complete_onboarding(request: Request) -> JSONResponse:
 
     mind_config.onboarding_complete = True
 
-    mind_yaml_path = getattr(request.app.state, "mind_yaml_path", None)
+    # Phase 3.A Layer B — per-request mind_yaml_path resolution.
+    from sovyx.dashboard._shared import resolve_mind_yaml_path_for_request
+
+    _, mind_yaml_path, _ = await resolve_mind_yaml_path_for_request(request)
     if mind_yaml_path is not None:
         from sovyx.dashboard.config import _persist_to_yaml
 
@@ -513,7 +518,10 @@ async def _apply_provider(
         if not mind_config.llm.fast_model:
             mind_config.llm.fast_model = model
 
-        mind_yaml_path = getattr(request.app.state, "mind_yaml_path", None)
+        # Phase 3.A Layer B — per-request mind_yaml_path resolution.
+        from sovyx.dashboard._shared import resolve_mind_yaml_path_for_request
+
+        _, mind_yaml_path, _ = await resolve_mind_yaml_path_for_request(request)
         if mind_yaml_path is not None:
             from sovyx.dashboard.config import _persist_to_yaml
 

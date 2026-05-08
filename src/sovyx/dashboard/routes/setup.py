@@ -146,16 +146,16 @@ async def configure_plugin(
 
     new_config = dict(body.config)
 
-    # Persist to mind.yaml
-    mind_yaml_path = getattr(request.app.state, "mind_yaml_path", None)
-    if mind_yaml_path is not None:
-        from pathlib import Path
+    # Persist to mind.yaml (Phase 3.A Layer B — per-request resolution).
+    from sovyx.dashboard._shared import resolve_mind_yaml_path_for_request
 
+    _, mind_yaml_path, _ = await resolve_mind_yaml_path_for_request(request)
+    if mind_yaml_path is not None:
         from sovyx.engine.config_editor import ConfigEditor
 
         editor = ConfigEditor()
         await editor.update_section(
-            Path(mind_yaml_path),
+            mind_yaml_path,
             f"plugins_config.{plugin_name}.config",
             new_config,
         )

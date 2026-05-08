@@ -178,8 +178,10 @@ async def update_provider(request: Request) -> JSONResponse:
         "model": f"{old_model} → {new_model}",
     }
 
-    # Persist to mind.yaml.
-    mind_yaml_path = getattr(request.app.state, "mind_yaml_path", None)
+    # Persist to mind.yaml (Phase 3.A Layer B — per-request resolution).
+    from sovyx.dashboard._shared import resolve_mind_yaml_path_for_request
+
+    _, mind_yaml_path, _ = await resolve_mind_yaml_path_for_request(request)
     if mind_yaml_path is not None:
         from sovyx.dashboard.config import _persist_to_yaml
 
