@@ -511,6 +511,35 @@ class VoiceTuningConfig(BaseSettings):
     Moonshine tiny ≈ 240 ms / small ≈ 530 ms / cloud STT ≈ 200-400 ms
     p50 — 1.5 s gives 3-7× headroom for typical latencies."""
 
+    stt_relaxed_short_response_stoplist: bool = False
+    """v0.32.4 Phase 3.C.3 — closes audit gap P0.C3.
+
+    The STT Ring 4 hallucination stop-list (in
+    :mod:`sovyx.voice.stt`) catches Whisper-class silence
+    hallucinations like ``"thank you"``, ``"thanks for watching"``,
+    ``"subscribe"``. The catalog also includes short-response tokens
+    (``"ok"``, ``"okay"``, ``"bye"``, fillers ``"uh"`` / ``"um"`` /
+    ``"hmm"``) — those tokens ARE common Whisper hallucinations on
+    silence, but they're ALSO common deliberate operator responses
+    in yes/no-heavy assistant scripts. Pre-v0.32.4 the catalog
+    rejected both indistinguishably; operators on assistant scripts
+    that ask "should I do X?" found their "ok" answer silently
+    filtered.
+
+    When ``True``, a v0.32.4 carve-out (the
+    ``_RELAXED_SHORT_RESPONSE_TOKENS`` set in :mod:`sovyx.voice.stt`)
+    is excluded from the catalog before matching. The
+    ``"thank you / subscribe / thanks for watching"`` cluster STAYS
+    rejected regardless — those phrases are dominantly hallucinations
+    even in relaxed mode.
+
+    Default ``False`` per ``feedback_staged_adoption`` — preserves
+    v0.32.3 behaviour. Operators on assistant scripts opt in via
+    ``SOVYX_TUNING__VOICE__STT_RELAXED_SHORT_RESPONSE_STOPLIST=true``.
+    Future fleet-validated default-flip is conditional on telemetry
+    confirming the relaxed mode doesn't increase false-negatives
+    (real Whisper hallucinations getting through) materially."""
+
     wake_word_phonetic_max_distance: int = Field(default=3, ge=0, le=20)
     """Maximum Levenshtein-on-phonemes distance for accepting a
     phonetic match. Distance 0 = exact phoneme match;

@@ -873,6 +873,97 @@ class TestIsHallucination:
         assert "es" in _HALLUCINATION_STOPLIST
 
 
+class TestRelaxedShortResponseStoplist:
+    """v0.32.4 Phase 3.C.3 — closes audit gap P0.C3.
+
+    Default-OFF behaviour preserves v0.32.3 (short-response tokens
+    like ``"ok"``, ``"okay"``, ``"bye"`` are filtered as Whisper-class
+    hallucinations). When operators on assistant scripts that ask
+    yes/no questions opt into the relaxed mode via
+    ``SOVYX_TUNING__VOICE__STT_RELAXED_SHORT_RESPONSE_STOPLIST=true``,
+    those tokens are excluded from the catalog before matching while
+    the Whisper-canonical ``"thank you / subscribe / thanks for
+    watching"`` cluster STAYS rejected (those are dominantly real
+    hallucinations even in relaxed mode).
+    """
+
+    def test_default_mode_rejects_ok_as_hallucination(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Pre-flag default behaviour preserved: ``"ok"`` is rejected
+        because Whisper hallucinates ``"ok"`` on silence often enough
+        to make it a worthwhile catch on the legacy default. The
+        normaliser only strips whitespace + lowercases (NOT trailing
+        punctuation — the catalog redundantly stores both forms for
+        the phrases where it matters; ``"ok"`` is the no-period form
+        only)."""
+        monkeypatch.delenv(
+            "SOVYX_TUNING__VOICE__STT_RELAXED_SHORT_RESPONSE_STOPLIST",
+            raising=False,
+        )
+        assert _is_hallucination("ok", "en") is True
+        assert _is_hallucination("okay", "en") is True
+        assert _is_hallucination("  OK  ", "en") is True  # whitespace stripped
+
+    def test_relaxed_mode_passes_ok_through(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Operator-opted-in flag: short responses make it past the
+        Ring 4 stop-list so the cogloop can act on them."""
+        monkeypatch.setenv(
+            "SOVYX_TUNING__VOICE__STT_RELAXED_SHORT_RESPONSE_STOPLIST", "true"
+        )
+        assert _is_hallucination("ok", "en") is False
+        assert _is_hallucination("okay", "en") is False
+        assert _is_hallucination("OK", "en") is False
+        assert _is_hallucination("um", "en") is False
+        assert _is_hallucination("uh", "en") is False
+
+    def test_relaxed_mode_still_rejects_thank_you_cluster(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Whisper's silence-output bias for ``"thank you"`` /
+        ``"subscribe"`` / ``"thanks for watching"`` is dominant even
+        in operator settings; relaxed mode MUST still catch these."""
+        monkeypatch.setenv(
+            "SOVYX_TUNING__VOICE__STT_RELAXED_SHORT_RESPONSE_STOPLIST", "true"
+        )
+        assert _is_hallucination("thank you", "en") is True
+        assert _is_hallucination("Thank You.", "en") is True
+        assert _is_hallucination("subscribe", "en") is True
+        assert _is_hallucination("thanks for watching!", "en") is True
+
+    def test_relaxed_mode_per_language(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Each language has its own short-response carve-out."""
+        monkeypatch.setenv(
+            "SOVYX_TUNING__VOICE__STT_RELAXED_SHORT_RESPONSE_STOPLIST", "true"
+        )
+        # Portuguese: "tchau" stays in default (thank-cluster rejected),
+        # but in the relaxed map "tchau" IS a carve-out (operator's
+        # actual goodbye).
+        assert _is_hallucination("ok", "pt") is False
+        assert _is_hallucination("tchau", "pt") is False
+        assert _is_hallucination("obrigado", "pt") is True  # still rejected
+        # Spanish: similar carve-outs.
+        assert _is_hallucination("ok", "es") is False
+        assert _is_hallucination("adiós", "es") is False
+        assert _is_hallucination("gracias", "es") is True  # still rejected
+
+    def test_relaxed_mode_unknown_language_uses_english_carveout(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Same fallback contract as the catalog itself."""
+        monkeypatch.setenv(
+            "SOVYX_TUNING__VOICE__STT_RELAXED_SHORT_RESPONSE_STOPLIST", "true"
+        )
+        # English carve-outs apply to "ja" / "ko" / etc. via the same
+        # fallback the catalog uses.
+        assert _is_hallucination("ok", "ja") is False
+        assert _is_hallucination("thank you", "ja") is True
+
+
 class TestSTTGuardsEndToEnd:
     """Full round-trip: transcribe + reject + telemetry event."""
 

@@ -190,6 +190,28 @@ def _normalise_for_stoplist(text: str) -> str:
     return text.strip().lower()
 
 
+# v0.32.4 Phase 3.C.3 — short-response tokens that legitimate operators
+# DO sometimes utter (yes/no answers, acknowledgements, hesitations).
+# Removed from the stop-list when
+# ``EngineConfig.tuning.voice.stt_relaxed_short_response_stoplist=True``.
+# Default OFF preserves the v0.32.3 behaviour (catches Whisper's silence
+# hallucinations of these tokens); operators on yes/no-heavy use cases
+# (assistant scripts that ask short questions) can opt into relaxed mode
+# via ``SOVYX_TUNING__VOICE__STT_RELAXED_SHORT_RESPONSE_STOPLIST=true``.
+#
+# The token list is intentionally narrow: only words operators are
+# LIKELY to utter as a deliberate short response. The "thank you /
+# subscribe / thanks for watching" cluster stays in the stop-list
+# regardless because those are dominantly hallucinations + a real
+# operator saying "thank you" is far rarer than Whisper's bias for
+# the phrase.
+_RELAXED_SHORT_RESPONSE_TOKENS: dict[str, frozenset[str]] = {
+    "en": frozenset({"okay", "ok", "bye", "bye.", "bye!", "uh", "um", "hmm", "mm"}),
+    "pt": frozenset({"ok", "okay", "tchau", "tchau.", "hum", "hmm"}),
+    "es": frozenset({"ok", "okay", "adiós", "adios", "hmm"}),
+}
+
+
 def _is_hallucination(text: str, language: str) -> bool:
     """Return ``True`` when the normalised transcript is in the stop-list.
 
@@ -197,8 +219,30 @@ def _is_hallucination(text: str, language: str) -> bool:
     the long-tail of cloud-LLM-class hallucinations is dominated by
     English even for non-English models, so falling back to ``en``
     is the safer default than skipping the check entirely.
+
+    v0.32.4 Phase 3.C.3 (audit gap P0.C3): when
+    ``EngineConfig.tuning.voice.stt_relaxed_short_response_stoplist``
+    is ``True``, common short-response tokens (``"ok"``, ``"okay"``,
+    ``"bye"``, fillers like ``"uh"`` / ``"um"``) are EXCLUDED from
+    the per-language catalog before matching — operators on yes/no-
+    heavy assistant scripts get their legitimate short answers
+    through. The ``"thank you"`` / ``"subscribe"`` / ``"thanks for
+    watching"`` cluster stays in the catalog regardless (those are
+    dominantly Whisper-class hallucinations even in relaxed mode).
     """
     catalog = _HALLUCINATION_STOPLIST.get(language, _HALLUCINATION_STOPLIST["en"])
+    # Lazy import to keep ``_is_hallucination`` a hot-path function with
+    # no top-of-file config-class side effects (anti-pattern #17 ack:
+    # the read pulls the live VoiceTuningConfig() which respects env
+    # overrides; no module-level constant to flip).
+    from sovyx.engine.config import VoiceTuningConfig as _RelaxedTuning  # noqa: PLC0415
+
+    if _RelaxedTuning().stt_relaxed_short_response_stoplist:
+        relaxed_drops = _RELAXED_SHORT_RESPONSE_TOKENS.get(
+            language, _RELAXED_SHORT_RESPONSE_TOKENS["en"]
+        )
+        if relaxed_drops:
+            catalog = catalog - relaxed_drops
     return _normalise_for_stoplist(text) in catalog
 
 
