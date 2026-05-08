@@ -454,6 +454,17 @@ class VoicePipeline:
         # but the LLM keeps producing tokens that flow into the next
         # turn (the pre-T1 silent failure mode).
         self._llm_cancel_hook: Callable[[], Awaitable[None]] | None = None
+        # v0.31.7 T3.2 (M5) — cogloop bridge tasks tracked here so the
+        # cancel_speech_chain has a fallback path when ``_llm_cancel_hook``
+        # is None (CR1 race window — closed in T1.1, but belt-and-
+        # suspenders defends against any future regression). Each
+        # ``dashboard/routes/voice.py::_on_perception`` task registers
+        # itself via :meth:`register_cogloop_task`; the task removes
+        # itself on completion via the done-callback wired up there.
+        # Step 2.5 of :meth:`cancel_speech_chain` cancels every task in
+        # this set so the bridge tears down cleanly even when the
+        # upstream LLM hook is unwired.
+        self._in_flight_cogloop_tasks: set[asyncio.Task[Any]] = set()
 
         # Observability — feed_frame updates these on every frame so
         # _maybe_emit_heartbeat can answer "is VAD seeing real audio"
@@ -563,6 +574,14 @@ class VoicePipeline:
         # successful synthesize-and-enqueue; triggers an abort when
         # it crosses :data:`_CONSECUTIVE_TTS_FAILURE_THRESHOLD`.
         self._consecutive_tts_segment_failures: int = 0
+        # v0.31.7 T3.5 (LOW.4) — lock around all read+write to the
+        # counter above. CPython's GIL makes a single ``+= 1`` atomic
+        # at HEAD, but a future refactor that introduced parallel
+        # ``stream_text`` calls (e.g. multi-mind voice in v0.32+) would
+        # silently lose atomicity at the read-modify-write boundary,
+        # producing stuck-counters or premature aborts. The lock makes
+        # the contract explicit + survives the refactor.
+        self._tts_segment_failure_lock = asyncio.Lock()
 
         # Mission Phase 1 / T1.18 — frame-drop counter for the
         # ``not_running`` early-return path in :meth:`feed_frame`.
@@ -2323,7 +2342,11 @@ class VoicePipeline:
                 # clause) because the try block also has an
                 # ``except asyncio.CancelledError`` clause and Python
                 # forbids ``else`` between ``except`` clauses.
-                self._consecutive_tts_segment_failures = 0
+                # v0.31.7 T3.5 (LOW.4) — guard with the failure-counter
+                # lock so a future parallel stream_text caller can't
+                # race the read+write across awaits.
+                async with self._tts_segment_failure_lock:
+                    self._consecutive_tts_segment_failures = 0
             except (VoiceError, RuntimeError, OSError) as exc:
                 # Per-segment resilience during streaming: skip the
                 # bad segment, keep speaking the rest. Traceback
@@ -2340,8 +2363,16 @@ class VoicePipeline:
                 # compute on every incoming LLM segment with no
                 # audible output. ``_consecutive_tts_segment_failures``
                 # resets on the first successful segment below.
-                self._consecutive_tts_segment_failures += 1
-                if self._consecutive_tts_segment_failures >= _CONSECUTIVE_TTS_FAILURE_THRESHOLD:
+                # v0.31.7 T3.5 (LOW.4) — guard increment + threshold
+                # check with the failure-counter lock so a future
+                # parallel stream_text caller can't race the read+write.
+                async with self._tts_segment_failure_lock:
+                    self._consecutive_tts_segment_failures += 1
+                    threshold_crossed = (
+                        self._consecutive_tts_segment_failures
+                        >= _CONSECUTIVE_TTS_FAILURE_THRESHOLD
+                    )
+                if threshold_crossed:
                     buffered_chars = len(self._text_buffer)
                     self._text_buffer = ""
                     logger.error(
@@ -2378,7 +2409,9 @@ class VoicePipeline:
                     # Reset counter so the next stream_text call
                     # starts clean — the abort already broke the
                     # current stream's contract with the caller.
-                    self._consecutive_tts_segment_failures = 0
+                    # v0.31.7 T3.5 (LOW.4) — same lock as above.
+                    async with self._tts_segment_failure_lock:
+                        self._consecutive_tts_segment_failures = 0
                     return
             except asyncio.CancelledError:
                 # T1 barge-in cancelled this segment via
@@ -2495,9 +2528,23 @@ class VoicePipeline:
         Call this when CogLoop begins processing (before LLM tokens arrive).
         If the LLM doesn't respond within ``filler_delay_ms``, a filler
         phrase is played.
+
+        v0.31.7 T3.1 (M4) — cancels any previous ``_filler_task`` BEFORE
+        spawning the new one. Pre-T3.1 a rapid double-call (proactive
+        cogloop initiative racing a wake-driven turn) overwrote the
+        attribute without cancelling the prior task; the orphan kept
+        running and its ``play_filler_after_delay`` could enqueue audio
+        during the next turn. ``_cancel_filler`` is idempotent — safe
+        to call when no task is in flight.
         """
         self._state = VoicePipelineState.THINKING
         self._first_token_event.clear()
+
+        # v0.31.7 T3.1 — guard against a rapid second start_thinking
+        # before the prior filler completed. The cancel is sync + cheap
+        # (just task.cancel()); the cancelled task drains on the next
+        # event loop tick.
+        self._cancel_filler()
 
         if self._config.fillers_enabled:
             self._filler_task = spawn(
@@ -3460,6 +3507,27 @@ class VoicePipeline:
         async with self._task_tracking_lock:
             self._in_flight_tts_tasks.discard(task)
 
+    def register_cogloop_task(self, task: asyncio.Task[Any]) -> None:
+        """Register an in-flight cogloop bridge task for T3.2 cancellation.
+
+        v0.31.7 T3.2 (M5) — called by
+        ``dashboard/routes/voice.py::_on_perception`` immediately after
+        ``asyncio.create_task(_run_bridge_isolated())`` so the
+        orchestrator's :meth:`cancel_speech_chain` (step 2.5) can fall
+        back to task cancellation when ``_llm_cancel_hook`` is None.
+        Without this, a barge-in during the CR1 race window
+        (turn N's bridge ``finally`` already nulled the hook before
+        turn N+1's ``register`` ran) had no fallback to stop the bridge.
+
+        The task removes itself on completion via a done-callback so
+        the set stays bounded by the in-flight count, not the daemon
+        lifetime. Synchronous — no lock needed (the set is mutated
+        only from the loop thread + the done-callback runs on the
+        loop thread too).
+        """
+        self._in_flight_cogloop_tasks.add(task)
+        task.add_done_callback(self._in_flight_cogloop_tasks.discard)
+
     async def cancel_speech_chain(self, *, reason: str = "barge_in") -> None:
         """Run the four-step transactional cancellation chain (T1).
 
@@ -3553,6 +3621,41 @@ class VoicePipeline:
                     )
             step_results["tts_tasks_cancel"] = "ok" if timeout_count == 0 else "timeout"
 
+            # Step 2.5 (v0.31.7 T3.2 / M5): cogloop bridge task cancel.
+            # Belt-and-suspenders against the CR1 race window — when
+            # ``_llm_cancel_hook`` is None (turn N's bridge ``finally``
+            # ran after turn N+1's hook register, OR a future
+            # regression), step 3 below records ``no_hook_registered``
+            # and the LLM keeps producing tokens. Cancelling the
+            # cogloop task here propagates CancelledError into the
+            # cancel-hook-aware bridge body, which awaits the LLM
+            # client's stream-cancellation in its CancelledError
+            # handler. Snapshot to a tuple so the iteration is stable
+            # while the done-callback removes tasks from the set.
+            cogloop_snapshot = tuple(self._in_flight_cogloop_tasks)
+            cogloop_cancelled = 0
+            cogloop_timeout = 0
+            for task in cogloop_snapshot:
+                if task.done():
+                    continue
+                task.cancel()
+                cogloop_cancelled += 1
+                try:
+                    await asyncio.wait_for(
+                        asyncio.shield(task),
+                        timeout=_CANCELLATION_TASK_TIMEOUT_S,
+                    )
+                except (TimeoutError, asyncio.CancelledError):
+                    if not task.done():
+                        cogloop_timeout += 1
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning(
+                        "voice.tts.cancellation_cogloop_unexpected_exception",
+                        error=str(exc),
+                        error_type=type(exc).__name__,
+                    )
+            step_results["cogloop_tasks_cancel"] = "ok" if cogloop_timeout == 0 else "timeout"
+
             # Step 3: upstream LLM cancellation. Best-effort — the hook
             # contract says "never raise", but we shield anyway so a
             # buggy hook can't take down the chain.
@@ -3631,8 +3734,11 @@ class VoicePipeline:
                     "voice.tasks_timed_out": timeout_count,
                     "voice.has_llm_hook": self._llm_cancel_hook is not None,
                     "voice.text_buffer_chars_dropped": buffer_chars_dropped,
+                    "voice.cogloop_tasks_cancelled": cogloop_cancelled,
+                    "voice.cogloop_tasks_timed_out": cogloop_timeout,
                     "voice.step_output_flush": step_results["output_flush"],
                     "voice.step_tts_tasks_cancel": step_results["tts_tasks_cancel"],
+                    "voice.step_cogloop_tasks_cancel": step_results["cogloop_tasks_cancel"],
                     "voice.step_llm_cancel": step_results["llm_cancel"],
                     "voice.step_filler_and_gate": step_results["filler_and_gate"],
                     "voice.step_text_buffer_cleanup": step_results["text_buffer_cleanup"],

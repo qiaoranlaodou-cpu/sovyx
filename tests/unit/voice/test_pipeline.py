@@ -5184,6 +5184,130 @@ class TestCancellationChainT1:
 
 
 # ===========================================================================
+# v0.31.7 T3.1 (M4) — start_thinking cancels previous filler
+# ===========================================================================
+
+
+class TestStartThinkingFillerCancellationT31:
+    """v0.31.7 T3.1 (M4): ``start_thinking`` MUST cancel any previous
+    ``_filler_task`` before spawning a new one. Pre-T3.1 a rapid
+    second call (proactive cogloop initiative + wake-driven turn)
+    overwrote the attribute without cancelling the orphan, leaking
+    audio into the next turn.
+    """
+
+    @pytest.mark.asyncio
+    async def test_start_thinking_twice_cancels_previous_filler(self) -> None:
+        pipeline, _ = _make_pipeline(fillers_enabled=True)
+        await pipeline.start()
+
+        # First call — spawns task A.
+        await pipeline.start_thinking()
+        first_task = pipeline._filler_task
+        assert first_task is not None
+        assert not first_task.done()
+
+        # Second call — must cancel task A before spawning task B.
+        await pipeline.start_thinking()
+        second_task = pipeline._filler_task
+        assert second_task is not None
+
+        # Give the cancelled task a tick to drain.
+        await asyncio.sleep(0)
+        assert first_task.cancelled() or first_task.done(), (
+            "first filler task must be cancelled when start_thinking "
+            "is called a second time — pre-T3.1 the orphan kept running"
+        )
+        # Second task is the live one (different reference).
+        assert second_task is not first_task
+
+        pipeline._cancel_filler()  # cleanup
+
+
+# ===========================================================================
+# v0.31.7 T3.2 (M5) — cancel_speech_chain cancels cogloop tasks
+# ===========================================================================
+
+
+class TestCogloopTaskCancellationT32:
+    """v0.31.7 T3.2 (M5): cancel_speech_chain step 2.5 cancels every
+    registered cogloop task as a fallback when ``_llm_cancel_hook``
+    is None. Belt-and-suspenders against the CR1 race window.
+    """
+
+    @pytest.mark.asyncio
+    async def test_register_cogloop_task_adds_to_set(self) -> None:
+        pipeline, _ = _make_pipeline()
+
+        async def _bridge_work() -> None:
+            await asyncio.sleep(10.0)
+
+        task = asyncio.create_task(_bridge_work())
+        try:
+            pipeline.register_cogloop_task(task)
+            assert task in pipeline._in_flight_cogloop_tasks
+        finally:
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+
+    @pytest.mark.asyncio
+    async def test_cogloop_task_self_removes_on_completion(self) -> None:
+        pipeline, _ = _make_pipeline()
+
+        async def _quick_work() -> None:
+            return
+
+        task = asyncio.create_task(_quick_work())
+        pipeline.register_cogloop_task(task)
+        await task
+        # done-callback runs on the next loop tick
+        await asyncio.sleep(0)
+        assert task not in pipeline._in_flight_cogloop_tasks
+
+    @pytest.mark.asyncio
+    async def test_cancel_speech_chain_cancels_cogloop_task_when_hook_none(
+        self,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """The core M5 contract — when no LLM hook is registered, step 2.5
+        still tears down the in-flight cogloop task so the bridge stops.
+        """
+        caplog.set_level(logging.INFO, logger=_ORCH_LOGGER)
+        pipeline, _ = _make_pipeline()
+        await pipeline.start()
+
+        async def _slow_bridge() -> None:
+            await asyncio.sleep(10.0)
+
+        task = asyncio.create_task(_slow_bridge())
+        pipeline.register_cogloop_task(task)
+
+        # Belt-and-suspenders precondition: no LLM hook registered.
+        assert pipeline._llm_cancel_hook is None
+
+        await pipeline.cancel_speech_chain(reason="barge_in")
+
+        # The cogloop task MUST be cancelled by step 2.5 even though
+        # no LLM hook was registered.
+        assert task.cancelled() or task.done(), (
+            "cogloop task must be cancelled by step 2.5 even when "
+            "_llm_cancel_hook is None — pre-T3.2 the LLM kept "
+            "producing tokens that leaked into the next turn"
+        )
+
+        events = _events_of(caplog, "voice.tts.cancellation_chain")
+        assert len(events) == 1
+        evt = events[0]
+        # The new step records "ok" verdict on a clean cancellation.
+        assert evt["voice.step_cogloop_tasks_cancel"] == "ok"
+        assert evt["voice.cogloop_tasks_cancelled"] == 1
+        assert evt["voice.cogloop_tasks_timed_out"] == 0
+        # Step 3 still records no_hook_registered (per existing contract).
+        assert evt["voice.step_llm_cancel"] == "no_hook_registered"
+
+
+# ===========================================================================
 # Band-aid #50 — VAD inference timeout guard
 # ===========================================================================
 

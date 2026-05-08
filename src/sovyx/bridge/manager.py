@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+from collections import OrderedDict
 from typing import TYPE_CHECKING, Protocol, TypeVar
 
 from sovyx.bridge.protocol import InboundMessage, OutboundMessage
@@ -99,6 +100,70 @@ class _PendingConfirmationCtx:
     is_batch: bool = False
 
 
+# v0.31.7 T3.6 (LOW.5) — bound on the pending-confirmations dict so an
+# operator who issues many confirmations + abandons the chats (closes
+# Telegram before tapping the button) doesn't accumulate entries
+# forever. 500 mirrors the ``_conv_locks`` cap (same module) — a
+# generous operator-scale ceiling that still bounds memory deterministic-
+# ally over the daemon lifetime. When full, the oldest entry is dropped
+# (LRU-by-insertion-order); the dropped operator's next callback hits the
+# normal "no pending confirmation" handling, identical to a cold-start
+# state.
+_PENDING_CONFIRMATIONS_MAXSIZE: int = 500
+
+
+class _BoundedConfirmationsDict:
+    """Bounded OrderedDict for ``BridgeManager._pending_confirmations``.
+
+    v0.31.7 T3.6 (LOW.5) — applied where ``LRULockDict`` doesn't fit
+    because the values are dataclass instances, not ``asyncio.Lock`` —
+    same eviction semantics, simpler API surface (no ``acquire``).
+    On insert at capacity, the oldest entry (front of OrderedDict) is
+    popped + a structured ``bridge.pending_confirmation_evicted`` event
+    fires so operators can spot abandonment churn.
+    """
+
+    def __init__(self, maxsize: int = _PENDING_CONFIRMATIONS_MAXSIZE) -> None:
+        if maxsize <= 0:
+            msg = f"maxsize must be > 0, got {maxsize}"
+            raise ValueError(msg)
+        self._maxsize = maxsize
+        self._items: OrderedDict[str, _PendingConfirmationCtx] = OrderedDict()
+
+    def __setitem__(self, key: str, value: _PendingConfirmationCtx) -> None:
+        if key in self._items:
+            self._items.move_to_end(key)
+            self._items[key] = value
+            return
+        while len(self._items) >= self._maxsize:
+            evicted_key, _ = self._items.popitem(last=False)
+            logger.info(
+                "bridge.pending_confirmation_evicted",
+                **{
+                    "bridge.dict_size": len(self._items),
+                    "bridge.maxsize": self._maxsize,
+                    "bridge.evicted_key_len": len(evicted_key),
+                },
+            )
+        self._items[key] = value
+
+    def pop(
+        self,
+        key: str,
+        default: _PendingConfirmationCtx | None = None,
+    ) -> _PendingConfirmationCtx | None:
+        return self._items.pop(key, default)
+
+    def __contains__(self, key: object) -> bool:
+        return key in self._items
+
+    def __len__(self) -> int:
+        return len(self._items)
+
+    def __getitem__(self, key: str) -> _PendingConfirmationCtx:
+        return self._items[key]
+
+
 class BridgeManager:
     """Manage communication channels and route messages.
 
@@ -131,7 +196,10 @@ class BridgeManager:
         self._financial_gate = financial_gate
         self._adapters: dict[ChannelType, ChannelAdapter] = {}
         self._conv_locks: _LRULockDict[ConversationId] = _LRULockDict(maxsize=500)
-        self._pending_confirmations: dict[str, _PendingConfirmationCtx] = {}
+        # v0.31.7 T3.6 (LOW.5) — bounded so abandoned confirmations
+        # don't accumulate over the daemon lifetime. See
+        # :class:`_BoundedConfirmationsDict` for eviction semantics.
+        self._pending_confirmations: _BoundedConfirmationsDict = _BoundedConfirmationsDict()
 
     @property
     def mind_id(self) -> MindId:

@@ -37,6 +37,7 @@ import { AlertCircleIcon, CheckCircle2Icon, LoaderIcon } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { verifyVoiceRunning } from "@/hooks/use-voice-running-verification";
+import { assertNever } from "@/lib/utils";
 
 interface ProfileReviewProps {
   triageWinnerHid: string | null;
@@ -74,6 +75,13 @@ export function ProfileReview({
       // Map each non-running verdict to a differentiated i18n key so
       // the operator gets the actionable next step (sign in again,
       // upgrade, retry from settings) instead of the catch-all banner.
+      //
+      // v0.31.7 T3.8 (LOW.8) — switch terminates with ``assertNever``
+      // so any future variant added to the verdict union (see
+      // ``hooks/use-voice-running-verification.ts``) without an
+      // explicit case here will fail tsc at compile time. The runtime
+      // throw is the safety net for schema drift; the practical guard
+      // is the compile-time check.
       switch (verdict.status) {
         case "auth_failure":
           setVerificationError(
@@ -101,7 +109,6 @@ export function ProfileReview({
           );
           break;
         case "not_running":
-        default:
           setVerificationError(
             t("calibration.review.verification_failed", {
               defaultValue:
@@ -109,6 +116,14 @@ export function ProfileReview({
             }),
           );
           break;
+        default:
+          // The early return at line ~70 narrows the type by removing
+          // ``status === "running"`` from the union; assertNever enforces
+          // exhaustive coverage at compile time over the remaining
+          // 4 variants. Adding a 5th non-running variant to
+          // ``VoiceRunningVerdict`` (in ``use-voice-running-verification.ts``)
+          // without an explicit case here will fail tsc.
+          assertNever(verdict);
       }
     } finally {
       setVerifying(false);

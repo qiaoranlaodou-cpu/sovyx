@@ -343,6 +343,32 @@ Per the privacy contract enforced by
   loader emitted absolute paths to operator-host filesystem; those
   fields were deprecated in P0 and dropped in P1.
 
+### Voice telemetry — `host_api` label (v0.31.7 LOW.6)
+
+The voice subsystem emits a `host_api` field on `audio.apo.scan`,
+`voice_apo_detected`, `voice.health.cold_probe`, and other
+audio-stack-tagging events. The value is a closed-enum bounded-
+cardinality label identifying the audio host API in use:
+
+* Windows: `WASAPI`, `WASAPI Exclusive`, `MME`, `DirectSound`, `WDM-KS`.
+* Linux: `ALSA`, `PipeWire`, `PulseAudio`, `JACK`.
+* macOS: `Core Audio`.
+
+The label is logged verbatim (no hashing) because it carries low
+entropy (~6 distinct values across the operator fleet), it's a
+mechanical property of the OS audio stack rather than an
+operator-set string, and self-hosted operators audit their own logs
+— there is no cross-operator privacy boundary the field could
+breach. Operators reviewing log exports for sharing with third
+parties (vendor support, community triage) should be aware that the
+field reveals the audio stack but nothing about the operator
+identity, the mind, the device serial, or any user-set name.
+
+This is the only voice-telemetry label with low cardinality that is
+intentionally NOT redacted. All operator-set strings (mind names,
+device names, endpoint names, friendly names) are either hashed or
+removed entirely per the rules above.
+
 ### Cryptographic verdicts (P4 v0.30.32+)
 
 Calibration profile signatures are verified against

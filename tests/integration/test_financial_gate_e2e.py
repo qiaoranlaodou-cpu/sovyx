@@ -77,7 +77,13 @@ def _make_bridge_manager(
     from sovyx.bridge.manager import _LRULockDict
 
     manager._conv_locks = _LRULockDict()
-    manager._pending_confirmations = {}
+    # v0.31.7 T3.6 — _pending_confirmations is now a bounded
+    # ``_BoundedConfirmationsDict`` (not a plain dict). The test
+    # fixture must use the same type so ``__setitem__`` /
+    # ``pop`` behave identically.
+    from sovyx.bridge.manager import _BoundedConfirmationsDict
+
+    manager._pending_confirmations = _BoundedConfirmationsDict()
     if adapter:
         manager._adapters[ChannelType.TELEGRAM] = adapter  # type: ignore[assignment]
     return manager

@@ -87,25 +87,70 @@ class LRULockDict(Generic[_K]):
         on insertion. Insertion may evict the oldest entry — eviction
         emits a ``lock.evicted`` telemetry record so operators can spot
         churn or undersized ``maxsize`` values.
+
+        v0.31.7 T3.3 (LOW.1) — eviction now SKIPS held locks. Pre-T3.3
+        eviction unconditionally popped the LRU entry; if that lock
+        happened to be currently held by an awaiter (rare in practice
+        because callers release before the entry decays to LRU, but
+        possible under heavy contention with N>maxsize keys all in
+        flight), the held lock was orphaned + the awaiter's
+        ``release()`` later targeted a phantom. Walk the OrderedDict
+        from oldest to newest and drop the first UNHELD entry; if all
+        N entries are held, log a WARN + insert anyway and accept the
+        eviction risk on the genuinely-oldest held lock (under correct
+        usage this branch is unreachable; the WARN exists so operators
+        can spot pathological contention before it produces user
+        symptoms).
         """
         if key in self._locks:
             self._locks.move_to_end(key)
             return self._locks[key]
-        # Evict oldest if at capacity.
+        # Evict if at capacity. Walk LRU→MRU; skip held locks; emit a
+        # structured WARN if every entry is held (means maxsize is
+        # undersized for the real concurrency).
         while len(self._locks) >= self._maxsize:
-            evicted_key, evicted_lock = self._locks.popitem(last=False)
-            # ``locked()`` here is informational — under correct usage the
-            # caller releases before the lock is dropped, but a leaked
-            # ``async with`` would leave it locked. Surface that fact.
-            logger.info(
-                "lock.evicted",
-                **{
-                    "lock.key_hash": _hash_key(evicted_key),
-                    "lock.dict_size": len(self._locks),
-                    "lock.maxsize": self._maxsize,
-                    "lock.was_locked": evicted_lock.locked(),
-                },
-            )
+            evicted_key: _K | None = None
+            evicted_lock: asyncio.Lock | None = None
+            for candidate_key, candidate_lock in self._locks.items():
+                if not candidate_lock.locked():
+                    evicted_key = candidate_key
+                    evicted_lock = candidate_lock
+                    break
+            if evicted_key is None:
+                # Every lock is held — capacity exhausted by live
+                # awaiters. Pop the genuinely-oldest entry (front of
+                # the OrderedDict) so we make progress; log WARN so
+                # operators can bump ``maxsize``. Orphans the held
+                # lock — the awaiter's later ``release()`` is harmless
+                # because the lock object survives via reference in
+                # the awaiting coroutine; the dictionary mapping is
+                # what's lost.
+                evicted_key, evicted_lock = self._locks.popitem(last=False)
+                logger.warning(
+                    "lock.evicted_all_held",
+                    **{
+                        "lock.key_hash": _hash_key(evicted_key),
+                        "lock.dict_size": len(self._locks),
+                        "lock.maxsize": self._maxsize,
+                        "lock.was_locked": True,
+                        "lock.action_required": (
+                            "Every lock in the LRULockDict is currently "
+                            "held — capacity is undersized for the live "
+                            "concurrency. Consider raising maxsize."
+                        ),
+                    },
+                )
+            else:
+                del self._locks[evicted_key]
+                logger.info(
+                    "lock.evicted",
+                    **{
+                        "lock.key_hash": _hash_key(evicted_key),
+                        "lock.dict_size": len(self._locks),
+                        "lock.maxsize": self._maxsize,
+                        "lock.was_locked": False,
+                    },
+                )
         lock = default if default is not None else asyncio.Lock()
         self._locks[key] = lock
         return lock

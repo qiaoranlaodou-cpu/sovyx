@@ -345,3 +345,119 @@ class TestLRULockDict:
         # "a" should still be accessible
         result = d.setdefault("a", asyncio.Lock())
         assert result is lock_a
+
+    async def test_setdefault_skips_locked_eviction_target(self) -> None:
+        """v0.31.7 T3.3 (LOW.1): eviction MUST skip locked entries.
+
+        Pre-T3.3 the eviction was unconditional ``popitem(last=False)``
+        on the LRU entry — a held lock could be orphaned. Now eviction
+        walks LRU→MRU and drops the first UNHELD entry, leaving held
+        locks intact.
+        """
+        from sovyx.bridge.manager import _LRULockDict
+
+        d: _LRULockDict[str] = _LRULockDict(maxsize=3)
+        lock_a = d.setdefault("a", asyncio.Lock())
+        d.setdefault("b", asyncio.Lock())
+        d.setdefault("c", asyncio.Lock())
+
+        # Acquire the LRU entry (`a`) — eviction should skip it.
+        await lock_a.acquire()
+        try:
+            # Insert a 4th key. With "a" held, eviction picks "b"
+            # (next-oldest UNHELD).
+            d.setdefault("d", asyncio.Lock())
+            # "a" stays in the dict because it was held.
+            assert "a" in d
+            assert "b" not in d  # the unheld one was evicted
+            assert "c" in d
+            assert "d" in d
+            assert len(d) == 3
+        finally:
+            lock_a.release()
+
+
+class TestBoundedConfirmationsDictT36:
+    """v0.31.7 T3.6 (LOW.5): _pending_confirmations is bounded so an
+    operator who abandons confirmations doesn't accumulate entries
+    forever. LRU-by-insertion-order eviction.
+    """
+
+    def test_pending_confirmations_evicts_oldest_at_capacity(self) -> None:
+        from sovyx.bridge.manager import (
+            _BoundedConfirmationsDict,
+            _PendingConfirmationCtx,
+        )
+
+        d = _BoundedConfirmationsDict(maxsize=3)
+
+        def _make(chat_id: str) -> _PendingConfirmationCtx:
+            return _PendingConfirmationCtx(
+                message_id=f"msg-{chat_id}",
+                chat_id=chat_id,
+                channel_type=ChannelType.TELEGRAM,
+                tool_call_ids=[],
+                is_batch=False,
+            )
+
+        d["chat_a"] = _make("chat_a")
+        d["chat_b"] = _make("chat_b")
+        d["chat_c"] = _make("chat_c")
+        assert len(d) == 3
+        assert "chat_a" in d
+
+        # 4th insert evicts the oldest (chat_a).
+        d["chat_d"] = _make("chat_d")
+        assert len(d) == 3
+        assert "chat_a" not in d
+        assert "chat_b" in d
+        assert "chat_c" in d
+        assert "chat_d" in d
+
+    def test_pop_returns_value_and_default(self) -> None:
+        from sovyx.bridge.manager import (
+            _BoundedConfirmationsDict,
+            _PendingConfirmationCtx,
+        )
+
+        d = _BoundedConfirmationsDict(maxsize=3)
+        ctx = _PendingConfirmationCtx(
+            message_id="msg-1",
+            chat_id="chat_1",
+            channel_type=ChannelType.TELEGRAM,
+            tool_call_ids=[],
+        )
+        d["chat_1"] = ctx
+
+        result = d.pop("chat_1", None)
+        assert result is ctx
+        assert "chat_1" not in d
+
+        # second pop returns the default
+        result_again = d.pop("chat_1", None)
+        assert result_again is None
+
+    def test_reinsert_updates_value_without_growing_size(self) -> None:
+        from sovyx.bridge.manager import (
+            _BoundedConfirmationsDict,
+            _PendingConfirmationCtx,
+        )
+
+        d = _BoundedConfirmationsDict(maxsize=3)
+        ctx_v1 = _PendingConfirmationCtx(
+            message_id="msg-v1",
+            chat_id="chat_1",
+            channel_type=ChannelType.TELEGRAM,
+            tool_call_ids=[],
+        )
+        ctx_v2 = _PendingConfirmationCtx(
+            message_id="msg-v2",
+            chat_id="chat_1",
+            channel_type=ChannelType.TELEGRAM,
+            tool_call_ids=[],
+        )
+        d["chat_1"] = ctx_v1
+        d["chat_1"] = ctx_v2  # reinsert, same key
+
+        assert len(d) == 1
+        assert d["chat_1"].message_id == "msg-v2"

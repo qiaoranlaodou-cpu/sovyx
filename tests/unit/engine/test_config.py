@@ -82,6 +82,40 @@ class TestDefaults:
         assert RelayConfig().enabled is False
 
 
+class TestAPIConfigCORSValidatorT37:
+    """v0.31.7 T3.7 (LOW.7): wildcard cors_origins must fail with
+    explicit error so the operator never deploys a daemon that leaks
+    Bearer tokens cross-origin (allow_credentials=True is hardcoded
+    in dashboard/server.py).
+    """
+
+    def test_api_config_rejects_wildcard_cors_with_credentials(self) -> None:
+        import pytest
+        from pydantic import ValidationError
+
+        with pytest.raises(ValidationError) as exc_info:
+            APIConfig(cors_origins=["*"])
+        # Error message must mention the security risk + remediation.
+        msg = str(exc_info.value)
+        assert "wildcard" in msg.lower() or "*" in msg
+        assert "cors_origins" in msg.lower() or "Bearer" in msg or "credentials" in msg
+
+    def test_api_config_accepts_explicit_origin_list(self) -> None:
+        config = APIConfig(
+            cors_origins=["http://localhost:7777", "https://lab.example"],
+        )
+        assert "http://localhost:7777" in config.cors_origins
+        assert "https://lab.example" in config.cors_origins
+
+    def test_api_config_rejects_wildcard_alongside_explicit(self) -> None:
+        """A mixed list with `*` is still a footgun — reject it too."""
+        import pytest
+        from pydantic import ValidationError
+
+        with pytest.raises(ValidationError):
+            APIConfig(cors_origins=["http://localhost:7777", "*"])
+
+
 class TestLLMProviderConfig:
     """LLM provider configuration."""
 

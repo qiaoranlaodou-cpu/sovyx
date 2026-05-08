@@ -255,7 +255,8 @@ class TestBargeInChainProducesFrame:
         barge_frames = [f for f in history if isinstance(f, BargeInInterruptionFrame)]
         assert len(barge_frames) == 1
         assert barge_frames[0].reason == "migration_test"
-        assert len(barge_frames[0].step_results) == 5
+        # v0.31.7 T3.2 (M5) added the cogloop_tasks_cancel step → 6 total.
+        assert len(barge_frames[0].step_results) == 6
 
 
 # ── Cross-step: capability resolver fail-closed for Phase 1 stubs ──

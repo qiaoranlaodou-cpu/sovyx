@@ -204,11 +204,13 @@ class TestBargeInInterruptionFrame:
         assert len(barge_in_frames) == 1
         frame = barge_in_frames[0]
         assert frame.reason == "barge_in"
-        # All 5 chain steps recorded (output_flush, tts_tasks_cancel,
-        # llm_cancel, filler_and_gate, text_buffer_cleanup).
+        # All 6 chain steps recorded (output_flush, tts_tasks_cancel,
+        # cogloop_tasks_cancel [v0.31.7 T3.2 / M5], llm_cancel,
+        # filler_and_gate, text_buffer_cleanup).
         expected_steps = {
             "output_flush",
             "tts_tasks_cancel",
+            "cogloop_tasks_cancel",
             "llm_cancel",
             "filler_and_gate",
             "text_buffer_cleanup",

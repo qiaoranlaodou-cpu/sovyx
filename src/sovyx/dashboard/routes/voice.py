@@ -1880,10 +1880,26 @@ async def _enable_voice_locked(
                     reason=type(exc).__name__,
                 )
 
-        cogloop_task_ref[0] = asyncio.create_task(
+        new_task = asyncio.create_task(
             _run_bridge_isolated(),
             name=f"voice-perception-{mind_id_str}",
         )
+        cogloop_task_ref[0] = new_task
+
+        # v0.31.7 T3.2 (M5) — register the cogloop task with the
+        # orchestrator so :meth:`cancel_speech_chain`'s step 2.5 can
+        # cancel it as a fallback when ``_llm_cancel_hook`` is None
+        # (CR1 race window — closed in T1.1, but belt-and-suspenders
+        # ensures a future regression doesn't leak LLM tokens past a
+        # barge-in). The bridge holds a reference to the pipeline so
+        # we resolve it once here at task-creation time.
+        # ``getattr`` defends test-stub bridges that don't model the
+        # full ``VoiceCognitiveBridge`` surface; production bridges
+        # always carry ``_pipeline``.
+        bridge_local = bridge_ref[0]
+        pipeline_local = getattr(bridge_local, "_pipeline", None) if bridge_local else None
+        if pipeline_local is not None and hasattr(pipeline_local, "register_cogloop_task"):
+            pipeline_local.register_cogloop_task(new_task)
 
     on_perception_cb = _on_perception if cognitive_loop is not None else None
 

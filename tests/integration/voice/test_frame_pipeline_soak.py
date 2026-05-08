@@ -163,10 +163,12 @@ class TestConcurrentBargeIns:
         barge_in_frames = [f for f in history if isinstance(f, BargeInInterruptionFrame)]
         assert len(barge_in_frames) == 5
 
-        # Each frame must have all 5 step verdicts populated.
+        # Each frame must have all 6 step verdicts populated.
+        # v0.31.7 T3.2 (M5) added the cogloop_tasks_cancel step.
         expected_steps = {
             "output_flush",
             "tts_tasks_cancel",
+            "cogloop_tasks_cancel",
             "llm_cancel",
             "filler_and_gate",
             "text_buffer_cleanup",

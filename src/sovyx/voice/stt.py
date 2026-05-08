@@ -702,27 +702,32 @@ class MoonshineSTT(STTEngine):
             update_interval=self._config.update_interval,
         )
         listener = _StreamingListener()
+        # v0.31.7 T3.4 (LOW.3) — wrap sync moonshine_voice native APIs
+        # in ``asyncio.to_thread`` per CLAUDE.md anti-pattern #14.
+        # Same rationale as ``_transcribe_oneshot`` — the C++ core can
+        # block on thread joins, and ``stream.close()`` in the
+        # ``finally`` is the worst place to stall the loop.
         stream.add_listener(listener)
-        stream.start()
+        await asyncio.to_thread(stream.start)
 
         try:
             async for audio_chunk, sample_rate in audio_stream:
                 chunk_list = (
                     audio_chunk.tolist() if hasattr(audio_chunk, "tolist") else audio_chunk
                 )
-                stream.add_audio(chunk_list, sample_rate)
+                await asyncio.to_thread(stream.add_audio, chunk_list, sample_rate)
 
                 while not queue.empty():
                     yield queue.get_nowait()
 
-            stream.stop()
+            await asyncio.to_thread(stream.stop)
 
             # Drain remaining events after stop
             await asyncio.sleep(_STREAMING_DRAIN_S)
             while not queue.empty():
                 yield queue.get_nowait()
         finally:
-            stream.close()
+            await asyncio.to_thread(stream.close)
             if self._state != STTState.CLOSED:
                 self._state = STTState.READY
 
@@ -831,12 +836,20 @@ class MoonshineSTT(STTEngine):
             update_interval=0.1,
         )
         listener = _OneShotListener()
+        # v0.31.7 T3.4 (LOW.3) — wrap sync moonshine_voice native APIs
+        # in ``asyncio.to_thread`` per CLAUDE.md anti-pattern #14.
+        # ``stream.start()``, ``stream.add_audio()``, ``stream.stop()``,
+        # and ``stream.close()`` all hop into the C++ core; close in
+        # particular MAY block on a thread join. A naked
+        # ``stream.close()`` in the async ``finally`` could stall the
+        # event loop after a ``wait_for`` timeout (the worst time —
+        # we're already past budget).
         stream.add_listener(listener)
-        stream.start()
+        await asyncio.to_thread(stream.start)
 
         audio_list = audio.tolist() if hasattr(audio, "tolist") else audio
-        stream.add_audio(audio_list, sample_rate)
-        stream.stop()
+        await asyncio.to_thread(stream.add_audio, audio_list, sample_rate)
+        await asyncio.to_thread(stream.stop)
 
         try:
             # S2: re-raise TimeoutError so the caller (transcribe) can
@@ -850,6 +863,6 @@ class MoonshineSTT(STTEngine):
                 timeout=self._config.transcribe_timeout,
             )
         finally:
-            stream.close()
+            await asyncio.to_thread(stream.close)
 
         return text

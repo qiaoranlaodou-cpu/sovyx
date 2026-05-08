@@ -71,12 +71,53 @@ class RelayConfig(BaseModel):
 
 
 class APIConfig(BaseModel):
-    """REST API configuration."""
+    """REST API configuration.
+
+    v0.31.7 T3.7 (LOW.7) — wildcard CORS (``"*"`` in ``cors_origins``)
+    combined with the hardcoded ``allow_credentials=True`` in
+    ``dashboard/server.py`` is a XSS / token-leak footgun: any
+    third-party origin can read a Bearer-authenticated dashboard
+    response after a user clicks a malicious link. The model validator
+    below rejects this at config-load time with an actionable error;
+    operators who legitimately need cross-origin access must enumerate
+    specific origins.
+    """
 
     enabled: bool = True
     host: str = "127.0.0.1"
     port: int = 7777
     cors_origins: list[str] = Field(default_factory=lambda: ["http://localhost:7777"])
+
+    @model_validator(mode="after")
+    def _reject_wildcard_with_credentials(self) -> APIConfig:
+        """Reject ``cors_origins=["*"]`` — Bearer tokens leak cross-origin.
+
+        The dashboard's ``CORSMiddleware`` is wired with
+        ``allow_credentials=True`` (so the cookie / Bearer header
+        survives same-origin requests). The CORS spec forbids the
+        combination of wildcard origin + credentials at the browser
+        level, but FastAPI / Starlette will silently echo back the
+        request origin when the wildcard is configured + credentials
+        are allowed — effectively granting cross-origin reads to ANY
+        site. This validator fails fast at config-load time so the
+        operator never deploys a daemon in this state.
+
+        If the operator legitimately needs cross-origin dashboards
+        (multi-host browser pilots), enumerate each origin
+        explicitly: ``cors_origins: ["https://lab1.example",
+        "https://lab2.example"]`` — the explicit list still works
+        with credentials.
+        """
+        if "*" in self.cors_origins:
+            msg = (
+                "APIConfig.cors_origins contains '*' — wildcard CORS "
+                "combined with the dashboard's allow_credentials=True "
+                "leaks Bearer tokens cross-origin. List explicit "
+                "origins instead (e.g. ['http://localhost:7777', "
+                "'https://lab.example'])."
+            )
+            raise ValueError(msg)
+        return self
 
 
 class HardwareConfig(BaseModel):
