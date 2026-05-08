@@ -397,6 +397,34 @@ canonical source is `src/sovyx/engine/config.py` (`SafetyTuning`,
 deployment; change them only for benchmarks, debugging, or constrained
 environments.
 
+### macOS-specific voice defaults (v0.32.0+)
+
+Two voice-tuning fields default to platform-conditional values so the
+canonical macOS failure modes surface as actionable errors instead of
+silent degradation:
+
+| Field | Default on darwin | Default elsewhere | Why |
+| --- | --- | --- | --- |
+| `voice_macos_hotplug_subprocess_enabled` | `True` | `False` | Sprint 4 / Task #28 (`AudioObjectAddPropertyListener`) is unfinished. Without polling, AirPods disconnects / Bluetooth route changes / USB mic unplugs are silently dropped. The polling fallback uses `system_profiler SPAudioDataType -json` every 30 s (~0.2 % CPU). |
+| `voice_check_mic_permission_enabled` | `True` | `False` | macOS TCC silent-deny is the canonical failure mode for new operators — without this gate the pipeline starts, every PortAudio frame arrives all-zero, and the operator has no signal pointing at the System Settings → Privacy & Security pane. With this gate, the factory raises `VoicePermissionError` carrying the verbatim Settings path BEFORE PortAudio opens. Linux: no-op (PulseAudio / PipeWire / raw ALSA handle ACLs at the kernel layer). Windows: stays `False` as soak-debt — flip after telemetry confirms reliable Windows TCC-equivalent detection. |
+
+Operator overrides via env (e.g. when running in a managed-permission
+environment where the TCC probe false-fires, or to disable background
+`system_profiler` polling for kiosk-style deployments):
+
+```bash
+# Disable the macOS hotplug polling fallback.
+export SOVYX_TUNING__VOICE__VOICE_MACOS_HOTPLUG_SUBPROCESS_ENABLED=false
+
+# Tighten the polling interval (bounds [5, 300]) — trades CPU for
+# faster latency on plug-in events.
+export SOVYX_TUNING__VOICE__VOICE_MACOS_HOTPLUG_SUBPROCESS_INTERVAL_S=15
+
+# Disable the macOS mic permission gate (e.g. corporate MDM grants
+# permissions out-of-band and the TCC.db read returns UNKNOWN).
+export SOVYX_TUNING__VOICE__VOICE_CHECK_MIC_PERMISSION_ENABLED=false
+```
+
 ## Validation
 
 Every startup validates config through Pydantic: types and ranges

@@ -1286,3 +1286,155 @@ class TestVoiceTuningParanoidMissionFlags:
         cfg = EngineConfig()
         assert cfg.tuning.voice.probe_cold_strict_validation_enabled is True
         assert cfg.tuning.voice.bypass_tier1_raw_enabled is True
+
+
+class TestVoiceTuningV0320PlatformConditionalDefaults:
+    """Round 3 paranoid audit (v0.32.0) — platform-conditional defaults
+    for two macOS-specific gates.
+
+    HIGH-1: ``voice_macos_hotplug_subprocess_enabled`` defaults to True
+        on darwin (so AirPods disconnect / Bluetooth route changes are
+        observable via the polling fallback) and False elsewhere.
+    HIGH-2: ``voice_check_mic_permission_enabled`` defaults to True on
+        darwin (where TCC silent-deny is the canonical failure mode)
+        and False on Linux + Windows (Linux has no OS gate; Windows is
+        soak-debt).
+    """
+
+    def _clear_voice_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        for key in list(os.environ):
+            if key.startswith("SOVYX_TUNING__VOICE__"):
+                monkeypatch.delenv(key, raising=False)
+
+    def test_voice_macos_hotplug_subprocess_default_darwin(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """On darwin the polling fallback is on by default — Sprint 4
+        Task #28 (native AudioObjectAddPropertyListener) is unfinished
+        so without this the watchdog silently drops every device-change
+        event."""
+        import sys as _sys
+
+        self._clear_voice_env(monkeypatch)
+        monkeypatch.setattr(_sys, "platform", "darwin")
+        cfg = VoiceTuningConfig()
+        assert cfg.voice_macos_hotplug_subprocess_enabled is True
+
+    def test_voice_macos_hotplug_subprocess_default_linux(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Linux has a native pyudev hotplug path; the polling
+        fallback would be wasted CPU there."""
+        import sys as _sys
+
+        self._clear_voice_env(monkeypatch)
+        monkeypatch.setattr(_sys, "platform", "linux")
+        cfg = VoiceTuningConfig()
+        assert cfg.voice_macos_hotplug_subprocess_enabled is False
+
+    def test_voice_macos_hotplug_subprocess_default_windows(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Windows has WM_DEVICECHANGE; the polling fallback is
+        macOS-only."""
+        import sys as _sys
+
+        self._clear_voice_env(monkeypatch)
+        monkeypatch.setattr(_sys, "platform", "win32")
+        cfg = VoiceTuningConfig()
+        assert cfg.voice_macos_hotplug_subprocess_enabled is False
+
+    def test_voice_macos_hotplug_subprocess_interval_default(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """30 s is the documented sweet spot — ~0.2 % CPU at
+        human-perceived latency for plug-in events."""
+        self._clear_voice_env(monkeypatch)
+        cfg = VoiceTuningConfig()
+        assert cfg.voice_macos_hotplug_subprocess_interval_s == 30.0
+
+    def test_voice_macos_hotplug_subprocess_interval_bounds(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Bounds [5, 300] match the watchdog's own clamp range."""
+        self._clear_voice_env(monkeypatch)
+        with pytest.raises(Exception) as exc_info:  # noqa: PT011 — pydantic ValidationError
+            VoiceTuningConfig(voice_macos_hotplug_subprocess_interval_s=2.0)
+        assert (
+            "ValidationError" in type(exc_info.value).__name__
+            or "validation" in str(exc_info.value).lower()
+        )
+        with pytest.raises(Exception) as exc_info:  # noqa: PT011 — pydantic ValidationError
+            VoiceTuningConfig(voice_macos_hotplug_subprocess_interval_s=600.0)
+        assert (
+            "ValidationError" in type(exc_info.value).__name__
+            or "validation" in str(exc_info.value).lower()
+        )
+
+    def test_voice_check_mic_permission_default_darwin(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """On darwin TCC silent-deny is the canonical failure mode —
+        the gate must default ON so the factory raises a structured
+        VoicePermissionError instead of letting PortAudio open + emit
+        all-zero frames forever."""
+        import sys as _sys
+
+        self._clear_voice_env(monkeypatch)
+        monkeypatch.setattr(_sys, "platform", "darwin")
+        cfg = VoiceTuningConfig()
+        assert cfg.voice_check_mic_permission_enabled is True
+
+    def test_voice_check_mic_permission_default_linux(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Linux has no OS-level mic permission gate — PulseAudio /
+        PipeWire / raw ALSA handle ACLs at the kernel layer, the
+        check_microphone_permission probe short-circuits to UNKNOWN."""
+        import sys as _sys
+
+        self._clear_voice_env(monkeypatch)
+        monkeypatch.setattr(_sys, "platform", "linux")
+        cfg = VoiceTuningConfig()
+        assert cfg.voice_check_mic_permission_enabled is False
+
+    def test_voice_check_mic_permission_default_windows(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Windows stays default OFF as soak-debt — flip after
+        telemetry confirms reliable Windows TCC-equivalent
+        detection on the registry path."""
+        import sys as _sys
+
+        self._clear_voice_env(monkeypatch)
+        monkeypatch.setattr(_sys, "platform", "win32")
+        cfg = VoiceTuningConfig()
+        assert cfg.voice_check_mic_permission_enabled is False
+
+    def test_voice_macos_hotplug_subprocess_env_override_to_false(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Operator can opt out via env override on darwin (e.g. they
+        disabled the watchdog entirely and don't want background
+        system_profiler polling)."""
+        import sys as _sys
+
+        self._clear_voice_env(monkeypatch)
+        monkeypatch.setattr(_sys, "platform", "darwin")
+        monkeypatch.setenv("SOVYX_TUNING__VOICE__VOICE_MACOS_HOTPLUG_SUBPROCESS_ENABLED", "false")
+        cfg = VoiceTuningConfig()
+        assert cfg.voice_macos_hotplug_subprocess_enabled is False
+
+    def test_voice_check_mic_permission_env_override_to_false(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Operator can opt out via env override on darwin (e.g. they
+        run in a managed-permission environment where the TCC probe
+        false-fires)."""
+        import sys as _sys
+
+        self._clear_voice_env(monkeypatch)
+        monkeypatch.setattr(_sys, "platform", "darwin")
+        monkeypatch.setenv("SOVYX_TUNING__VOICE__VOICE_CHECK_MIC_PERMISSION_ENABLED", "false")
+        cfg = VoiceTuningConfig()
+        assert cfg.voice_check_mic_permission_enabled is False

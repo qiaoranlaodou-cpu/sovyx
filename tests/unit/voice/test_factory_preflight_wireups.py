@@ -18,6 +18,7 @@ This test file pins:
 from __future__ import annotations
 
 import logging
+import sys
 from collections.abc import Generator
 from unittest.mock import MagicMock, patch
 
@@ -43,8 +44,12 @@ class TestWireupDefaults:
     """Lock in the default opt-in semantics so a future config
     refactor can't silently flip behaviour for existing deployments."""
 
-    def test_mic_permission_check_default_false(self) -> None:
-        assert VoiceTuningConfig().voice_check_mic_permission_enabled is False
+    def test_mic_permission_check_default_platform_conditional(self) -> None:
+        # v0.32.0 (Round 3 paranoid audit HIGH-2): the gate flipped
+        # platform-conditional ON for darwin where TCC silent-deny is
+        # the canonical failure mode. Linux + Windows stay OFF.
+        expected = sys.platform == "darwin"
+        assert VoiceTuningConfig().voice_check_mic_permission_enabled is expected
 
     def test_llm_reachable_check_default_false(self) -> None:
         assert VoiceTuningConfig().voice_check_llm_reachable_enabled is False
@@ -101,9 +106,21 @@ class TestWireupDefaults:
 
 
 class TestMicPermissionGate:
-    def test_disabled_default_is_noop(self) -> None:
-        # No exceptions raised, no probe called.
-        with patch("sovyx.voice.health._mic_permission.check_microphone_permission") as mock_probe:
+    def test_disabled_is_noop(self) -> None:
+        # When the gate is explicitly disabled, no probe runs and no
+        # exception fires. Force the disabled state on every platform —
+        # v0.32.0 flipped the darwin default to True (Round 3 audit
+        # HIGH-2), so testing the gate-disabled contract requires the
+        # explicit override.
+        with (
+            patch(
+                "sovyx.engine.config.VoiceTuningConfig",
+                return_value=MagicMock(voice_check_mic_permission_enabled=False),
+            ),
+            patch(
+                "sovyx.voice.health._mic_permission.check_microphone_permission",
+            ) as mock_probe,
+        ):
             _maybe_check_mic_permission()
         mock_probe.assert_not_called()
 
