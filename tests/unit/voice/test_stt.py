@@ -905,14 +905,10 @@ class TestRelaxedShortResponseStoplist:
         assert _is_hallucination("okay", "en") is True
         assert _is_hallucination("  OK  ", "en") is True  # whitespace stripped
 
-    def test_relaxed_mode_passes_ok_through(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_relaxed_mode_passes_ok_through(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Operator-opted-in flag: short responses make it past the
         Ring 4 stop-list so the cogloop can act on them."""
-        monkeypatch.setenv(
-            "SOVYX_TUNING__VOICE__STT_RELAXED_SHORT_RESPONSE_STOPLIST", "true"
-        )
+        monkeypatch.setenv("SOVYX_TUNING__VOICE__STT_RELAXED_SHORT_RESPONSE_STOPLIST", "true")
         assert _is_hallucination("ok", "en") is False
         assert _is_hallucination("okay", "en") is False
         assert _is_hallucination("OK", "en") is False
@@ -925,21 +921,15 @@ class TestRelaxedShortResponseStoplist:
         """Whisper's silence-output bias for ``"thank you"`` /
         ``"subscribe"`` / ``"thanks for watching"`` is dominant even
         in operator settings; relaxed mode MUST still catch these."""
-        monkeypatch.setenv(
-            "SOVYX_TUNING__VOICE__STT_RELAXED_SHORT_RESPONSE_STOPLIST", "true"
-        )
+        monkeypatch.setenv("SOVYX_TUNING__VOICE__STT_RELAXED_SHORT_RESPONSE_STOPLIST", "true")
         assert _is_hallucination("thank you", "en") is True
         assert _is_hallucination("Thank You.", "en") is True
         assert _is_hallucination("subscribe", "en") is True
         assert _is_hallucination("thanks for watching!", "en") is True
 
-    def test_relaxed_mode_per_language(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_relaxed_mode_per_language(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Each language has its own short-response carve-out."""
-        monkeypatch.setenv(
-            "SOVYX_TUNING__VOICE__STT_RELAXED_SHORT_RESPONSE_STOPLIST", "true"
-        )
+        monkeypatch.setenv("SOVYX_TUNING__VOICE__STT_RELAXED_SHORT_RESPONSE_STOPLIST", "true")
         # Portuguese: "tchau" stays in default (thank-cluster rejected),
         # but in the relaxed map "tchau" IS a carve-out (operator's
         # actual goodbye).
@@ -955,9 +945,7 @@ class TestRelaxedShortResponseStoplist:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Same fallback contract as the catalog itself."""
-        monkeypatch.setenv(
-            "SOVYX_TUNING__VOICE__STT_RELAXED_SHORT_RESPONSE_STOPLIST", "true"
-        )
+        monkeypatch.setenv("SOVYX_TUNING__VOICE__STT_RELAXED_SHORT_RESPONSE_STOPLIST", "true")
         # English carve-outs apply to "ja" / "ko" / etc. via the same
         # fallback the catalog uses.
         assert _is_hallucination("ok", "ja") is False
