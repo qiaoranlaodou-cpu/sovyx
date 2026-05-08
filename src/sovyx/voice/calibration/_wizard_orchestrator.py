@@ -663,9 +663,30 @@ class WizardOrchestrator:
             triage_winner_hid=triage_winner_hid,
         )
         self._emit_state(state, tracker)
+        # v0.31.5 LE-1 closure: resolve the operator's active mic
+        # card from the persisted mind.yaml so the LinuxMixerApply
+        # handler prefers it over ``candidates[0]``. Best-effort:
+        # mind.yaml may be missing (first-time onboarding) or have
+        # no ``voice_input_device_name`` persisted yet — resolver
+        # returns None defensively + applier falls back to
+        # ``candidates[0]`` (legacy behaviour preserved).
+        from sovyx.engine._rpc_handlers import (  # noqa: PLC0415 — break circular
+            _load_mind_config_best_effort,
+        )
+        from sovyx.voice.calibration._active_mic import (  # noqa: PLC0415
+            resolve_active_mic_card,
+        )
+
+        slow_apply_mind_config = _load_mind_config_best_effort(
+            self._data_dir,
+            state.mind_id,  # type: ignore[arg-type]
+        )
         applier = CalibrationApplier(
             data_dir=self._data_dir,
             mind_yaml_path=self._data_dir / state.mind_id / "mind.yaml",
+            active_mic_card_index=resolve_active_mic_card(
+                mind_config=slow_apply_mind_config,
+            ),
         )
         try:
             apply_result = await applier.apply(profile, dry_run=False)
@@ -765,9 +786,27 @@ class WizardOrchestrator:
         )
         self._emit_state(state, tracker)
 
+        # v0.31.5 LE-1 closure: same active-mic resolution as the
+        # slow path above. The fast path replays a cached profile
+        # but still applies it via LinuxMixerApply — must target
+        # the operator's actual mic.
+        from sovyx.engine._rpc_handlers import (  # noqa: PLC0415 — break circular
+            _load_mind_config_best_effort,
+        )
+        from sovyx.voice.calibration._active_mic import (  # noqa: PLC0415
+            resolve_active_mic_card,
+        )
+
+        fast_apply_mind_config = _load_mind_config_best_effort(
+            self._data_dir,
+            mind_id,  # type: ignore[arg-type]
+        )
         applier = CalibrationApplier(
             data_dir=self._data_dir,
             mind_yaml_path=self._data_dir / mind_id / "mind.yaml",
+            active_mic_card_index=resolve_active_mic_card(
+                mind_config=fast_apply_mind_config,
+            ),
         )
         try:
             apply_result = await applier.apply(replayed, dry_run=False)

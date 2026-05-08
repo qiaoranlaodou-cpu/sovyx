@@ -42,6 +42,7 @@ from rich.console import Console
 from rich.table import Table
 
 from sovyx.cli.rpc_client import DaemonClient
+from sovyx.engine._rpc_handlers import _load_mind_config_best_effort
 from sovyx.engine.config import EngineConfig
 from sovyx.engine.registry import ServiceRegistry
 from sovyx.observability.health import (
@@ -63,6 +64,7 @@ from sovyx.voice.calibration import (
     inspect_migrated_profile_dict,
     load_calibration_profile,
     profile_path,
+    resolve_active_mic_card,
     rollback_calibration_profile,
 )
 from sovyx.voice.diagnostics import (
@@ -825,10 +827,25 @@ def _run_voice_calibrate(
 
     # Step 4: measurements.
     console.print("\n[dim](4/6) Capturing measurements (mixer state + diag artifacts)...[/dim]")
+    # v0.31.5 LE-1 closure: resolve operator's active mic card so the
+    # measurer probes THAT card (not hardcoded card 0). Pre-v0.31.5
+    # operators with a USB headset on card 2 had R10's input data
+    # always come from card 1 — the bug class operator hit on
+    # 2026-05-08. ``mind_config`` may be None for headless CLI
+    # invocations without mind context; the resolver returns None
+    # defensively in that case + the measurer falls back to card 0.
+    from sovyx.engine.types import MindId  # noqa: PLC0415
+
+    mind_config = _load_mind_config_best_effort(
+        Path.home() / ".sovyx",
+        MindId(mind_id),
+    )
+    active_mic_card_index = resolve_active_mic_card(mind_config=mind_config)
     measurements = capture_measurements(
         diag_tarball_root=triage.tarball_root,
         triage_result=triage,
         duration_s=diag_result.duration_s,
+        active_mic_card_index=active_mic_card_index,
     )
     console.print(
         f"[dim]    mixer_regime={measurements.mixer_attenuation_regime!r} "
@@ -854,10 +871,15 @@ def _run_voice_calibrate(
     step_label = "Dry-run (no persistence)" if dry_run else "Applying + persisting"
     console.print(f"\n[dim](6/6) {step_label}...[/dim]")
     data_dir = Path.home() / ".sovyx"
+    # v0.31.5 LE-1 closure: pass ``active_mic_card_index`` so
+    # ``_apply_linux_mixer`` prefers the operator's active card
+    # instead of ``candidates[0]``. Same resolver used above for
+    # ``capture_measurements``.
     applier = CalibrationApplier(
         data_dir=data_dir,
         mind_yaml_path=data_dir / mind_id / "mind.yaml",
         signing_key_path=signing_key,
+        active_mic_card_index=active_mic_card_index,
     )
     try:
         # CalibrationApplier.apply is async (P1+; runs handlers via
@@ -973,11 +995,23 @@ def _run_voice_calibrate_evaluate_rules(*, mind_id: str, explain: bool) -> int:
     # the probe-only path (mixer state + null winner_hid). Engine sees
     # no triage_result so triage-gated rules (R10) won't fire — but
     # measurement-driven rules will, which is the point.
+    # v0.31.5 LE-1: pass operator's active mic card so the measurer
+    # probes the correct card (not hardcoded card 0). Resolver returns
+    # None defensively when the operator hasn't completed the setup
+    # wizard yet — preserves legacy card-0 behaviour.
+    from sovyx.engine.types import MindId as _MindIdAlias  # noqa: PLC0415
+
+    mind_config_for_dryeval = _load_mind_config_best_effort(
+        Path.home() / ".sovyx",
+        _MindIdAlias(mind_id),
+    )
+    active_mic_card_index = resolve_active_mic_card(mind_config=mind_config_for_dryeval)
     try:
         measurements = capture_measurements(
             diag_tarball_root=None,
             triage_result=None,
             duration_s=0.0,
+            active_mic_card_index=active_mic_card_index,
         )
     except Exception as exc:  # noqa: BLE001 -- mixer probe rare-failure path
         console.print(f"\n[red]Measurement capture failed:[/red] {exc}")

@@ -85,6 +85,7 @@ planned for v0.32.0+ (see ``_signing.py`` for the canonical narrative).
 
 from __future__ import annotations
 
+from sovyx.voice.calibration._active_mic import resolve_active_mic_card
 from sovyx.voice.calibration._applier import (
     ApplyError,
     ApplyResult,
@@ -163,6 +164,7 @@ __all__ = [
     "load_calibration_profile",
     "profile_backup_path",
     "profile_path",
+    "resolve_active_mic_card",
     "rollback_calibration_profile",
     "save_calibration_profile",
 ]

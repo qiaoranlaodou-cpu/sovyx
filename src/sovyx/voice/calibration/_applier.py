@@ -779,9 +779,14 @@ async def _apply_linux_mixer(
     # card is).
     preferred_card_index = getattr(applier, "_active_mic_card_index", None)
     if preferred_card_index is not None:
-        for snapshot in candidates:
-            if snapshot.card_index == preferred_card_index:
-                card_snapshot = snapshot
+        # NB: must NOT shadow the outer ``snapshot`` parameter (which is
+        # a ``_PreApplySnapshot``). v0.31.4 used ``for snapshot in
+        # candidates:`` — local Windows mypy didn't catch the shadow,
+        # but Linux strict mypy at CI did, blocking the v0.31.4 build.
+        # Use ``candidate`` for the loop variable.
+        for candidate in candidates:
+            if candidate.card_index == preferred_card_index:
+                card_snapshot = candidate
                 break
         else:
             # Active mic isn't in the attenuated set — fall through
