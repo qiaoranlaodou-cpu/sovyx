@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import os
 from typing import TYPE_CHECKING
 
@@ -35,6 +36,15 @@ async def _auto_resume_voice_pipeline(
     registry via ``replace_instance`` (GAP 3 contract — old instances
     from a partial-shutdown scenario get torn down before re-register).
 
+    v0.31.6 paranoid-closure T1.2 (C2): start() runs BEFORE the registry
+    mutation. If start() raises (USB unplugged between probe and stream
+    open, OOM during model load, sounddevice race), the registry is
+    NEVER touched, so a failed auto-resume cannot leak a zombie
+    pipeline that subsequent ``is_registered()`` checks would consider
+    healthy. On start() failure we best-effort tear down the bundle
+    (release any partially-acquired ONNX session + sounddevice handles)
+    before re-raising.
+
     DEFENSIVE: any exception is allowed to propagate; the caller wraps
     in try/except so daemon startup is never blocked by voice failure.
     """
@@ -61,9 +71,33 @@ async def _auto_resume_voice_pipeline(
         # without daemon restart.
         allow_inoperative_capture=True,
     )
+
+    try:
+        await bundle.capture_task.start()
+    except Exception:
+        # Best-effort cleanup: stop capture_task FIRST (releases the
+        # sounddevice handle + audio thread), then pipeline (releases
+        # ONNX session + downstream queues). Order matters because the
+        # pipeline holds a reference to the capture task's frame queue.
+        # Per CLAUDE.md anti-pattern #27, suppress + debug-log rather
+        # than raw try/except: pass — the original failure is the one
+        # we care about; cleanup errors are observability-only.
+        with contextlib.suppress(Exception):
+            await bundle.capture_task.stop()
+        with contextlib.suppress(Exception):
+            await bundle.pipeline.stop()
+        logger.debug(
+            "voice_auto_resume_cleanup_skipped",
+            reason="start_failed_bundle_torn_down_best_effort",
+            mind_id=mind_config.id,
+        )
+        raise
+
+    # start() succeeded — only NOW publish the running instances into
+    # the registry, so downstream callers never observe a half-started
+    # bundle.
     await registry.replace_instance(VoicePipeline, bundle.pipeline)
     await registry.replace_instance(AudioCaptureTask, bundle.capture_task)
-    await bundle.capture_task.start()
     logger.info(
         "voice_auto_resume_succeeded",
         mind_id=mind_config.id,
