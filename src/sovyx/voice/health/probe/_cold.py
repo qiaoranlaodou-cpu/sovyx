@@ -140,20 +140,25 @@ _COLD_STRICT_VALIDATION_ENABLED = _VoiceTuning().probe_cold_strict_validation_en
 """Voice Windows Paranoid Mission Furo W-1 — gate the strict-RMS path
 in :func:`_diagnose_cold`.
 
-When ``False`` (legacy v0.23.x behaviour, foundation-phase default in
-v0.24.0) the cold-probe accepts any combo with at least one callback
-even when ``rms_db < _RMS_DB_NO_SIGNAL_CEILING`` — which is exactly
-what lets a Microsoft Voice Clarity APO destroy the signal upstream of
-PortAudio yet have the silent combo persist as the winning ComboStore
-entry, replicating the failure deterministically on every boot.
+v0.32.3 Phase 3.B.2.b — default flipped from False (legacy v0.23.x) to
+True (strict mode) per ``MISSION-voice-zero-defect-2026-05-08`` audit
+gap P0.B3. The original v0.25.0 flip was deferred when the master
+mission pivoted to multi-mind work; this is the long-overdue closure.
 
-When ``True`` (default-flip planned for v0.25.0) silent cold probes
-return :attr:`Diagnosis.NO_SIGNAL` so the cascade advances to the next
-combo and the silent winner never persists.
+When ``True`` (current default), silent cold probes return
+:attr:`Diagnosis.NO_SIGNAL` so the cascade advances to the next combo
+and the silent winner never persists. Closes the
+``ComboStore`` deterministic-replay bug where a Microsoft Voice
+Clarity APO destroying the signal upstream of PortAudio still recorded
+the silent combo as the winning entry on every boot.
 
-Lenient mode (``False``) still emits a structured
+When ``False`` (legacy v0.23.x behaviour) the cold-probe accepts any
+combo with at least one callback even when
+``rms_db < _RMS_DB_NO_SIGNAL_CEILING``. Operators can roll back via
+``SOVYX_TUNING__VOICE__PROBE_COLD_STRICT_VALIDATION_ENABLED=false``
+without a code change. Lenient mode still emits the structured
 ``voice.probe.cold_silence_rejected{mode=lenient_passthrough}`` event
-so operators can calibrate the rejection rate before flipping the flag.
+so operators can calibrate the rejection rate.
 """
 
 

@@ -1654,24 +1654,45 @@ class VoiceTuningConfig(BaseSettings):
     # Master kill switch lives at ``voice_clarity_autofix`` above — do not
     # add a parallel master here (anti-pattern #12: one understood layer
     # beats three mysterious ones).
-    probe_cold_strict_validation_enabled: bool = False
+    probe_cold_strict_validation_enabled: bool = True
     """Furo W-1 — cold-probe stricter signal validation.
 
-    When ``False`` (legacy v0.23.x behaviour) ``_diagnose_cold`` returns
-    ``Diagnosis.HEALTHY`` for any combo whose audio callback fires at
-    least once, regardless of RMS — which is exactly what lets a
-    Microsoft Voice Clarity APO destroy the signal upstream of PortAudio
-    yet have the silent combo persist as the winning ComboStore entry,
-    replicating the failure deterministically on every boot.
-
-    When ``True``, silent cold probes (``rms_db < probe_rms_db_no_signal``,
-    default −70 dBFS) return ``Diagnosis.NO_SIGNAL`` so the cascade
-    advances to the next combo and the silent winner never persists.
-
-    Lenient mode (``False``) still emits structured
+    v0.32.3 Phase 3.B.2.b: default flipped ``False → True``. Original
+    plan was v0.25.0; that landing was deferred when the master mission
+    pivoted to multi-mind work. The flip now lands as part of
+    ``MISSION-voice-zero-defect-2026-05-08`` Phase 3.B because (1) the
+    lenient mode has been emitting the
     ``voice.probe.cold_silence_rejected{mode=lenient_passthrough}``
-    events so operators can calibrate the rejection rate before
-    enabling. Default-flip planned for v0.25.0."""
+    telemetry breadcrumb since v0.24.0 — the rejection rate has been
+    observable for 8 minor cycles without operator complaints about
+    over-rejection — and (2) the operator's canonical case
+    (``MISSION-voice-zero-defect`` AUDIT.md §P0.B3 — silent combo
+    persists in ComboStore as a winner on hosts with upstream signal
+    destruction) is exactly what strict mode prevents.
+
+    When ``True`` (current default), silent cold probes
+    (``rms_db < probe_rms_db_no_signal``, default −70 dBFS) return
+    ``Diagnosis.NO_SIGNAL`` so the cascade advances to the next combo
+    and the silent winner never persists. The combo store
+    deterministic-replay bug (``Diagnosis.HEALTHY`` for an exact-zero-
+    PCM combo, replicated on every boot) is closed at the source.
+
+    When ``False`` (legacy v0.23.x behaviour), ``_diagnose_cold``
+    returns ``Diagnosis.HEALTHY`` for any combo whose audio callback
+    fires at least once, regardless of RMS — which is exactly what
+    lets a Microsoft Voice Clarity APO destroy the signal upstream of
+    PortAudio yet have the silent combo persist as the winning combo.
+
+    Operator escape hatch — re-enable lenient mode without a code
+    change via the env var:
+
+        SOVYX_TUNING__VOICE__PROBE_COLD_STRICT_VALIDATION_ENABLED=false
+
+    Recommended only for environments where the operator confirmed
+    via telemetry (the ``cold_silence_rejected`` event) that strict
+    mode produces false-positives on their hardware. The lenient mode
+    still emits the structured breadcrumb so the calibration loop
+    remains observable."""
 
     bypass_tier1_raw_enabled: bool = False
     """Furo W-2 Tier 1 — RAW + Communications bypass via

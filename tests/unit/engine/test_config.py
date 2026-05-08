@@ -1178,16 +1178,47 @@ class TestVoiceTuningParanoidMissionFlags:
             if key.startswith("SOVYX_TUNING__VOICE__"):
                 monkeypatch.delenv(key, raising=False)
 
-    def test_paranoid_mission_flags_default_false(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Foundation phase (v0.24.0) ships every flag default-False —
-        plumbing without behaviour change."""
+    def test_paranoid_mission_flags_default_state(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Defaults pinned per the staged-adoption rollout state.
+
+        v0.24.0 foundation: every flag default-False (plumbing without
+        behaviour change). v0.32.3 Phase 3.B.2.b promoted Furo W-1
+        (``probe_cold_strict_validation_enabled``) to True after 8
+        minor-cycle soak of the lenient ``cold_silence_rejected``
+        telemetry breadcrumb. Other paranoid-mission flags remain
+        opt-in (False) until their own promotion gates close.
+        """
         self._clear_voice_env(monkeypatch)
         cfg = VoiceTuningConfig()
-        assert cfg.probe_cold_strict_validation_enabled is False
+        # Promoted v0.32.3 Phase 3.B.2.b — strict mode now default.
+        assert cfg.probe_cold_strict_validation_enabled is True
+        # Still in foundation (lenient default) pending their own
+        # promotion gates.
         assert cfg.bypass_tier1_raw_enabled is False
         assert cfg.bypass_tier2_host_api_rotate_enabled is False
         assert cfg.mm_notification_listener_enabled is False
         assert cfg.cascade_host_api_alignment_enabled is False
+
+    def test_probe_cold_strict_validation_default_flipped_true(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """v0.32.3 Phase 3.B.2.b regression — the strict-mode default
+        flip from False to True must persist. A future refactor that
+        accidentally re-flips it back to False (e.g. someone misreads
+        the lenient docstring as authoritative) breaks loudly here.
+        """
+        self._clear_voice_env(monkeypatch)
+        assert VoiceTuningConfig().probe_cold_strict_validation_enabled is True
+
+    def test_probe_cold_strict_validation_env_rollback(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Operator escape hatch — env var still rolls back to lenient
+        without a code change. Pins the contract documented on the
+        field's docstring.
+        """
+        monkeypatch.setenv("SOVYX_TUNING__VOICE__PROBE_COLD_STRICT_VALIDATION_ENABLED", "false")
+        assert VoiceTuningConfig().probe_cold_strict_validation_enabled is False
 
     def test_probe_cold_strict_validation_env_override(
         self, monkeypatch: pytest.MonkeyPatch
