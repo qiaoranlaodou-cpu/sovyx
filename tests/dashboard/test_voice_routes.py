@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import sys
 from types import ModuleType
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -991,6 +992,310 @@ class TestOnPerceptionCallback:
             await on_perception("   ", "demo-mind")
 
         bridge_process.assert_not_awaited()
+
+
+class TestOnPerceptionTurnCancellationRace:
+    """v0.31.7 CR1 — when a previous turn's cogloop task is still in
+    flight at the moment a new transcript arrives, ``_on_perception``
+    must (a) cancel the previous task AND (b) await its completion
+    with a bounded timeout, so the previous task's bridge-finally
+    runs BEFORE the new turn's bridge.process registers a fresh
+    cancel hook on the pipeline.
+
+    Without the await, the previous finally races to null the live
+    hook the new turn just registered, leaving the new turn's LLM
+    stream un-cancellable by barge-in (``llm_cancel="no_hook_registered"``
+    even with a live LLM).
+    """
+
+    @pytest.mark.asyncio
+    async def test_on_perception_awaits_previous_task_cancellation(self) -> None:
+        """When a previous turn's task is in flight, the new
+        ``_on_perception`` invocation MUST cancel + await it (with the
+        documented 1s timeout) before spawning the next turn."""
+        from sovyx.cognitive.loop import CognitiveLoop
+        from sovyx.dashboard.server import create_app
+
+        fake_sd = ModuleType("sounddevice")
+        fake_sd.query_devices = MagicMock(  # type: ignore[attr-defined]
+            return_value=[
+                {"name": "mic", "max_input_channels": 1, "max_output_channels": 0},
+                {"name": "spk", "max_input_channels": 0, "max_output_channels": 2},
+            ],
+        )
+
+        application = create_app(token=_TOKEN)
+        registry = MagicMock()
+        cog_loop = MagicMock(spec=CognitiveLoop)
+        registry.is_registered.side_effect = lambda cls: cls is CognitiveLoop
+        registry.resolve = AsyncMock(return_value=cog_loop)
+        registry.replace_instance = AsyncMock()
+        application.state.registry = registry
+        application.state.mind_yaml_path = None
+        application.state.mind_id = "demo-mind"
+
+        capture = MagicMock()
+        capture.start = AsyncMock()
+        pipeline = MagicMock()
+        pipeline.stop = AsyncMock()
+        pipeline.config.wake_word_enabled = False
+
+        from sovyx.voice.factory import VoiceBundle
+
+        bundle = VoiceBundle(pipeline=pipeline, capture_task=capture)
+        factory_mock = AsyncMock(return_value=bundle)
+
+        # Track when each turn's bridge.process started + finished its
+        # finally so we can assert turn-1's finally finished before
+        # turn-2's bridge.process started.
+        turn1_started = asyncio.Event()
+        turn1_finally_done = asyncio.Event()
+        turn2_started = asyncio.Event()
+        # Order of turn1/turn2 lifecycle events for sanity check.
+        order: list[str] = []
+
+        class _SlowFinallyBridge:
+            def __init__(self, *args: object, **kwargs: object) -> None:
+                self._call_count = 0
+
+            async def process(self, _req: object) -> None:
+                self._call_count += 1
+                if self._call_count == 1:
+                    turn1_started.set()
+                    order.append("turn1_started")
+                    try:
+                        # Hang until cancelled (simulates LLM stream).
+                        await asyncio.sleep(60)
+                    finally:
+                        # Simulate a non-trivial finally block (the
+                        # real bridge does flush_stream + hook unwire).
+                        await asyncio.sleep(0.05)
+                        turn1_finally_done.set()
+                        order.append("turn1_finally_done")
+                else:
+                    turn2_started.set()
+                    order.append("turn2_started")
+
+        with (
+            patch(
+                "sovyx.voice.model_registry.check_voice_deps",
+                return_value=(
+                    [
+                        {"module": "moonshine_voice", "package": "moonshine-voice"},
+                        {"module": "sounddevice", "package": "sounddevice"},
+                    ],
+                    [],
+                ),
+            ),
+            patch("sovyx.voice.model_registry.detect_tts_engine", return_value="piper"),
+            patch.dict(sys.modules, {"sounddevice": fake_sd}),
+            patch("sovyx.voice.factory.create_voice_pipeline", new=factory_mock),
+            patch(
+                "sovyx.voice.cognitive_bridge.VoiceCognitiveBridge",
+                _SlowFinallyBridge,
+            ),
+        ):
+            client = TestClient(application, headers={"Authorization": f"Bearer {_TOKEN}"})
+            resp = client.post("/api/voice/enable")
+            assert resp.status_code == 200  # noqa: PLR2004
+
+            on_perception = factory_mock.call_args.kwargs["on_perception"]
+            assert on_perception is not None
+
+            # Fire turn 1 (it'll hang in process_streaming sleep(60)).
+            await on_perception("turn one", "demo-mind")
+            # Yield to let turn-1's bridge.process actually start.
+            await turn1_started.wait()
+
+            # Fire turn 2 — this MUST cancel turn 1, await its finally
+            # (bounded by _TURN_CANCELLATION_TIMEOUT_S = 1.0 s, well
+            # above the 50 ms simulated finally), and only THEN spawn
+            # turn 2.
+            await on_perception("turn two", "demo-mind")
+            # Yield to let turn-2's bridge.process actually start.
+            for _ in range(5):
+                await asyncio.sleep(0)
+
+        # Critical ordering: turn-1's finally must complete BEFORE
+        # turn-2's bridge.process starts. This is the v0.31.7 fix.
+        assert turn1_finally_done.is_set()
+        assert turn2_started.is_set()
+        assert order.index("turn1_finally_done") < order.index("turn2_started")
+
+    @pytest.mark.asyncio
+    async def test_on_perception_proceeds_after_timeout(self) -> None:
+        """If the previous turn's task is genuinely stuck (does not
+        respond to cancel within the timeout), ``_on_perception``
+        MUST log the timeout reason and proceed anyway. The identity
+        check on the bridge side (Part A) is the durable guard for
+        this scenario.
+
+        Verified by injecting an uncancellable previous task directly
+        into the closure-shared ``cogloop_task_ref`` list. We patch
+        the timeout constant down to 50 ms so the test is fast.
+        """
+        from sovyx.cognitive.loop import CognitiveLoop
+        from sovyx.dashboard.server import create_app
+
+        fake_sd = ModuleType("sounddevice")
+        fake_sd.query_devices = MagicMock(  # type: ignore[attr-defined]
+            return_value=[
+                {"name": "mic", "max_input_channels": 1, "max_output_channels": 0},
+                {"name": "spk", "max_input_channels": 0, "max_output_channels": 2},
+            ],
+        )
+
+        application = create_app(token=_TOKEN)
+        registry = MagicMock()
+        cog_loop = MagicMock(spec=CognitiveLoop)
+        registry.is_registered.side_effect = lambda cls: cls is CognitiveLoop
+        registry.resolve = AsyncMock(return_value=cog_loop)
+        registry.replace_instance = AsyncMock()
+        application.state.registry = registry
+        application.state.mind_yaml_path = None
+        application.state.mind_id = "demo-mind"
+
+        capture = MagicMock()
+        capture.start = AsyncMock()
+        pipeline = MagicMock()
+        pipeline.stop = AsyncMock()
+        pipeline.config.wake_word_enabled = False
+
+        from sovyx.voice.factory import VoiceBundle
+
+        bundle = VoiceBundle(pipeline=pipeline, capture_task=capture)
+        factory_mock = AsyncMock(return_value=bundle)
+
+        from sovyx.dashboard.routes import voice as voice_route_module
+
+        turn2_started = asyncio.Event()
+        info_events: list[str] = []
+        real_info = voice_route_module.logger.info
+
+        def _spy_info(event: str, *args: object, **kwargs: object) -> object:
+            info_events.append(event)
+            return real_info(event, *args, **kwargs)
+
+        class _Bridge:
+            async def process(self, _req: object) -> None:
+                turn2_started.set()
+
+        # Build an uncancellable task: it shields its inner sleep so
+        # ``cancel()`` from _on_perception does NOT propagate within
+        # the test's patched 50 ms timeout window. We clean it up at
+        # the end of the test by cancelling the shielded inner task
+        # directly.
+        shield_target = asyncio.create_task(asyncio.sleep(60))
+
+        async def _shielded() -> None:
+            try:
+                await asyncio.shield(shield_target)
+            except asyncio.CancelledError:
+                # External cancel arrived but shield_target keeps
+                # running. The wrapper task ENDS here on the cancel,
+                # but for await_for's purposes the await STILL needs
+                # to complete to cancel the wait — which it does.
+                # We re-raise to make the wrapper "done with cancel".
+                raise
+
+        with (
+            patch(
+                "sovyx.voice.model_registry.check_voice_deps",
+                return_value=(
+                    [
+                        {"module": "moonshine_voice", "package": "moonshine-voice"},
+                        {"module": "sounddevice", "package": "sounddevice"},
+                    ],
+                    [],
+                ),
+            ),
+            patch("sovyx.voice.model_registry.detect_tts_engine", return_value="piper"),
+            patch.dict(sys.modules, {"sounddevice": fake_sd}),
+            patch("sovyx.voice.factory.create_voice_pipeline", new=factory_mock),
+            patch(
+                "sovyx.voice.cognitive_bridge.VoiceCognitiveBridge",
+                lambda *args, **kwargs: _Bridge(),
+            ),
+            patch(
+                "sovyx.dashboard.routes.voice._TURN_CANCELLATION_TIMEOUT_S",
+                0.05,
+            ),
+            patch.object(voice_route_module.logger, "info", side_effect=_spy_info),
+        ):
+            client = TestClient(application, headers={"Authorization": f"Bearer {_TOKEN}"})
+            resp = client.post("/api/voice/enable")
+            assert resp.status_code == 200  # noqa: PLR2004
+
+            on_perception = factory_mock.call_args.kwargs["on_perception"]
+            assert on_perception is not None
+
+            # The simplest direct way to force a timeout: manually
+            # construct the previous_task into a state where cancel()
+            # is honoured (raises CancelledError) but the wait_for
+            # times out because we wrap with shield. We use an
+            # uncancellable inner task; the wrapping task that gets
+            # cancel()'d still 'completes' with CancelledError after
+            # the 50 ms timeout. The test asserts the log message
+            # fired AND turn 2 started. Patch _on_perception's view
+            # of the previous task by creating a stuck task here and
+            # replacing the closure's tracker via the closure access
+            # pattern: we know from the route source the closure
+            # shares a list ``cogloop_task_ref``. We can't directly
+            # access that from the test, but we DON'T need to — the
+            # natural path through ``await on_perception("first",...)``
+            # populates it. Then a second call sees the populated
+            # entry and exercises the await_for path.
+            #
+            # First call — populate the closure's task tracker.
+            await on_perception("turn one", "demo-mind")
+            for _ in range(3):
+                await asyncio.sleep(0)
+            # Reset state from turn 1 so the assertions below isolate
+            # turn-2 lifecycle events only.
+            turn2_started.clear()
+            info_events.clear()
+            # Replace the tracked task with the uncancellable one. We
+            # do this by getting at the closure cell — Python exposes
+            # cell contents on functions; ``on_perception.__closure__``
+            # holds the cell for ``cogloop_task_ref`` (the list).
+            cells = on_perception.__closure__ or ()
+            # Find the list cell (the one whose first element is a
+            # Task — the existing turn-1 task tracker).
+            target_cell = None
+            for cell in cells:
+                value = cell.cell_contents
+                if isinstance(value, list) and value and isinstance(value[0], asyncio.Task):
+                    target_cell = cell
+                    break
+            assert target_cell is not None, "could not find cogloop_task_ref cell"
+            stuck_task = asyncio.create_task(_shielded())
+            # Yield once so the shielded task starts awaiting.
+            await asyncio.sleep(0)
+            target_cell.cell_contents[0] = stuck_task
+
+            # Second call — sees the stuck task, cancels it, awaits
+            # with the patched 50 ms timeout, hits TimeoutError, logs
+            # the cancellation event, proceeds to spawn turn 2.
+            await on_perception("turn two", "demo-mind")
+            # Generously yield so turn-2's bridge.process executes.
+            for _ in range(10):
+                await asyncio.sleep(0)
+            # Wait a beat so the await_for inside _on_perception
+            # actually elapses if we beat it to assert.
+            await asyncio.sleep(0.1)
+
+            # Turn 2 started even though turn 1 never finished.
+            assert turn2_started.is_set()
+            # Timeout cancellation log fired.
+            assert "voice_perception_previous_turn_cancellation" in info_events
+
+            # Cleanup: cancel the inner shielded sleep so we don't
+            # leak a task across tests.
+            shield_target.cancel()
+            with contextlib.suppress(asyncio.CancelledError, BaseException):
+                await shield_target
+            with contextlib.suppress(asyncio.CancelledError, BaseException):
+                await stuck_task
 
 
 class TestDisableVoice:

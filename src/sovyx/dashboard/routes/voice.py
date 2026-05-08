@@ -43,6 +43,19 @@ router = APIRouter(prefix="/api/voice", dependencies=[Depends(verify_token)])
 _ENABLE_LOCKS: LRULockDict[str] = LRULockDict(maxsize=64)
 
 
+# v0.31.7 CR1 — bound on how long ``_on_perception`` waits for the
+# previous turn's cogloop task to actually finish its ``finally``
+# block before starting turn N+1. The await is critical because
+# without it the previous task's ``finally`` races to null the cancel
+# hook AFTER turn N+1 has registered its own (companion: identity
+# check in ``cognitive_bridge.VoiceCognitiveBridge.process`` finally).
+# 1 second is comfortably above the typical cogloop teardown latency
+# (~10-50 ms in the streaming path, dominated by ``flush_stream``)
+# while keeping perceived response time bounded if the previous task
+# is genuinely stuck.
+_TURN_CANCELLATION_TIMEOUT_S = 1.0
+
+
 # ── T6.20 — aggregated voice service health ──────────────────────────
 
 
@@ -1820,9 +1833,52 @@ async def _enable_voice_locked(
         # rare but possible on degraded streams), stop it explicitly so
         # we never accumulate orphaned tasks. cancel() is idempotent
         # against a done task.
+        #
+        # v0.31.7 CR1 — cancel-hook null race between turns.
+        #
+        # Pre-v0.31.7 we did not ``await`` the cancellation. The
+        # previous task's ``finally`` block (in
+        # ``VoiceCognitiveBridge.process``) used to unconditionally
+        # null the pipeline's cancel hook — but the new task we're
+        # about to spawn would race ahead and register its OWN hook
+        # FIRST. When the previous task's ``finally`` finally got CPU
+        # time, it would null the hook the new turn just registered,
+        # leaving the new turn's LLM stream un-cancellable by
+        # barge-in. Symptom: ``llm_cancel="no_hook_registered"`` in
+        # the ``cancel_speech_chain`` audit even with a live LLM.
+        #
+        # Two-part fix:
+        #  - Identity-check guard in the bridge's ``finally``
+        #    (cognitive_bridge.py): only null the hook if it is STILL
+        #    the local hook this turn registered.
+        #  - Await-with-timeout HERE so the previous task's ``finally``
+        #    completes BEFORE we proceed to spawn turn N+1 — keeps the
+        #    common path simple and gives the identity check a much
+        #    smaller race window to defend.
+        #
+        # If the await exceeds the timeout (genuinely stuck previous
+        # task), we proceed anyway: the identity check on the bridge
+        # side guarantees correctness even when the previous task's
+        # ``finally`` runs after turn N+1 registers its hook.
         previous_task = cogloop_task_ref[0]
         if previous_task is not None and not previous_task.done():
             previous_task.cancel()
+            try:
+                await asyncio.wait_for(previous_task, timeout=_TURN_CANCELLATION_TIMEOUT_S)
+            except (TimeoutError, asyncio.CancelledError) as exc:
+                logger.info(
+                    "voice_perception_previous_turn_cancellation",
+                    reason=type(exc).__name__,
+                    timeout_s=_TURN_CANCELLATION_TIMEOUT_S,
+                )
+            except Exception as exc:  # noqa: BLE001
+                # Defensive: any other exception during the await is a
+                # bridge-internal failure (already logged inside
+                # _run_bridge_isolated). Don't let it block turn N+1.
+                logger.info(
+                    "voice_perception_previous_turn_cancellation",
+                    reason=type(exc).__name__,
+                )
 
         cogloop_task_ref[0] = asyncio.create_task(
             _run_bridge_isolated(),

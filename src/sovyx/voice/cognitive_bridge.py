@@ -145,7 +145,10 @@ class VoiceCognitiveBridge:
                 return
             cogloop_task.cancel()
 
-        self._pipeline.register_llm_cancel_hook(_cancel_hook)
+        # Capture a local reference to THIS turn's hook so the finally
+        # block can do an identity check before unwiring (v0.31.7 CR1).
+        local_cancel_hook = _cancel_hook
+        self._pipeline.register_llm_cancel_hook(local_cancel_hook)
         try:
             return await cogloop_task
         except asyncio.CancelledError:
@@ -170,11 +173,37 @@ class VoiceCognitiveBridge:
                 metadata={"cancelled_reason": _CANCELLED_BY_BARGE_IN_REASON},
             )
         finally:
-            # Unwire the hook so a subsequent un-bridged speak() (e.g. a
-            # proactive prompt from the cognitive layer) does not invoke a
-            # stale hook bound to a now-completed task. None is the
-            # documented "no hook" sentinel on register_llm_cancel_hook.
-            self._pipeline.register_llm_cancel_hook(None)
+            # v0.31.7 CR1 — cancel-hook null race between turns.
+            #
+            # Pre-v0.31.7 this block did
+            # ``self._pipeline.register_llm_cancel_hook(None)``
+            # UNCONDITIONALLY. That created a window where:
+            #
+            #   1. Turn N's task is cancelled by ``_on_perception`` for
+            #      turn N+1 but its ``finally`` has not yet run.
+            #   2. Turn N+1's bridge.process() runs, registers its own
+            #      cancel hook on the pipeline.
+            #   3. Turn N's ``finally`` finally runs and resets the hook
+            #      to ``None`` — nulling the LIVE hook turn N+1 just
+            #      registered.
+            #   4. A barge-in during turn N+1 reports
+            #      ``llm_cancel="no_hook_registered"`` even though there
+            #      IS a live LLM stream — audio + TTS get cancelled but
+            #      the LLM keeps producing tokens that bleed into the
+            #      next turn.
+            #
+            # Fix: only null the hook if it is STILL the local hook
+            # this turn registered. ``is`` (identity) — if turn N+1
+            # already replaced the hook, ``_llm_cancel_hook`` no longer
+            # IS our local reference, and we leave it alone.
+            #
+            # Companion fix in ``_on_perception`` await-with-timeout
+            # ensures this finally block runs BEFORE the next turn
+            # registers its hook in the common case; the identity check
+            # is the durable guard for the race window where the await
+            # times out and the new turn proceeds anyway.
+            if self._pipeline._llm_cancel_hook is local_cancel_hook:
+                self._pipeline.register_llm_cancel_hook(None)
 
     async def _process_streaming(self, request: CognitiveRequest) -> ActionResult:
         """Streaming path: chunk-by-chunk TTS as the LLM produces tokens."""

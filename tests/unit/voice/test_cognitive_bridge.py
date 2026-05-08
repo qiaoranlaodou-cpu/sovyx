@@ -69,11 +69,19 @@ def _make_pipeline() -> MagicMock:
     # current_utterance_id is a property in production; expose as a
     # plain attribute on the mock so accessing it never raises.
     pipeline.current_utterance_id = "trace-fixed-uuid"
+    # v0.31.7 CR1 — the bridge's finally now reads
+    # ``self._pipeline._llm_cancel_hook`` to decide whether to null
+    # the hook (identity check). Mirror that real-pipeline contract on
+    # the mock: ``register_llm_cancel_hook(hook)`` writes the hook
+    # to ``_llm_cancel_hook``, and reading the attribute returns the
+    # last-written value.
+    pipeline._llm_cancel_hook = None
     # Track every register call so tests can assert on the lifecycle.
     pipeline._registered_hooks: list[Callable[[], Awaitable[None]] | None] = []
 
     def _register(hook: Callable[[], Awaitable[None]] | None) -> None:
         pipeline._registered_hooks.append(hook)
+        pipeline._llm_cancel_hook = hook
 
     pipeline.register_llm_cancel_hook = MagicMock(side_effect=_register)
     return pipeline
@@ -257,3 +265,121 @@ class TestVoiceCognitiveBridgeNoHookCallsOutsideLifecycle:
         # Each turn registered a NEW callable, not the same object —
         # the closure binds per-call.
         assert pipeline._registered_hooks[0] is not pipeline._registered_hooks[2]
+
+
+class TestVoiceCognitiveBridgeFinallyIdentityCheck:
+    """v0.31.7 CR1 — the bridge's ``finally`` block must only null
+    ``_llm_cancel_hook`` when the live hook is STILL the one this turn
+    registered. If a later turn already replaced the hook (the race
+    window between turn-N cancellation and turn-N+1 registration), the
+    identity check guarantees we don't null the new turn's live hook.
+    """
+
+    @pytest.mark.asyncio
+    async def test_finally_only_nulls_hook_if_owned(self) -> None:
+        """When an external party (turn N+1) replaces the cancel hook
+        before turn N's ``finally`` runs, ``finally`` MUST leave the
+        replacement intact.
+
+        Reproduces the cancel-hook null race documented in
+        cognitive_bridge.py finally block. Without the identity check,
+        turn N's finally would null the replacement and turn N+1's
+        barge-in would see ``llm_cancel="no_hook_registered"``.
+        """
+        cogloop = MagicMock()
+        cogloop.process_request_streaming = AsyncMock(return_value=_make_action_result())
+        pipeline = _make_pipeline()
+        bridge = VoiceCognitiveBridge(cogloop, pipeline, streaming=True)
+
+        # Sentinel hook representing "turn N+1 already took over".
+        async def _hook_b() -> None:  # pragma: no cover — marker only
+            return None
+
+        # Patch process_request_streaming so RIGHT BEFORE returning, we
+        # simulate turn N+1 swapping in its own hook on the pipeline.
+        # This is exactly the race the v0.31.7 fix defends against.
+        original_streaming = cogloop.process_request_streaming
+
+        async def _streaming_with_external_swap(*args: object, **kwargs: object) -> ActionResult:
+            result = await original_streaming(*args, **kwargs)
+            # Simulate turn N+1's bridge.process registering its hook
+            # before turn N's finally runs.
+            pipeline.register_llm_cancel_hook(_hook_b)
+            return result
+
+        cogloop.process_request_streaming = _streaming_with_external_swap  # type: ignore[assignment]
+
+        await bridge.process(_make_cog_request())
+
+        # The replacement hook must STILL be the live hook. Turn N's
+        # finally must NOT have nulled it.
+        assert pipeline._llm_cancel_hook is _hook_b
+        # The last register call from turn N's finally MUST NOT have
+        # been ``None`` (it short-circuited the identity check). The
+        # only register calls should be:
+        #   1. turn N's own cancel hook (callable)
+        #   2. _hook_b (turn N+1 takeover, simulated)
+        # No third call to ``None`` from turn N's finally.
+        assert len(pipeline._registered_hooks) == 2  # noqa: PLR2004
+        assert callable(pipeline._registered_hooks[0])
+        assert pipeline._registered_hooks[1] is _hook_b
+
+    @pytest.mark.asyncio
+    async def test_finally_nulls_hook_when_still_owned(self) -> None:
+        """Happy path: when no external party replaced the hook, the
+        bridge's ``finally`` MUST null it (the pre-v0.31.7 behaviour
+        that Part A's identity check preserves)."""
+        cogloop = MagicMock()
+        cogloop.process_request_streaming = AsyncMock(return_value=_make_action_result())
+        pipeline = _make_pipeline()
+        bridge = VoiceCognitiveBridge(cogloop, pipeline, streaming=True)
+
+        await bridge.process(_make_cog_request())
+
+        # Final state: hook nulled (no race interference).
+        assert pipeline._llm_cancel_hook is None
+        # Lifecycle: register(callable) → register(None).
+        assert len(pipeline._registered_hooks) == 2  # noqa: PLR2004
+        assert callable(pipeline._registered_hooks[0])
+        assert pipeline._registered_hooks[1] is None
+
+    @pytest.mark.asyncio
+    async def test_finally_identity_check_uses_is_not_equality(self) -> None:
+        """The identity check must use ``is`` (object identity), not
+        ``==``. Two distinct closures are never equal at the identity
+        level even if their behaviour matches — this is the contract
+        we depend on for the race-condition fix."""
+        cogloop = MagicMock()
+        cogloop.process_request_streaming = AsyncMock(return_value=_make_action_result())
+        pipeline = _make_pipeline()
+        bridge = VoiceCognitiveBridge(cogloop, pipeline, streaming=True)
+
+        # A hook with an ``__eq__`` that returns True for any other
+        # callable would FOOL an ``==`` check but not an ``is`` check.
+        class _AlwaysEqualHook:
+            async def __call__(self) -> None:  # pragma: no cover
+                return None
+
+            def __eq__(self, _other: object) -> bool:
+                return True
+
+            def __hash__(self) -> int:
+                return 0
+
+        intruder = _AlwaysEqualHook()
+
+        original_streaming = cogloop.process_request_streaming
+
+        async def _streaming_with_intruder(*args: object, **kwargs: object) -> ActionResult:
+            result = await original_streaming(*args, **kwargs)
+            pipeline.register_llm_cancel_hook(intruder)
+            return result
+
+        cogloop.process_request_streaming = _streaming_with_intruder  # type: ignore[assignment]
+
+        await bridge.process(_make_cog_request())
+
+        # If the bridge used ``==`` instead of ``is``, the intruder's
+        # ``__eq__`` would have made the comparison true and the
+        # finally would have nulled it. ``is`` survives the intrusion.
+        assert pipeline._llm_cancel_hook is intruder
