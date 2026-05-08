@@ -18,6 +18,58 @@ if TYPE_CHECKING:
 logger = get_logger(__name__)
 
 
+async def _auto_resume_voice_pipeline(
+    *,
+    mind_config: MindConfig,
+    engine_config: EngineConfig,
+    registry: ServiceRegistry,
+) -> None:
+    """Auto-resume voice pipeline at daemon boot when ``voice_enabled=True``.
+
+    v0.31.4 GAP 4 closure. Operator-perspective contract:
+    ``sovyx start`` must not require a separate ``POST /api/voice/enable``
+    call before voice works. If voice was enabled in the prior session
+    (``MindConfig.voice_enabled=True``), the pipeline reconstructs
+    automatically using the same ``create_voice_pipeline`` factory the
+    HTTP endpoint uses, then registers the bundle in the service
+    registry via ``replace_instance`` (GAP 3 contract — old instances
+    from a partial-shutdown scenario get torn down before re-register).
+
+    DEFENSIVE: any exception is allowed to propagate; the caller wraps
+    in try/except so daemon startup is never blocked by voice failure.
+    """
+    # Local imports to avoid circular: engine.bootstrap is imported very
+    # early; voice.factory imports onnxruntime + sounddevice which are
+    # heavy + optional. Deferring keeps cold-start fast for non-voice
+    # daemons.
+    from sovyx.voice._capture_task import AudioCaptureTask
+    from sovyx.voice.factory import create_voice_pipeline
+    from sovyx.voice.pipeline._orchestrator import VoicePipeline
+
+    bundle = await create_voice_pipeline(
+        data_dir=engine_config.data_dir,
+        mind_id=str(mind_config.id),
+        language=mind_config.language,
+        voice_id=mind_config.voice_id,
+        wake_word_enabled=getattr(mind_config, "wake_word_enabled", False),
+        input_device_name=mind_config.voice_input_device_name or None,
+        input_device_host_api=mind_config.voice_input_device_host_api or None,
+        # ``allow_inoperative_capture=True``: even if the mic isn't
+        # currently available (USB unplugged, audio service down),
+        # daemon still comes up + voice surfaces an error rather than
+        # blocking startup. Operator can fix mic + click Recalibrate
+        # without daemon restart.
+        allow_inoperative_capture=True,
+    )
+    await registry.replace_instance(VoicePipeline, bundle.pipeline)
+    await registry.replace_instance(AudioCaptureTask, bundle.capture_task)
+    await bundle.capture_task.start()
+    logger.info(
+        "voice_auto_resume_succeeded",
+        mind_id=mind_config.id,
+    )
+
+
 class MindManager:
     """Manage Minds within the engine. v0.1: single mind.
 
@@ -700,6 +752,32 @@ async def bootstrap(
 
             await mind_manager.load_mind(mind_config.id, {"brain": brain_service})
             await mind_manager.start_mind(mind_config.id)
+
+            # v0.31.4 GAP 4 closure: auto-resume voice pipeline on
+            # daemon restart when ``MindConfig.voice_enabled=True``.
+            # Pre-v0.31.4 the voice pipeline ONLY started when the
+            # operator explicitly hit ``POST /api/voice/enable`` —
+            # daemon restart silently dropped voice state, every time.
+            # The auto-resume re-creates the pipeline using the same
+            # ``create_voice_pipeline`` factory the HTTP endpoint uses,
+            # then registers the bundle in the registry.
+            #
+            # DEFENSIVE: any failure (missing models, mic disconnected,
+            # PortAudio unavailable, etc.) is logged + swallowed so
+            # daemon startup is never blocked by voice auto-resume.
+            # Operator can still enable manually via the dashboard.
+            if getattr(mind_config, "voice_enabled", False):
+                try:
+                    await _auto_resume_voice_pipeline(
+                        mind_config=mind_config,
+                        engine_config=engine_config,
+                        registry=registry,
+                    )
+                except Exception:  # noqa: BLE001
+                    logger.exception(
+                        "voice_auto_resume_failed",
+                        mind_id=mind_config.id,
+                    )
 
         # 4. PersonResolver + ConversationTracker
         system_pool = db_manager.get_system_pool()

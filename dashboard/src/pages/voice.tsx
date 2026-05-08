@@ -786,7 +786,16 @@ export default function VoicePage() {
         >
           {wizardOpen ? (
             <VoiceSetupWizard
-              onComplete={() => setWizardOpen(false)}
+              onComplete={() => {
+                // v0.31.4 GAP 6 closure: wizard's handleSave (post-
+                // GAP 1) calls /api/voice/enable; onComplete fires
+                // only on 200. Trigger an immediate page refresh of
+                // voice status so the "not configured" banner
+                // disappears + the live pipeline cards populate
+                // without the operator having to refresh.
+                setWizardOpen(false);
+                void fetchData();
+              }}
               onCancel={() => setWizardOpen(false)}
             />
           ) : (

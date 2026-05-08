@@ -497,6 +497,18 @@ class MindConfig(BaseModel):
     id: MindId = Field(default=MindId(""))
     language: str = "en"
     voice_id: str = ""
+    # v0.31.4 GAP 2 closure: ``voice_enabled`` is a TOP-LEVEL MindConfig
+    # field that gates whether the daemon auto-creates the voice
+    # pipeline at boot for this mind. Pre-v0.31.4 the
+    # ``/api/voice/enable`` endpoint wrote a ``voice: {enabled: true}``
+    # YAML SECTION that bootstrap.py NEVER read — the operator's
+    # voice-enabled intent was silently lost on every daemon restart.
+    # Now ``voice_enabled`` is a real Pydantic field; the writer
+    # persists it; bootstrap reads it (Phase 2 GAP 4 closure).
+    # Default False matches v0.30.x backward-compat — existing minds
+    # without the field stay disabled until the operator explicitly
+    # enables voice via the wizard or ``/api/voice/enable``.
+    voice_enabled: bool = False
     # Stable mic identity persisted by the setup wizard. Together with
     # ``voice_input_device_host_api`` this survives PortAudio index
     # shuffles (USB replug, reboot, new audio device added) — the index

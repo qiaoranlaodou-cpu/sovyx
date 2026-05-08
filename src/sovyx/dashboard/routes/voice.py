@@ -2052,6 +2052,15 @@ async def enable_voice(request: Request) -> JSONResponse:
         from sovyx.engine.config_editor import ConfigEditor
 
         editor = ConfigEditor()
+        # v0.31.4 GAP 2 closure: persist ``voice_enabled`` as a
+        # top-level MindConfig scalar that bootstrap reads on the
+        # next daemon start for auto-resume (GAP 4). Pre-v0.31.4 only
+        # the ``voice:`` nested section was written, but bootstrap
+        # NEVER read that section — voice.enabled=true was a phantom
+        # field. The nested ``voice:`` section is still written below
+        # as legacy back-compat (operator-side tooling may read
+        # ``voice.input_device``).
+        await editor.set_scalar(Path(mind_yaml_path), "voice_enabled", True)
         voice_cfg: dict[str, object] = {"enabled": True}
         if input_device is not None:
             voice_cfg["input_device"] = input_device

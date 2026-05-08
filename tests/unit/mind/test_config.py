@@ -309,6 +309,19 @@ class TestMindConfig:
         m = MindConfig(name="Aria", voice_id="pf_dora")
         assert m.voice_id == "pf_dora"
 
+    def test_voice_enabled_defaults_false(self) -> None:
+        """v0.31.4 GAP 2 closure: ``voice_enabled`` is a top-level
+        bool field; default False matches v0.30.x backward-compat."""
+        m = MindConfig(name="Aria")
+        assert m.voice_enabled is False
+
+    def test_voice_enabled_explicit_true(self) -> None:
+        """The /api/voice/enable endpoint persists this field; on
+        next daemon restart bootstrap reads it + auto-resumes the
+        voice pipeline (GAP 4)."""
+        m = MindConfig(name="Aria", voice_enabled=True)
+        assert m.voice_enabled is True
+
 
 class TestPhase8VoiceIdentityFields:
     """Phase 8 / T8.1-T8.5 — per-mind voice identity surface.

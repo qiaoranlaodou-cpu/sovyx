@@ -272,7 +272,16 @@ export function VoiceStep({ onConfigured, onSkip, language }: VoiceStepProps) {
               {wizardOpen ? (
                 <VoiceSetupWizard
                   onComplete={() => {
+                    // v0.31.4 GAP 6 closure: the wizard's handleSave
+                    // (post-GAP 1 fix) actually calls /api/voice/enable
+                    // and only fires onComplete on 200 OK. So when
+                    // we're notified the wizard completed, voice IS
+                    // enabled — reflect that in the parent state so
+                    // the "Continue" button activates without the
+                    // operator having to click a SECOND "Enable Voice"
+                    // button below.
                     setWizardTested(true);
+                    setEnabled(true);
                     setWizardOpen(false);
                   }}
                   onCancel={() => setWizardOpen(false)}
