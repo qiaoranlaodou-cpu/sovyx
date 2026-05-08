@@ -2874,6 +2874,18 @@ class VoicePipeline:
         # log: when count == 0 (sustained silence or pre-first-
         # speech) we OMIT them rather than emit synthetic zeros so
         # dashboards don't graph misleading floor values.
+        # v0.32.6 Phase 5.A — per-mind keying FOUNDATION shipped in
+        # ``_snr_heartbeat`` (see module docstring). The producer
+        # (``FrameNormalizer._observe_snr``) still calls
+        # ``record_snr_sample`` without ``mind_id``, defaulting to the
+        # ``"default"`` key. Drain MUST match the producer key or the
+        # consumer reads 0 samples and the heartbeat omits SNR fields
+        # entirely on multi-mind hosts. Threading ``mind_id`` through
+        # FrameNormalizer (constructor + 10 construction sites + per-
+        # turn updates from the orchestrator) is staged-adoption Phase
+        # 5.A.2 — see PHASE-4-D-AUDIT.md Finding 6 for the full plan.
+        # Until then this reads from the same ``"default"`` key the
+        # producer writes to, preserving exact pre-fix behaviour.
         from sovyx.voice.health._snr_heartbeat import drain_window_stats
 
         snr_window = drain_window_stats()
@@ -2954,6 +2966,9 @@ class VoicePipeline:
         # rolling buffer without clearing (drain pattern is for
         # SNR; the noise-floor trend wants a stable horizon).
         if _NOISE_FLOOR_DRIFT_ALERT_ENABLED:
+            # Phase 5.A — same staged-adoption contract as the SNR
+            # drain above; producer keys to ``"default"`` until the
+            # FrameNormalizer threading ships in Phase 5.A.2.
             from sovyx.voice.health._noise_floor_trending import compute_drift
 
             drift = compute_drift()

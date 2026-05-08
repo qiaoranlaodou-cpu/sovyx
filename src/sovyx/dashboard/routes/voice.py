@@ -599,6 +599,12 @@ async def get_voice_quality_snapshot(request: Request) -> JSONResponse:
     from sovyx.voice.health._noise_floor_trending import compute_drift
     from sovyx.voice.health._recent_snr import window_summary
 
+    # Phase 5.A — staged-adoption: aggregator foundation supports
+    # per-mind keying (see ``_noise_floor_trending`` module docstring),
+    # but the producer (FrameNormalizer) still keys to ``"default"``
+    # until Phase 5.A.2 threads ``mind_id`` through. Reading without
+    # ``mind_id=`` matches the producer's key, preserving exact pre-
+    # fix behaviour.
     snr = window_summary()
     drift = compute_drift()
 
