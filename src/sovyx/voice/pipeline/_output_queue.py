@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextvars
 from typing import TYPE_CHECKING
 
 from sovyx.observability.logging import get_logger
@@ -14,6 +15,35 @@ if TYPE_CHECKING:
     from sovyx.voice.tts_piper import AudioChunk
 
 logger = get_logger(__name__)
+
+_PLAYBACK_SLICE_MS = 50
+"""Per-slice duration of the chunked PortAudio write inside ``_play_audio``.
+
+Production playback writes the chunk in ``_PLAYBACK_SLICE_MS``-millisecond
+slices and polls the calling queue's ``_interrupted`` flag between slices.
+A 50 ms slice gives a worst-case barge-in latency of ~100-150 ms (the slice
+in flight plus thread-pool dispatch overhead) which is below the perceptual
+ceiling for "the assistant stopped talking right when I started" — the
+fully-blocking pre-T1.2 path could take 5+ seconds on a long sentence.
+
+Anti-pattern #17: this default is co-located here so the per-call cost is
+zero (constant evaluated once at import) while leaving room for a future
+``EngineConfig.tuning.voice.playback_slice_ms`` knob if operators ever need
+to widen the slice for thread-pool-pressure reasons.
+"""
+
+# Per-task context carrying the queue currently dispatching a chunk into
+# ``_play_audio``. Set by ``play_immediate`` / ``drain`` before the call,
+# read by the real ``_play_audio`` body to poll ``_interrupted`` between
+# slices. ``contextvars.ContextVar`` is used (not a module-level reference)
+# so concurrent dispatch from independent queues stays isolated. The
+# default ``None`` makes the slice-loop fall back to non-interruptible
+# playback when invoked outside ``AudioOutputQueue`` (e.g. legacy callers
+# wiring to the public re-export).
+_active_queue: contextvars.ContextVar["AudioOutputQueue | None"] = contextvars.ContextVar(  # noqa: UP037 — class is forward-declared; bare reference would NameError at module load
+    "_active_queue",
+    default=None,
+)
 
 
 _DEFAULT_USAGE_CAPACITY_REFERENCE = 256
@@ -140,22 +170,50 @@ class AudioOutputQueue:
     async def play_immediate(self, chunk: AudioChunk) -> None:
         """Play a single chunk immediately (blocking until done).
 
+        T1.2 (CRITICAL CR2) — interruption-aware. Sets ``_active_queue``
+        on the contextvar so the real ``_play_audio`` slice-loop can poll
+        ``self._interrupted`` between slices. Without this wiring,
+        ``OutputStream.write(buffer)`` blocks until the entire chunk is
+        consumed by PortAudio (5+ s on long sentences) and operator
+        barge-in fires the flag but never gets observed.
+
+        The streaming ``drain`` path is interruptible per-chunk via the
+        ``while not self._interrupted`` loop; ``play_immediate`` is the
+        non-streaming counterpart and gains the same property here via
+        the slice-loop in ``_play_audio``.
+
         Args:
             chunk: Audio data to play.
         """
         self._playing = True
+        # Reset the interrupt flag at the start of a fresh playback so a
+        # previous interrupt() call doesn't immediately short-circuit
+        # this new chunk. drain() does the same on its entry path.
+        self._interrupted = False
+        token = _active_queue.set(self)
         try:
             self._feed_render_buffer(chunk)
             await _play_audio(chunk)
         finally:
+            _active_queue.reset(token)
             self._playing = False
 
     async def drain(self) -> None:
-        """Play all queued chunks sequentially until queue is empty."""
+        """Play all queued chunks sequentially until queue is empty.
+
+        T1.2 (CRITICAL CR2) — every per-chunk dispatch sets
+        ``_active_queue`` on the contextvar so the real ``_play_audio``
+        slice-loop can short-circuit *within* a chunk if barge-in fires
+        mid-playback. The pre-existing ``not self._interrupted`` check
+        on the loop boundary still gates the *next* chunk; the slice
+        loop adds the *intra-chunk* interruption that long sentences
+        need.
+        """
         self._playing = True
         self._interrupted = False
         chunks_drained = 0
         audio_ms_drained = 0.0
+        token = _active_queue.set(self)
         try:
             while not self._queue.empty() and not self._interrupted:
                 chunk = self._queue.get_nowait()
@@ -167,6 +225,7 @@ class AudioOutputQueue:
                 chunks_drained += 1
                 audio_ms_drained += float(chunk.duration_ms)
         finally:
+            _active_queue.reset(token)
             self._playing = False
             interrupted = self._interrupted
             self._interrupted = False
@@ -261,19 +320,78 @@ class AudioOutputQueue:
             )
 
 
+def _is_interrupted() -> bool:
+    """Read the active queue's ``_interrupted`` flag from the contextvar.
+
+    Returns ``False`` when no queue context is set (legacy callers
+    invoking ``_play_audio`` outside :class:`AudioOutputQueue` keep the
+    pre-T1.2 non-interruptible semantics) or when the queue exists but
+    has not been interrupted. Defensive against ``AttributeError`` if a
+    test doubles in a non-queue object on the contextvar.
+    """
+    queue = _active_queue.get()
+    if queue is None:
+        return False
+    return bool(getattr(queue, "_interrupted", False))
+
+
+def _slice_audio(audio: object, sample_rate: int, slice_ms: int) -> list[object]:
+    """Return ``audio`` partitioned into ``slice_ms``-millisecond chunks.
+
+    Uses standard slicing (works on numpy arrays + sequences). Empty or
+    zero-rate inputs collapse to a single-element list so callers always
+    iterate at least once and the "no audio at all" case is preserved.
+    The last slice may be shorter than ``slice_ms``.
+
+    Args:
+        audio: 1-D mono PCM buffer (numpy array). Typed as ``object``
+            here to keep this module free of numpy at import time —
+            slicing semantics are sequence-protocol only.
+        sample_rate: Samples per second.
+        slice_ms: Target slice duration in milliseconds.
+
+    Returns:
+        Ordered list of buffer slices. ``audio[i:j]``-style views; no
+        copying.
+    """
+    samples_per_slice = int(sample_rate * slice_ms / 1000)
+    length = len(audio)  # type: ignore[arg-type]
+    if samples_per_slice <= 0 or length == 0:
+        return [audio]
+    slices: list[object] = []
+    cursor = 0
+    while cursor < length:
+        slices.append(audio[cursor : cursor + samples_per_slice])  # type: ignore[index]
+        cursor += samples_per_slice
+    return slices
+
+
 async def _play_audio(chunk: AudioChunk) -> None:
     """Play an audio chunk via sounddevice (or simulate in test).
 
-    This is the low-level playback function.  In production it uses
-    :func:`sovyx.voice._stream_opener.blocking_write_play` (the
-    threadpool-safe ``sd.OutputStream.write`` blocking path); unit
-    tests can patch this function.
+    This is the low-level playback function. In production it slices
+    ``chunk.audio`` into ``_PLAYBACK_SLICE_MS``-millisecond slices and
+    pipes each slice through :func:`sovyx.voice._stream_opener.blocking_write_play`
+    via :func:`asyncio.to_thread`. Between slices the interrupt flag on
+    the calling :class:`AudioOutputQueue` (sourced from the
+    ``_active_queue`` contextvar set by ``play_immediate`` / ``drain``)
+    is polled — if barge-in has fired, playback bails out before the
+    next slice is dispatched (T1.2 / CRITICAL CR2).
 
-    Playback is blocking — a typical TTS chunk takes hundreds of
-    milliseconds to several seconds. Running that inside ``async def``
-    would stall the dashboard WebSocket, voice pipeline frame loop, and
-    every other coroutine for the whole playback. Offload to a worker
-    thread so the event loop stays responsive (anti-pattern #14).
+    Why slicing — pre-T1.2 the entire chunk was written in one
+    ``OutputStream.write(buffer)`` call. PortAudio blocks until the
+    whole buffer is consumed (5+ seconds on a long sentence). The
+    ``interrupt()`` flag was set but never read, so operator barge-in
+    didn't actually stop the audio until the sentence finished. The
+    slice loop bounds the worst-case barge-in latency to
+    ~100-150 ms (one slice in flight + thread-pool dispatch).
+
+    Anti-pattern #14: every blocking PortAudio call is wrapped in
+    :func:`asyncio.to_thread`. Anti-pattern #27: PortAudio errors
+    during slice playback fall through ``contextlib.suppress``
+    (the slice loop terminates and the caller observes a normal return,
+    same contract as the legacy single-write path's
+    ``except sd.PortAudioError`` branch).
 
     ``sd.play`` is deliberately avoided here: on Windows + WASAPI its
     callback engine requires COM on the calling thread, which
@@ -297,14 +415,25 @@ async def _play_audio(chunk: AudioChunk) -> None:
         # ``play_immediate`` triggers an uncaught OSError and fails
         # with no meaningful path forward — same operator-grade
         # contract as the ``ImportError`` branch.
-        if chunk.duration_ms > 0:
-            await asyncio.sleep(chunk.duration_ms / 1000)
+        #
+        # T1.2: still honour interrupt mid-simulation so unit tests
+        # exercising the slice-loop semantics on headless CI observe
+        # the same barge-in behaviour as production.
+        await _simulate_playback_interruptible(chunk.duration_ms)
         return
 
     from sovyx.voice._stream_opener import blocking_write_play
 
+    slices = _slice_audio(chunk.audio, chunk.sample_rate, _PLAYBACK_SLICE_MS)
     try:
-        await asyncio.to_thread(blocking_write_play, sd, chunk.audio, chunk.sample_rate)
+        for slice_buf in slices:
+            if _is_interrupted():
+                logger.debug(
+                    "voice.output_queue.play_audio_interrupted",
+                    **{"voice.chunk_audio_ms": round(float(chunk.duration_ms), 1)},
+                )
+                return
+            await asyncio.to_thread(blocking_write_play, sd, slice_buf, chunk.sample_rate)
     except sd.PortAudioError:
         # Headless server / CI runner with no audio device — sounddevice
         # imports + libportaudio2 loads cleanly, but ``query_devices(-1)``
@@ -316,8 +445,28 @@ async def _play_audio(chunk: AudioChunk) -> None:
         # hardware. This makes integration tests + headless container
         # deployments work without requiring per-test mocking of
         # ``_play_audio``.
-        if chunk.duration_ms > 0:
-            await asyncio.sleep(chunk.duration_ms / 1000)
+        await _simulate_playback_interruptible(chunk.duration_ms)
+
+
+async def _simulate_playback_interruptible(duration_ms: float) -> None:
+    """Sleep ``duration_ms`` total, polling the interrupt flag every slice.
+
+    Mirrors the slice-loop semantics on the headless / no-PortAudio
+    branches of :func:`_play_audio` so unit tests exercising
+    ``play_immediate`` interruption behave identically on CI runners
+    without an audio device and on production hosts with a real one.
+    The slice cadence is governed by :data:`_PLAYBACK_SLICE_MS` so a
+    future widen-the-slice tuning lands on the simulation path too.
+    """
+    if duration_ms <= 0:
+        return
+    remaining = duration_ms
+    while remaining > 0:
+        if _is_interrupted():
+            return
+        sleep_ms = min(remaining, _PLAYBACK_SLICE_MS)
+        await asyncio.sleep(sleep_ms / 1000)
+        remaining -= sleep_ms
 
 
 # ---------------------------------------------------------------------------
