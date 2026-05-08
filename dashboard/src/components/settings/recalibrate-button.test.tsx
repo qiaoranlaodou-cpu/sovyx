@@ -47,7 +47,7 @@ describe("RecalibrateButton", () => {
     // P6 (v0.30.34) — Mission §10.2 #12: the button stays visible
     // when the flag is null/off, just disabled with a tooltip
     // pointing at the flag toggle. Pre-P6 returned null (hidden).
-    render(<RecalibrateButton />);
+    render(<RecalibrateButton mindId="default" />);
     const trigger = screen.getByTestId("settings-recalibrate-toggle");
     expect(trigger).toBeInTheDocument();
     expect(trigger).toBeDisabled();
@@ -57,7 +57,7 @@ describe("RecalibrateButton", () => {
     useDashboardStore.setState({
       calibrationFeatureFlag: { enabled: false, runtime_override_active: false },
     });
-    render(<RecalibrateButton />);
+    render(<RecalibrateButton mindId="default" />);
     const trigger = screen.getByTestId("settings-recalibrate-toggle");
     expect(trigger).toBeInTheDocument();
     expect(trigger).toBeDisabled();
@@ -67,7 +67,7 @@ describe("RecalibrateButton", () => {
     useDashboardStore.setState({
       calibrationFeatureFlag: { enabled: true, runtime_override_active: false },
     });
-    render(<RecalibrateButton />);
+    render(<RecalibrateButton mindId="default" />);
     const trigger = screen.getByTestId("settings-recalibrate-toggle");
     expect(trigger).toBeInTheDocument();
     expect(trigger).not.toBeDisabled();
@@ -88,7 +88,7 @@ describe("RecalibrateButton", () => {
       ),
     );
 
-    render(<RecalibrateButton />);
+    render(<RecalibrateButton mindId="default" />);
     fireEvent.click(screen.getByTestId("settings-recalibrate-toggle"));
     // Confirm button appears
     fireEvent.click(screen.getByTestId("settings-recalibrate-confirm"));
@@ -105,7 +105,7 @@ describe("RecalibrateButton", () => {
     useDashboardStore.setState({
       calibrationFeatureFlag: { enabled: true, runtime_override_active: false },
     });
-    render(<RecalibrateButton />);
+    render(<RecalibrateButton mindId="default" />);
     fireEvent.click(screen.getByTestId("settings-recalibrate-toggle"));
     expect(screen.getByTestId("settings-recalibrate-cancel")).toBeInTheDocument();
     fireEvent.click(screen.getByTestId("settings-recalibrate-cancel"));
@@ -132,7 +132,7 @@ describe("RecalibrateButton", () => {
         platform_supported: false,
       },
     });
-    render(<RecalibrateButton />);
+    render(<RecalibrateButton mindId="default" />);
     const trigger = screen.getByTestId("settings-recalibrate-toggle");
     expect(trigger).toBeInTheDocument();
     expect(trigger).toBeDisabled();
@@ -155,8 +155,47 @@ describe("RecalibrateButton", () => {
         // platform_supported intentionally omitted
       },
     });
-    render(<RecalibrateButton />);
+    render(<RecalibrateButton mindId="default" />);
     const trigger = screen.getByTestId("settings-recalibrate-toggle");
     expect(trigger).not.toBeDisabled();
+  });
+
+  // ════════════════════════════════════════════════════════════════════
+  // v0.31.7 T2.2 — anti-pattern #35 closure (5th occurrence). The
+  // ``mindId`` prop is now REQUIRED; the page mount is responsible
+  // for resolving it from /api/onboarding/state. This regression test
+  // confirms the prop is threaded all the way to the POST body —
+  // i.e. an operator on a real ``meu-mind`` daemon never sees the
+  // calibration profile land at <data_dir>/default/.
+  // ════════════════════════════════════════════════════════════════════
+
+  it("passes the explicit mindId prop through to POST /start (anti-pattern #35)", async () => {
+    useDashboardStore.setState({
+      calibrationFeatureFlag: { enabled: true, runtime_override_active: false },
+    });
+    mockFetch.mockResolvedValueOnce(
+      jsonResponse(
+        {
+          job_id: "meu-mind",
+          stream_url: "/api/voice/calibration/jobs/meu-mind/stream",
+        },
+        202,
+      ),
+    );
+
+    render(<RecalibrateButton mindId="meu-mind" />);
+    fireEvent.click(screen.getByTestId("settings-recalibrate-toggle"));
+    fireEvent.click(screen.getByTestId("settings-recalibrate-confirm"));
+
+    await waitFor(() => expect(mockToastSuccess).toHaveBeenCalled());
+    const postCall = mockFetch.mock.calls.find((c) => {
+      const init = c[1] as RequestInit | undefined;
+      return init?.method === "POST";
+    });
+    expect(postCall).toBeDefined();
+    const body = JSON.parse((postCall![1] as RequestInit).body as string) as {
+      mind_id: string;
+    };
+    expect(body.mind_id).toBe("meu-mind");
   });
 });

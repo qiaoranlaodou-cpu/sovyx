@@ -3,14 +3,21 @@
  * fresh calibration run on the current daemon (per spec §8.5).
  *
  * Operator clicks -> confirm dialog -> POST /api/voice/calibration/start
- * with mind_id="default" -> on HTTP 202, emit a toast pointing the
- * operator at the onboarding wizard step (where progress is rendered).
+ * with the resolved active ``mind_id`` -> on HTTP 202, emit a toast
+ * pointing the operator at the onboarding wizard step (where progress
+ * is rendered).
  *
  * Returns 409 Conflict when a calibration is already in flight; the
  * UI surfaces the conflict gracefully without queuing.
  *
  * History: introduced in v0.30.24 as T3.10/§8.5 wire-up of mission
- * `MISSION-voice-self-calibrating-system-2026-05-05.md`.
+ * `MISSION-voice-self-calibrating-system-2026-05-05.md`. v0.31.7 T2.2
+ * (paranoid round 2 M2 closure) made ``mindId`` a REQUIRED prop —
+ * pre-v0.31.7 the default value was ``"default"`` (anti-pattern #35,
+ * 5th occurrence of the sentinel-mind-id bug class). Page mounts MUST
+ * thread the resolved active mind id from ``/api/onboarding/state`` so
+ * the calibration profile lands at ``<data_dir>/<mind_id>/`` — not at
+ * the orphan ``<data_dir>/default/`` slot.
  */
 
 import { useCallback, useState } from "react";
@@ -21,7 +28,18 @@ import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { useDashboardStore } from "@/stores/dashboard";
 
-export function RecalibrateButton({ mindId = "default" }: { mindId?: string }) {
+export interface RecalibrateButtonProps {
+  /**
+   * Resolved active ``mind_id`` of the daemon. REQUIRED — never default
+   * to ``"default"`` (anti-pattern #35). The page mount is responsible
+   * for fetching ``/api/onboarding/state`` and threading the resolved
+   * value here. The backend's ``_shared.resolve_active_mind_id_for_request``
+   * remains a safety net but should never need to fire on this path.
+   */
+  mindId: string;
+}
+
+export function RecalibrateButton({ mindId }: RecalibrateButtonProps) {
   const { t } = useTranslation(["settings"]);
   const startCalibration = useDashboardStore((s) => s.startCalibration);
   const featureFlag = useDashboardStore((s) => s.calibrationFeatureFlag);

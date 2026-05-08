@@ -211,6 +211,128 @@ describe("SettingsPage", () => {
     });
   });
 
+  // ── v0.31.7 T2.2 — anti-pattern #35 closure (5th occurrence) ──
+  //
+  // SettingsPage now fetches /api/onboarding/state to resolve the
+  // active mind_id and threads it into <RecalibrateButton mindId={...} />.
+  // Pre-v0.31.7 RecalibrateButton defaulted ``mindId="default"`` — a
+  // sentinel value that on a real ``meu-mind`` daemon would land the
+  // calibration profile at <data_dir>/default/ instead of
+  // <data_dir>/meu-mind/. The backend resolver is the safety net but
+  // should never need to fire.
+
+  it("threads resolved mindId from /api/onboarding/state to RecalibrateButton", async () => {
+    // Sequence: settings, config, safety, onboarding-state.
+    mockApi.get
+      .mockResolvedValueOnce(mockSettings)
+      .mockResolvedValueOnce(mockMindConfig)
+      .mockResolvedValueOnce({
+        confirmation_method: "inline",
+        confirmation_channels: [],
+        classification_fallback: "ask",
+      })
+      .mockResolvedValueOnce({
+        complete: true,
+        mind_name: "Real Mind",
+        mind_id: "meu-mind",
+        provider_configured: true,
+        default_provider: "anthropic",
+        default_model: "claude-3",
+        ollama_available: false,
+        ollama_models: [],
+      });
+
+    render(<SettingsPage />);
+    await waitFor(() => {
+      expect(screen.getByText("INFO")).toBeInTheDocument();
+    });
+
+    // Confirm /api/onboarding/state was fetched as part of the page load.
+    const onboardingFetch = mockApi.get.mock.calls.find(
+      (c) => (c[0] as string) === "/api/onboarding/state",
+    );
+    expect(onboardingFetch).toBeDefined();
+  });
+
+  it("warns once when /api/onboarding/state returns null mind_id", async () => {
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      mockApi.get
+        .mockResolvedValueOnce(mockSettings)
+        .mockResolvedValueOnce(mockMindConfig)
+        .mockResolvedValueOnce({
+          confirmation_method: "inline",
+          confirmation_channels: [],
+          classification_fallback: "ask",
+        })
+        .mockResolvedValueOnce({
+          complete: false,
+          mind_name: "Sovyx",
+          mind_id: null,
+          provider_configured: false,
+          default_provider: "",
+          default_model: "",
+          ollama_available: false,
+          ollama_models: [],
+        });
+
+      render(<SettingsPage />);
+      await waitFor(() => {
+        expect(screen.getByText("INFO")).toBeInTheDocument();
+      });
+
+      // The single-fire warn breadcrumb should fire exactly once.
+      await waitFor(() => {
+        const matches = warnSpy.mock.calls.filter((args) =>
+          (args[0] as string).includes("RecalibrateButton"),
+        );
+        expect(matches.length).toBe(1);
+        expect(matches[0]![0]).toContain('"default"');
+      });
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it("does NOT warn when /api/onboarding/state yields a real mind_id", async () => {
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      mockApi.get
+        .mockResolvedValueOnce(mockSettings)
+        .mockResolvedValueOnce(mockMindConfig)
+        .mockResolvedValueOnce({
+          confirmation_method: "inline",
+          confirmation_channels: [],
+          classification_fallback: "ask",
+        })
+        .mockResolvedValueOnce({
+          complete: true,
+          mind_name: "Real Mind",
+          mind_id: "meu-mind",
+          provider_configured: true,
+          default_provider: "anthropic",
+          default_model: "claude-3",
+          ollama_available: false,
+          ollama_models: [],
+        });
+
+      render(<SettingsPage />);
+      await waitFor(() => {
+        expect(screen.getByText("INFO")).toBeInTheDocument();
+      });
+
+      // Allow the warn-once useEffect to settle. With a real mind id
+      // resolved, the warn breadcrumb must NOT fire.
+      await new Promise((r) => setTimeout(r, 0));
+      const matches = warnSpy.mock.calls.filter((args) =>
+        (args[0] as string).includes("RecalibrateButton"),
+      );
+      expect(matches.length).toBe(0);
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
   // ── Zero "Coming in v1.0" on page ──
 
   it("does NOT contain any 'Coming in v1.0' text", async () => {
