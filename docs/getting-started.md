@@ -212,6 +212,10 @@ data flow between bash diag → triage → rule engine → applier. Most
 users never need to read this; it's reference for contributors and
 ops teams running Sovyx in regulated environments.
 
+### Custom wake words
+
+By default Sovyx listens for "Sovyx". If you want each mind to respond to its own name (e.g. "Lúcia", "Jonny"), you have two paths: a no-training STT-fallback path (just edit `mind.yaml`) or a sub-second ONNX-trained path (one `sovyx voice train-wake-word` invocation). Both, with quality-gate thresholds and the OpenWakeWord training hand-off, are documented in [contributing/voice-wake-words.md](contributing/voice-wake-words.md).
+
 ## Common Commands
 
 | Command | Does |
