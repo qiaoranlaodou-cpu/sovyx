@@ -436,3 +436,154 @@ describe("VoiceSetupWizard — save + done", () => {
     expect(screen.queryByText(/All set/)).not.toBeInTheDocument();
   });
 });
+
+describe("VoiceSetupWizard — handleSave structured error parsing (T3.3 / M3.d)", () => {
+  // v0.31.6 T3.3 closure: pre-v0.31.6 a thrown ``ApiError`` whose
+  // ``.message`` carried a JSON body was dumped raw into the operator's
+  // red banner (e.g. ``{"error":"missing_deps","missing_deps":[...]}``).
+  // The fix mirrors VoiceStep::enableWithDevices and parses the JSON
+  // to surface i18n'd messages for known failure modes; falls back to
+  // the raw message for unknown ``error`` codes (or non-JSON bodies)
+  // so operators retain a copy/paste-for-support escape hatch.
+
+  /**
+   * Drive the wizard to the save step, then click Save with the
+   * api.post mock configured to throw an ApiError-shaped Error whose
+   * message is the given JSON string body. Tests assert on the
+   * resulting error-banner copy.
+   */
+  async function _driveToSaveAndError(rawJsonBody: string): Promise<void> {
+    mockGet.mockImplementation((path: string) => {
+      if (path === "/api/voice/wizard/devices") return Promise.resolve(DEVICES_RESPONSE);
+      if (path === "/api/voice/wizard/diagnostic") return Promise.resolve(DIAGNOSTIC_RESPONSE);
+      return Promise.reject(new Error("unknown path"));
+    });
+    mockPost.mockImplementation((path: string) => {
+      if (path === "/api/voice/wizard/test-record") {
+        return Promise.resolve(TEST_RESULT_OK);
+      }
+      if (path === "/api/voice/enable") {
+        // Synthesise an ApiError-equivalent: an Error whose .message
+        // is the raw JSON body. The wizard's catch reads err.message
+        // verbatim (same contract as ApiError exposes), so a plain
+        // Error suffices for the parse-or-fallback branches.
+        return Promise.reject(new Error(rawJsonBody));
+      }
+      return Promise.resolve({});
+    });
+
+    render(<VoiceSetupWizard />);
+    await waitFor(() => {
+      expect(screen.getByText("Built-in Microphone")).toBeInTheDocument();
+    });
+    fireEvent.click(screen.getByText("Built-in Microphone"));
+    fireEvent.click(screen.getByText("Start 3-second recording"));
+    await waitFor(() => {
+      expect(screen.getByText("Save selection")).toBeInTheDocument();
+    });
+    fireEvent.click(screen.getByText("Save selection"));
+    fireEvent.click(screen.getByText("Save"));
+  }
+
+  it("missing_deps surfaces i18n key + comma-joined deps", async () => {
+    await _driveToSaveAndError(
+      JSON.stringify({
+        error: "missing_deps",
+        missing_deps: ["onnxruntime", "soundfile"],
+      }),
+    );
+
+    await waitFor(() => {
+      // i18n EN: "Missing voice dependencies: {{deps}}. Install with: ..."
+      // The {{deps}} interpolation must yield "onnxruntime, soundfile".
+      expect(
+        screen.getByText(/Missing voice dependencies: onnxruntime, soundfile/),
+      ).toBeInTheDocument();
+    });
+    // The raw JSON must NOT appear — operator should never see the
+    // body dumped into the banner.
+    expect(screen.queryByText(/"missing_deps"/)).not.toBeInTheDocument();
+  });
+
+  it("missing_deps with object-shaped deps normalises to module names", async () => {
+    // VoiceStep contract: missing_deps may arrive as
+    // [{ module, package }, ...] instead of plain strings. The
+    // wizard's fallback must extract the ``module`` field rather
+    // than dump "[object Object]".
+    await _driveToSaveAndError(
+      JSON.stringify({
+        error: "missing_deps",
+        missing_deps: [
+          { module: "onnxruntime", package: "onnxruntime" },
+          { module: "soundfile", package: "soundfile" },
+        ],
+      }),
+    );
+
+    await waitFor(() => {
+      expect(
+        screen.getByText(/Missing voice dependencies: onnxruntime, soundfile/),
+      ).toBeInTheDocument();
+    });
+  });
+
+  it("capture_silence surfaces dedicated i18n key", async () => {
+    await _driveToSaveAndError(JSON.stringify({ error: "capture_silence" }));
+
+    await waitFor(() => {
+      expect(
+        screen.getByText(/Mic captured silence/),
+      ).toBeInTheDocument();
+    });
+    expect(screen.queryByText(/"capture_silence"/)).not.toBeInTheDocument();
+  });
+
+  it("capture_device_contended surfaces dedicated i18n key", async () => {
+    await _driveToSaveAndError(
+      JSON.stringify({
+        error: "capture_device_contended",
+        alternatives: [{ index: 1, name: "Alt mic" }],
+      }),
+    );
+
+    await waitFor(() => {
+      expect(
+        screen.getByText(/Mic device is in use by another application/),
+      ).toBeInTheDocument();
+    });
+    expect(
+      screen.queryByText(/"capture_device_contended"/),
+    ).not.toBeInTheDocument();
+  });
+
+  it("unknown error code falls back to raw message (copy/paste escape hatch)", async () => {
+    // Unknown ``error`` field — the wizard preserves the raw body so
+    // an operator opening a support ticket can copy/paste verbatim.
+    const rawBody = JSON.stringify({
+      error: "some_unmapped_failure",
+      detail: "garbled backend response",
+    });
+    await _driveToSaveAndError(rawBody);
+
+    await waitFor(() => {
+      // Raw JSON surfaces (the fallback path) — operator sees the
+      // ``some_unmapped_failure`` string verbatim. Match on the
+      // unique error-code substring, not the JSON braces (which are
+      // i18n-stable but visually noisy in this assertion).
+      expect(
+        screen.getByText(/some_unmapped_failure/),
+      ).toBeInTheDocument();
+    });
+  });
+
+  it("non-JSON message falls back to raw message", async () => {
+    // ApiError.message can be a plain text body (e.g. proxy 502).
+    // JSON.parse fails, so the fallback path engages and surfaces
+    // the raw text verbatim.
+    await _driveToSaveAndError("Bad Gateway");
+
+    await waitFor(() => {
+      expect(screen.getByText("Bad Gateway")).toBeInTheDocument();
+    });
+  });
+});

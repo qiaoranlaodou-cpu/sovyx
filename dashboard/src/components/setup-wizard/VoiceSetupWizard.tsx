@@ -279,9 +279,69 @@ export function VoiceSetupWizard({
         });
       }
     } catch (err) {
+      // v0.31.6 T3.3 (M3.d) closure: pre-v0.31.6 the catch surfaced
+      // ``err.message`` raw — but ``ApiError.message`` carries the
+      // backend's JSON body (FastAPI structured error responses), so
+      // operators saw `{"error":"missing_deps","missing_deps":[...]}`
+      // dumped into the red banner. Mirror VoiceStep::enableWithDevices
+      // (onboarding/VoiceStep.tsx) and parse the JSON to surface
+      // structured, i18n'd messages for the known failure modes;
+      // fall back to the raw message on parse failure or unknown
+      // ``error`` codes (operator can copy/paste for support).
       const message =
         err instanceof Error ? err.message : "Failed to enable voice";
-      dispatch({ type: "error", message });
+      let parsed:
+        | { error?: string; missing_deps?: unknown; alternatives?: unknown[] }
+        | null = null;
+      try {
+        const candidate: unknown = JSON.parse(message);
+        if (candidate && typeof candidate === "object" && !Array.isArray(candidate)) {
+          parsed = candidate as {
+            error?: string;
+            missing_deps?: unknown;
+            alternatives?: unknown[];
+          };
+        }
+      } catch {
+        parsed = null;
+      }
+
+      if (parsed?.error === "missing_deps" && Array.isArray(parsed.missing_deps)) {
+        // ``missing_deps`` may arrive as either a list of strings
+        // (legacy / wizard contract) OR a list of ``{module, package}``
+        // objects (VoiceStep contract). Normalise to comma-separated
+        // ``module`` names so the operator sees something like
+        // "onnxruntime, soundfile" instead of "[object Object]".
+        const deps = parsed.missing_deps
+          .map((d) => {
+            if (typeof d === "string") return d;
+            if (d && typeof d === "object" && "module" in d) {
+              const mod = (d as { module?: unknown }).module;
+              return typeof mod === "string" ? mod : "";
+            }
+            return "";
+          })
+          .filter((s) => s.length > 0)
+          .join(", ");
+        dispatch({
+          type: "error",
+          message: t("wizard.error.missing_deps", { deps }),
+        });
+      } else if (parsed?.error === "capture_silence") {
+        dispatch({
+          type: "error",
+          message: t("wizard.error.capture_silence"),
+        });
+      } else if (parsed?.error === "capture_device_contended") {
+        dispatch({
+          type: "error",
+          message: t("wizard.error.capture_device_contended"),
+        });
+      } else {
+        // Unknown error — fall back to raw message (operator can
+        // copy/paste for support).
+        dispatch({ type: "error", message });
+      }
     }
   };
 
