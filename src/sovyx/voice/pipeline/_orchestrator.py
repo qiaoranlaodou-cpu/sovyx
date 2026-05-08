@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Any
 
 from sovyx.engine.config import VoiceTuningConfig as _VoiceTuning
 from sovyx.engine.errors import VoiceError
+from sovyx.engine.types import MindId
 from sovyx.observability.logging import get_logger
 from sovyx.observability.saga import SagaHandle, begin_saga, end_saga
 from sovyx.observability.tasks import spawn
@@ -71,7 +72,6 @@ if TYPE_CHECKING:
     import numpy.typing as npt
 
     from sovyx.engine.events import EventBus
-    from sovyx.engine.types import MindId
     from sovyx.voice._aec import RenderPcmSink
     from sovyx.voice._wake_word_router import WakeWordRouter
     from sovyx.voice.health._self_feedback import SelfFeedbackGate
@@ -1109,12 +1109,36 @@ class VoicePipeline:
         timestamps and elevates cooldown to ``cooldown_max_seconds``
         when the rolling-window count crosses the threshold.
 
+        v0.32.0 / Round-3 paranoid audit C1 — multi-mind dispatch.
+        When ``self._wake_word_router is not None`` (multi-mind mode)
+        AND ``self._current_mind_id`` resolves to a router-matched
+        detector, dispatch via :meth:`WakeWordRouter.note_false_fire`
+        so the matched mind's adaptive cooldown window increments.
+        Pre-fix (v0.31.x) the orchestrator always called
+        ``self._wake_word.note_false_fire()`` — the single fallback
+        detector that NEVER fired in multi-mind mode — which corrupted
+        the per-mind sliding window: the matched mind's window stayed
+        empty while an unrelated detector's window over-counted.
+
         Best-effort: a wake-word detector that doesn't expose
         ``note_false_fire`` (e.g. the factory's no-op stub when
         ``wake_word_enabled=False``) is silently skipped. The
         orchestrator's other false-fire paths (counter + log event)
         still fire regardless.
         """
+        # Multi-mind path — dispatch to the matched mind's detector via
+        # the router. ``_current_mind_id`` is always populated (defaults
+        # to ``config.mind_id`` at construction; router match overrides
+        # per turn at ``_handle_idle``); the router silently no-ops on
+        # unknown mind_ids so a stale/cleared mind_id is safe.
+        if self._wake_word_router is not None:
+            try:
+                self._wake_word_router.note_false_fire(MindId(self._current_mind_id))
+            except Exception:  # noqa: BLE001 — observability path must not break the pipeline
+                logger.exception("voice.wake_word.note_false_fire_failed")
+            return
+
+        # Single-mind path — fall through to the legacy detector.
         notify = getattr(self._wake_word, "note_false_fire", None)
         if notify is None:
             return

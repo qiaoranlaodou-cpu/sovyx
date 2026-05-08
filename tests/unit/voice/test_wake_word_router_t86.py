@@ -524,3 +524,131 @@ class TestResetAll:
 
         router.reset_all()
         assert router.state_for(MindId("aria")) == WakeWordState.IDLE
+
+
+# ── v0.32.0 / Round-3 paranoid audit C1 ──────────────────────────────
+#
+# The orchestrator's ``_notify_wake_word_false_fire`` MUST dispatch
+# to the matched mind's detector via the router (not to the single
+# fallback ``self._wake_word`` instance) when running in multi-mind
+# mode. Pre-v0.32.0 the call always hit ``self._wake_word.note_false_fire``
+# — which is the no-op stub in multi-mind mode — corrupting the
+# adaptive-cooldown sliding window per mind.
+
+
+class TestNotifyWakeWordFalseFireC1:
+    """Pin the v0.32.0 C1 dispatch contract.
+
+    * Multi-mind mode (router wired) → forward to matched mind's
+      detector via :meth:`WakeWordRouter.note_false_fire`.
+    * Single-mind mode (no router) → fall through to legacy
+      ``self._wake_word.note_false_fire`` (regression check).
+    """
+
+    def test_note_false_fire_routes_to_matched_mind(self) -> None:
+        """Multi-mind: orchestrator dispatches to matched mind via router."""
+        from unittest.mock import AsyncMock
+
+        from sovyx.voice.pipeline._config import VoicePipelineConfig
+        from sovyx.voice.pipeline._orchestrator import VoicePipeline
+
+        # Build a router with two minds; both have adaptive cooldown
+        # enabled so note_false_fire actually appends to the window.
+        config_ww = WakeWordConfig(cooldown_adaptive_enabled=True)
+        router = WakeWordRouter()
+        for mind_id in ["mind_a", "mind_b"]:
+            mock_ort = MagicMock()
+            mock_ort.SessionOptions.return_value = MagicMock()
+            mock_ort.GraphOptimizationLevel.ORT_ENABLE_ALL = 99
+            mock_ort.InferenceSession.return_value = _mock_onnx_session([0.1])
+            with patch.dict("sys.modules", {"onnxruntime": mock_ort}):
+                router.register_mind(
+                    MindId(mind_id),
+                    model_path=Path(f"/fake/{mind_id}.onnx"),
+                    config=config_ww,
+                )
+
+        # Construct an orchestrator with the router wired + a single
+        # detector stub that ALSO exposes note_false_fire so we can
+        # prove the call did NOT hit the stub.
+        single_detector_stub = MagicMock()
+        single_detector_stub.note_false_fire = MagicMock()
+
+        config = VoicePipelineConfig(mind_id="mind_a")
+        pipeline = VoicePipeline(
+            config=config,
+            vad=MagicMock(),
+            wake_word=single_detector_stub,
+            stt=AsyncMock(),
+            tts=AsyncMock(),
+            wake_word_router=router,
+        )
+        # Simulate a router-driven match: _handle_idle would set
+        # _current_mind_id to the matched mind. Here we set it
+        # directly to mind_a.
+        pipeline._current_mind_id = "mind_a"  # noqa: SLF001
+
+        # Trigger the false-fire signal three times (would correspond
+        # to three consecutive STT-rejected utterances).
+        for _ in range(3):
+            pipeline._notify_wake_word_false_fire()  # noqa: SLF001
+
+        # mind_a's adaptive-cooldown window has 3 entries.
+        mind_a = router._detectors[MindId("mind_a")]  # noqa: SLF001
+        mind_b = router._detectors[MindId("mind_b")]  # noqa: SLF001
+        assert len(mind_a._false_fire_monotonics) == 3  # noqa: PLR2004, SLF001
+        # mind_b is untouched (sibling detector NOT corrupted).
+        assert len(mind_b._false_fire_monotonics) == 0  # noqa: SLF001
+        # And the single detector stub was NEVER called — multi-mind
+        # path took precedence.
+        single_detector_stub.note_false_fire.assert_not_called()
+
+    def test_note_false_fire_falls_through_to_single_detector_when_no_router(
+        self,
+    ) -> None:
+        """Single-mind: orchestrator falls through to legacy detector."""
+        from unittest.mock import AsyncMock
+
+        from sovyx.voice.pipeline._config import VoicePipelineConfig
+        from sovyx.voice.pipeline._orchestrator import VoicePipeline
+
+        single_detector_stub = MagicMock()
+        single_detector_stub.note_false_fire = MagicMock()
+
+        config = VoicePipelineConfig(mind_id="default-mind")
+        pipeline = VoicePipeline(
+            config=config,
+            vad=MagicMock(),
+            wake_word=single_detector_stub,
+            stt=AsyncMock(),
+            tts=AsyncMock(),
+            wake_word_router=None,  # Single-mind mode.
+        )
+
+        pipeline._notify_wake_word_false_fire()  # noqa: SLF001
+
+        # Legacy path took effect — the stub got the call.
+        single_detector_stub.note_false_fire.assert_called_once_with()
+
+    def test_note_false_fire_router_unknown_mind_silent(self) -> None:
+        """Stale ``_current_mind_id`` (mind unregistered between match
+        and STT verification) — router silently no-ops; orchestrator
+        does NOT raise."""
+        from unittest.mock import AsyncMock
+
+        from sovyx.voice.pipeline._config import VoicePipelineConfig
+        from sovyx.voice.pipeline._orchestrator import VoicePipeline
+
+        # Empty router — no minds registered.
+        router = WakeWordRouter()
+        config = VoicePipelineConfig(mind_id="ghost-mind")
+        pipeline = VoicePipeline(
+            config=config,
+            vad=MagicMock(),
+            wake_word=MagicMock(),
+            stt=AsyncMock(),
+            tts=AsyncMock(),
+            wake_word_router=router,
+        )
+        # Should not raise, even with no detectors registered.
+        pipeline._notify_wake_word_false_fire()  # noqa: SLF001

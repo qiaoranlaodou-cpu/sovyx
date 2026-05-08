@@ -32,6 +32,37 @@ daemon's loop. ``run_coroutine_threadsafe`` returns a
 the calling thread until the coroutine completes on the target loop —
 exactly the contract we need.
 
+v0.32.0 / Round-3 paranoid audit C2 — single-flight pattern + tightened
+timeout
+-------
+Pre-v0.32.0 the bridge used a hardcoded 5.0 s timeout, which exceeded
+the STT-fallback inter-call spacing of ~2 s (25 frames × 80 ms). A
+pathological STT engine stall blocked the audio-thread worker for up
+to 5 s — exceeding the spacing budget by 2.5×. Two fixes ship in
+v0.32.0:
+
+1. **Tightened default timeout** — moved to
+   ``EngineConfig.tuning.voice.stt_fallback_timeout_seconds`` (default
+   1.5 s, < 2 s spacing). Floor 0.1 s, ceiling 10.0 s; operators can
+   opt back into the legacy 5.0 s via env override if their cloud STT
+   needs the headroom, accepting that the worker may stall up to that
+   ceiling on a single pathological call.
+
+2. **Single-flight pattern** — when a transcribe call is already in
+   flight, subsequent calls during the in-flight window return ``""``
+   immediately + emit a structured ``voice.stt_fallback.dropped_overlapping_call``
+   event. The audio-thread worker is therefore bounded at most one
+   timeout per spacing window: even if a single call exceeds the 1.5 s
+   timeout, no second worker is starved waiting behind it. The drop is
+   safe because the detector's per-frame match logic treats ``""`` as
+   a no-match (see ``_wake_word_stt_fallback.py:322-325``).
+
+The single-flight flag is a ``threading.Lock``-guarded boolean (NOT
+``asyncio.Lock`` — the contention is across audio-thread workers, not
+loop-bound coroutines). The shared ``asyncio.Lock`` (``lock`` arg)
+still serialises in-flight transcribe coroutines on the daemon loop
+for R1 defense-in-depth against undocumented C-library concurrency.
+
 Failure isolation: every error path returns an empty string so the
 detector's per-frame match logic treats it as a no-match (see
 ``_wake_word_stt_fallback.py:322-325``: the detector wraps
@@ -44,13 +75,14 @@ codepath.
 
 Reference: master mission §Phase 8 / T8.17-T8.19; mission spec
 research artefacts R1 (MoonshineSTT contract) + R2 (bridge primitive
-survey).
+survey); v0.32.0 Round-3 paranoid audit C2.
 """
 
 from __future__ import annotations
 
 import asyncio
 import concurrent.futures
+import threading
 from typing import TYPE_CHECKING
 
 from sovyx.observability.logging import get_logger
@@ -66,14 +98,24 @@ if TYPE_CHECKING:
 logger = get_logger(__name__)
 
 
-_DEFAULT_TIMEOUT_S: float = 5.0
-"""Per-call transcribe timeout. Calibrated against the STT-fallback
-inter-call spacing (~2 s default per
-``STTWakeWordConfig.stt_call_interval_frames=25 frames × 80 ms``).
-A 5 s timeout gives Moonshine + cloud STTs comfortable headroom
-(Moonshine tiny ≈ 240 ms, small ≈ 530 ms; cloud STT ≈ 200-400 ms).
-Operators tune via the ``timeout_s`` argument when calling the
-factory; the default is the safe upper bound."""
+def _default_timeout_seconds() -> float:
+    """Read the bridge timeout from ``EngineConfig.tuning.voice``.
+
+    Lazy resolution at builder-construction time: the env-driven value
+    (``SOVYX_TUNING__VOICE__STT_FALLBACK_TIMEOUT_SECONDS``) is read
+    once when ``make_stt_fallback_transcribe_fn`` is called without an
+    explicit ``timeout_s`` override. Wrapped in a try/except so test
+    code that constructs the bridge without a full ``EngineConfig``
+    available falls back to the safe in-spacing-budget default.
+    """
+    try:
+        from sovyx.engine.config import VoiceTuningConfig  # noqa: PLC0415
+
+        return float(VoiceTuningConfig().stt_fallback_timeout_seconds)
+    except Exception:  # noqa: BLE001 — defensive: never fail the bridge construction
+        # In-spacing-budget safe default. Mirrors the EngineConfig
+        # field default (1.5 s, < 25 × 80 ms = 2 s spacing).
+        return 1.5
 
 
 def make_stt_fallback_transcribe_fn(
@@ -81,7 +123,7 @@ def make_stt_fallback_transcribe_fn(
     engine: STTEngine,
     loop: asyncio.AbstractEventLoop,
     lock: asyncio.Lock,
-    timeout_s: float = _DEFAULT_TIMEOUT_S,
+    timeout_s: float | None = None,
 ) -> Callable[[npt.NDArray[np.float32]], str]:
     """Build the sync transcribe wrapper expected by STTWakeWordDetector.
 
@@ -100,19 +142,36 @@ def make_stt_fallback_transcribe_fn(
             R1 verified that ``moonshine_voice.Transcriber.create_stream``
             is per-call-fresh but the underlying C library doesn't
             document concurrency; the lock is defense-in-depth.
-        timeout_s: Per-call hard deadline. Defaults to 5 s. Timeouts
-            cancel the underlying future (best-effort) and return "".
+        timeout_s: Per-call hard deadline. ``None`` (default) reads
+            ``EngineConfig.tuning.voice.stt_fallback_timeout_seconds``
+            (default 1.5 s, < 2 s spacing). Operators tune via env
+            ``SOVYX_TUNING__VOICE__STT_FALLBACK_TIMEOUT_SECONDS=...``;
+            tests pass an explicit float. Timeouts cancel the
+            underlying future (best-effort) and return "".
 
     Returns:
         A synchronous ``Callable[[NDArray[np.float32]], str]`` matching
         the contract at ``_wake_word_stt_fallback.py:74``. Pass this
         directly to :meth:`WakeWordRouter.register_mind_stt_fallback`.
 
-    The returned callable is reentrant-safe: each invocation creates a
-    fresh ``concurrent.futures.Future`` via
-    :func:`asyncio.run_coroutine_threadsafe`; the lock serialises the
-    actual ``await engine.transcribe(...)`` work on the target loop.
+    The returned callable implements a single-flight pattern: when one
+    call is in flight, concurrent calls from other audio-thread workers
+    return ``""`` immediately + emit a structured
+    ``voice.stt_fallback.dropped_overlapping_call`` event. The drop is
+    safe because the detector treats ``""`` as no-match. This bounds
+    the audio-thread starvation surface at most one timeout per
+    spacing window — see module docstring for the v0.32.0 / Round-3
+    paranoid audit C2 rationale.
     """
+    effective_timeout = timeout_s if timeout_s is not None else _default_timeout_seconds()
+
+    # Single-flight gate. ``threading.Lock`` (NOT ``asyncio.Lock``)
+    # because the contention is across audio-thread workers running
+    # ``transcribe_sync`` on different threads, not loop-bound
+    # coroutines. The boolean flag is the SOLE single-flight signal —
+    # the lock just serialises flag mutations.
+    in_flight_lock = threading.Lock()
+    in_flight = {"value": False}
 
     async def _do_transcribe(audio: npt.NDArray[np.float32]) -> str:
         """Engine-side coroutine. Runs on the daemon's main loop."""
@@ -133,59 +192,87 @@ def make_stt_fallback_transcribe_fn(
         ``.result(timeout)``. Failure isolation: every error path
         returns ``""`` so the detector treats it as a no-match
         instead of bubbling up + deafening the wake-word path.
+
+        Single-flight: when another worker is already waiting on a
+        transcribe future, returns ``""`` immediately + emits a
+        structured drop event.
         """
-        coro = _do_transcribe(audio)
-        try:
-            future = asyncio.run_coroutine_threadsafe(coro, loop)
-        except RuntimeError:
-            # Loop is closed / not running; treat as no-match. Close
-            # the orphaned coroutine to avoid a RuntimeWarning at GC
-            # time ("coroutine was never awaited") — clean cleanup
-            # matches the failure-isolation contract.
-            coro.close()
-            logger.debug(
-                "voice.stt_fallback.bridge.loop_unavailable",
-                **{"voice.action": "no-match"},
-            )
-            return ""
+        # ── single-flight gate ───────────────────────────────────────
+        with in_flight_lock:
+            if in_flight["value"]:
+                # Another worker is mid-transcribe. Drop this call
+                # immediately so we don't pile up audio-thread
+                # workers behind a single pathological STT stall.
+                logger.debug(
+                    "voice.stt_fallback.dropped_overlapping_call",
+                    **{
+                        "voice.action": "no-match",
+                        "voice.reason": (
+                            "in-flight transcribe; single-flight bridge dropped overlap"
+                        ),
+                    },
+                )
+                return ""
+            in_flight["value"] = True
 
         try:
-            return future.result(timeout=timeout_s)
-        except concurrent.futures.TimeoutError:
-            # Try to cancel the future best-effort; the detector
-            # treats no-match the same regardless.
-            future.cancel()
-            logger.warning(
-                "voice.stt_fallback.bridge.timeout",
-                **{
-                    "voice.timeout_s": timeout_s,
-                    "voice.action": "no-match",
-                },
-            )
-            return ""
-        except concurrent.futures.CancelledError:
-            logger.debug(
-                "voice.stt_fallback.bridge.cancelled",
-                **{"voice.action": "no-match"},
-            )
-            return ""
-        except Exception as exc:  # noqa: BLE001 — failure isolation by design
-            # Engine raised (e.g. RuntimeError from _ensure_ready when
-            # the engine got closed mid-call, OSError on a transient
-            # device failure, etc.). Detector contract is "transcribe
-            # may raise; we treat as no-match" — but we go one step
-            # further and absorb the exception INSIDE the bridge so
-            # the detector's wider blanket-except never fires for
-            # bridge-related issues.
-            logger.warning(
-                "voice.stt_fallback.bridge.engine_error",
-                **{
-                    "voice.error": str(exc),
-                    "voice.error_type": type(exc).__name__,
-                    "voice.action": "no-match",
-                },
-            )
-            return ""
+            coro = _do_transcribe(audio)
+            try:
+                future = asyncio.run_coroutine_threadsafe(coro, loop)
+            except RuntimeError:
+                # Loop is closed / not running; treat as no-match.
+                # Close the orphaned coroutine to avoid a
+                # RuntimeWarning at GC time ("coroutine was never
+                # awaited") — clean cleanup matches the
+                # failure-isolation contract.
+                coro.close()
+                logger.debug(
+                    "voice.stt_fallback.bridge.loop_unavailable",
+                    **{"voice.action": "no-match"},
+                )
+                return ""
+
+            try:
+                return future.result(timeout=effective_timeout)
+            except concurrent.futures.TimeoutError:
+                # Try to cancel the future best-effort; the detector
+                # treats no-match the same regardless.
+                future.cancel()
+                logger.warning(
+                    "voice.stt_fallback.bridge.timeout",
+                    **{
+                        "voice.timeout_s": effective_timeout,
+                        "voice.action": "no-match",
+                    },
+                )
+                return ""
+            except concurrent.futures.CancelledError:
+                logger.debug(
+                    "voice.stt_fallback.bridge.cancelled",
+                    **{"voice.action": "no-match"},
+                )
+                return ""
+            except Exception as exc:  # noqa: BLE001 — failure isolation by design
+                # Engine raised (e.g. RuntimeError from _ensure_ready
+                # when the engine got closed mid-call, OSError on a
+                # transient device failure, etc.). Detector contract
+                # is "transcribe may raise; we treat as no-match" —
+                # but we go one step further and absorb the
+                # exception INSIDE the bridge so the detector's
+                # wider blanket-except never fires for bridge-related
+                # issues.
+                logger.warning(
+                    "voice.stt_fallback.bridge.engine_error",
+                    **{
+                        "voice.error": str(exc),
+                        "voice.error_type": type(exc).__name__,
+                        "voice.action": "no-match",
+                    },
+                )
+                return ""
+        finally:
+            with in_flight_lock:
+                in_flight["value"] = False
 
     return transcribe_sync
 
