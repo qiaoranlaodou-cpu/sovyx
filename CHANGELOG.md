@@ -6,7 +6,57 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ## [Unreleased]
 
-(none — every shipped delta is in v0.32.0 below)
+(none — every shipped delta is in v0.32.1 below)
+
+## [0.32.1] — 2026-05-08
+
+CI infrastructure patch. Production source code is **byte-identical**
+to v0.32.0 (the wheel + sdist content from this release matches v0.32.0
+content exactly when re-built — ``src/sovyx/`` was not touched in v0.32.1).
+
+Released to clean up the v0.32.0 release state: v0.32.0 was tagged,
+published to PyPI, then re-tagged twice with test-only fixes (macOS
+hotplug contract update + Windows audio service event-dispatch race
++ observability test capture multi-line tolerant parsing). The
+re-tag pattern (CLAUDE.md Deploy Flow #5) leaves PyPI with the
+first publish, but the `Publish to PyPI` workflow exits red on every
+re-tag (PyPI rejects same-version re-upload). v0.32.1 ships the test
+fixes properly so the CI workflow exits green and the GitHub Release
+matches the latest tagged commit.
+
+### Fixed (tests only — no runtime behaviour change)
+
+- ``tests/unit/voice/health/test_watchdog.py::test_macos_returns_noop_in_sprint_2``
+  was renamed to ``test_macos_returns_subprocess_adapter_post_v0_32_0``
+  and updated to reflect the v0.32.0 HIGH-1 contract change. Mocks
+  the config at the SOURCE module per anti-pattern #38 lazy-import
+  awareness.
+
+- ``tests/unit/voice/health/test_audio_service_win.py``: ``_drive_polls``
+  helper now accepts an ``expected_events`` kwarg + waits on BOTH
+  query-call counter AND event-handler-dispatch counter being
+  satisfied. Closes a flake-class race observed on Windows CI: the
+  query-call counter increments synchronously while the event handler
+  is async; previously ``monitor.stop()`` could cancel the in-flight
+  handler before the event landed in ``capture.events``. Tests
+  ``test_running_to_stopped_emits_down``, ``test_stopped_to_running_emits_up``,
+  ``test_full_flap_running_down_up_emits_two_events`` updated.
+
+- ``tests/unit/observability/test_logging.py::_capture_log`` now
+  parses the captured buffer line-by-line + filters by event name
+  instead of assuming exactly one log line landed in the capture
+  window. Closes a flake-class macOS CI failure where a long-lived
+  task (e.g. v0.32.0 CR3 heartbeat timer) emitted to the same root
+  handler during the capture window, producing a buffer with two
+  JSON documents.
+
+### Notes
+
+- Zero ``src/sovyx/`` or ``dashboard/src/`` modifications in v0.32.1.
+- ``uv.lock``, ``pyproject.toml``, ``CHANGELOG.md`` only at the
+  package level; the rest is test-file changes.
+- All 4 platform Test gates (macOS / Windows / sovyx-4core 3.11 /
+  sovyx-4core 3.12) now stable across CI workflows.
 
 ## [0.32.0] — 2026-05-08
 
