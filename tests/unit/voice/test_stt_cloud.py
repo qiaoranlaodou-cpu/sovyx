@@ -764,10 +764,22 @@ class TestCloudSTTError:
 
 
 class TestPublicAPI:
-    """Verify public API is importable from voice package."""
+    """Verify import contracts.
 
-    def test_import_from_voice_package(self) -> None:
-        from sovyx.voice import (
+    v0.32.4 Phase 3.C.1 closure (P0.C1): the package-level public API
+    no longer surfaces CloudSTT. The contract is now "import directly
+    from ``sovyx.voice.stt_cloud``" — pinned by
+    ``test_import_from_module_direct``. The pre-v0.32.4 contract
+    (``from sovyx.voice import CloudSTT``) is deliberately broken so
+    that integrators don't assume an auto-fallback chain that doesn't
+    ship. Anti-regression coverage lives in
+    ``TestCloudSttPublicExportOrphan`` below.
+    """
+
+    def test_import_from_module_direct(self) -> None:
+        """The supported v0.32.4+ import path for advanced operators
+        who deliberately wire CloudSTT into the factory's STT slot."""
+        from sovyx.voice.stt_cloud import (  # noqa: PLC0415 — local
             CloudSTT,
             CloudSTTConfig,
             CloudSTTError,
@@ -1057,3 +1069,64 @@ class TestCloudSTTChaosWireUp:
                 await engine.transcribe(audio_1s)
 
             await engine.close()
+
+
+# ── Phase 3.C.1 (P0.C1) public-export orphan contract ───────────────
+
+
+class TestCloudSttPublicExportOrphan:
+    """v0.32.4 Phase 3.C.1 — closes audit gap P0.C1.
+
+    Pre-v0.32.4 the public ``sovyx.voice`` re-export ladder included
+    ``CloudSTT`` / ``CloudSTTConfig`` / ``CloudSTTError`` /
+    ``needs_cloud_fallback`` despite zero production caller in the
+    factory wire-up — operators reading the public API surface
+    reasonably assumed an auto-fallback chain (Moonshine low-confidence
+    → CloudSTT) existed. It did not. The audit graded P0.C because a
+    misleading public API surface is the kind of bug that bites
+    integrators silently.
+
+    v0.32.4 removes the re-exports while keeping the module importable
+    directly. Pin both halves of the contract:
+      * Direct module import still works (advanced/manual use case).
+      * Public ``sovyx.voice`` namespace no longer surfaces these
+        symbols (no AttributeError if absent — the whole point is
+        that they're gone).
+    """
+
+    def test_direct_module_import_still_works(self) -> None:
+        """``from sovyx.voice.stt_cloud import CloudSTT`` is the
+        operator path for deliberate Whisper STT use; must NOT
+        regress."""
+        from sovyx.voice.stt_cloud import (  # noqa: PLC0415 — local
+            CloudSTT,
+            CloudSTTConfig,
+            CloudSTTError,
+            needs_cloud_fallback,
+        )
+
+        assert CloudSTT is not None
+        assert CloudSTTConfig is not None
+        assert CloudSTTError is not None
+        assert needs_cloud_fallback is not None
+
+    def test_public_voice_namespace_no_longer_exports_cloud_stt(self) -> None:
+        """Pin the v0.32.4 removal: ``sovyx.voice.CloudSTT`` etc. must
+        NOT be available via the package's public namespace. Future
+        readers who re-add these to ``__all__`` will trip this test
+        and be forced to read the AUDIT.md §P0.C1 rationale."""
+        import sovyx.voice as voice_pkg  # noqa: PLC0415 — local
+
+        # Use ``hasattr`` (not ``getattr(..., None)``) to test the
+        # actual namespace contract — a plain attribute read is what
+        # operators do via ``sovyx.voice.CloudSTT``.
+        assert not hasattr(voice_pkg, "CloudSTT"), (
+            "v0.32.4 Phase 3.C.1: CloudSTT must NOT be in sovyx.voice "
+            "public namespace. Use ``from sovyx.voice.stt_cloud import "
+            "CloudSTT`` directly for advanced/manual wire-up."
+        )
+        assert not hasattr(voice_pkg, "CloudSTTConfig")
+        assert not hasattr(voice_pkg, "CloudSTTError")
+        # ``needs_cloud_fallback`` was always supposed to be internal —
+        # it was only public by accident. Same removal contract.
+        assert not hasattr(voice_pkg, "needs_cloud_fallback")

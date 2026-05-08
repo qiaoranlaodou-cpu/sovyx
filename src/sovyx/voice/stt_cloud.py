@@ -1,9 +1,39 @@
-"""CloudSTT — OpenAI Whisper API fallback for speech-to-text.
+"""CloudSTT — OpenAI Whisper API STT engine (BYOK).
+
+⚠️  v0.32.4 Phase 3.C.1 status: NOT auto-wired into the production
+factory. Pre-v0.32.4 the public ``sovyx.voice`` re-export ladder
+included ``CloudSTT`` / ``CloudSTTConfig`` / ``CloudSTTError`` /
+``needs_cloud_fallback`` despite zero production caller — operators
+reading the public API surface reasonably assumed an auto-fallback
+chain (Moonshine returns low-confidence → CloudSTT picks it up).
+That assumption was incorrect: ``needs_cloud_fallback`` exists as a
+helper but nothing in the factory invokes it.
+
+To eliminate the misleading public surface without breaking advanced
+operators who already instantiate ``CloudSTT`` directly, v0.32.4:
+
+  * Removes ``CloudSTT`` / ``CloudSTTConfig`` / ``CloudSTTError`` /
+    ``needs_cloud_fallback`` from ``sovyx.voice`` re-exports.
+  * Keeps the module importable from
+    ``from sovyx.voice.stt_cloud import CloudSTT`` for operators who
+    DELIBERATELY want Whisper API STT (they pass ``CloudSTT`` to the
+    factory's STT slot directly + provide their own ``api_key``).
+  * Documents the auto-fallback chain as a Phase 4+ feature target —
+    the wire-up requires:
+      a) a confidence-threshold gate around ``MoonshineSTT.transcribe``,
+      b) an API-key resolver (env / mind config / dashboard secret),
+      c) a fallback path that doesn't double-charge the operator on
+         every false-positive (Moonshine confidence is genuinely low
+         on noise even when speech IS present).
+    None of (a)/(b)/(c) ship today.
 
 BYOK (Bring Your Own Key) integration with OpenAI's Whisper API.
-Used as fallback when local STT confidence is below threshold.
+Used as a STAND-ALONE STT engine — pass to the factory's STT slot
+explicitly via custom integration code; not auto-engaged on
+Moonshine low-confidence.
 
-Ref: SPE-010 §5 (STT), IMPL-SUP-008 (cloud infra)
+Ref: SPE-010 §5 (STT), IMPL-SUP-008 (cloud infra),
+``MISSION-voice-zero-defect-2026-05-08.md`` §P0.C1.
 """
 
 from __future__ import annotations

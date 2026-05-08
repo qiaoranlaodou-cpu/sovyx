@@ -49,7 +49,13 @@ from sovyx.voice.stt import (
     TranscriptionResult,
     TranscriptionSegment,
 )
-from sovyx.voice.stt_cloud import CloudSTT, CloudSTTConfig, CloudSTTError, needs_cloud_fallback
+
+# v0.32.4 Phase 3.C.1 — CloudSTT is no longer re-exported here. The
+# module is genuinely orphan in production (no factory wire-up + no
+# auto-fallback chain from MoonshineSTT). Operators who deliberately
+# want Whisper API STT must import from ``sovyx.voice.stt_cloud``
+# directly — that interface is documented for advanced/manual use.
+# See module docstring + AUDIT.md §P0.C1.
 from sovyx.voice.tts_kokoro import KokoroConfig, KokoroTTS
 from sovyx.voice.tts_piper import AudioChunk, PiperConfig, PiperTTS, TTSEngine
 from sovyx.voice.vad import SileroVAD, VADConfig, VADEvent, VADState
@@ -86,9 +92,12 @@ __all__ = [
     "select_models",
     "AudioCaptureConfig",
     "AudioChunk",
-    "CloudSTT",
-    "CloudSTTConfig",
-    "CloudSTTError",
+    # v0.32.4 Phase 3.C.1 — CloudSTT / CloudSTTConfig / CloudSTTError
+    # removed from public exports (still importable from
+    # ``sovyx.voice.stt_cloud`` directly for operators who deliberately
+    # wire it up). The auto-fallback chain referenced in past docstrings
+    # was never shipped; removing the re-export prevents future readers
+    # from assuming an automatic Moonshine→Whisper fallback exists.
     "AudioDucker",
     "AudioOutput",
     "AudioOutputConfig",

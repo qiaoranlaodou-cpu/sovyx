@@ -339,8 +339,13 @@ class STTEngine(ABC):
     """Abstract base for speech-to-text engines.
 
     Implementations:
-    - MoonshineSTT (local, default)
-    - CloudSTT (OpenAI Whisper API fallback — V05-25)
+    - :class:`MoonshineSTT` (local, default — auto-wired by the factory).
+    - :class:`sovyx.voice.stt_cloud.CloudSTT` (OpenAI Whisper API,
+      BYOK). v0.32.4 Phase 3.C.1 clarification: NOT auto-wired into
+      the factory; operators who want Whisper STT must instantiate
+      and pass ``CloudSTT`` to the factory's STT slot explicitly. The
+      auto-fallback chain (Moonshine low-confidence → CloudSTT) is a
+      Phase 4+ feature target, not a current capability.
     """
 
     @abstractmethod
