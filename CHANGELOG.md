@@ -6,7 +6,192 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ## [Unreleased]
 
-(none — every shipped delta is in v0.31.7 below)
+(none — every shipped delta is in v0.32.0 below)
+
+## [0.32.0] — 2026-05-08
+
+Structural closure mission. Operator delegated full autonomous
+decision authority. v0.32.0 closes 4 deferred categories from
+v0.31.7 (anti-pattern #35 structural mitigation, Phase 8 mission
+doc drift, STRICT-mode signing flip prerequisite, 4 paranoid
+audits round 3) — 5 CRITICAL + 2 HIGH + 1 MEDIUM bugs surfaced
+by the audits and closed in this release.
+
+Mission spec: ``docs-internal/missions/MISSION-voice-v0_32_0-structural-closure-2026-05-08.md``.
+
+### Added
+
+- **`useResolvedMindId()` hook** + sister `useOnboardingState()`
+  in ``dashboard/src/hooks/use-resolved-mind-id.ts``. Single
+  source of truth for resolving the operator's active mind id
+  via ``/api/onboarding/state``. Module-level singleton +
+  ``useSyncExternalStore`` binding — single network call per page
+  lifetime regardless of how many consumers mount. Replaces
+  duplicated fetch logic between ``pages/onboarding.tsx``,
+  ``pages/settings.tsx``, ``pages/overview.tsx``.
+
+- **ESLint rule** in ``dashboard/eslint.config.js`` blocking
+  literal ``mindId="default"`` and ``mind_id="default"`` in JSX
+  + default-param positions. Closes anti-pattern #35
+  STRUCTURALLY (5 occurrences across v0.31.x). Allowlist for
+  ``tests/`` + ``**/*.test.{ts,tsx}``.
+
+- **`sovyx voice generate-signing-key` CLI command** + dashboard
+  wizard step in settings page. Generates Ed25519 keypair for
+  calibration profile signing. Persists private key to
+  ``<data_dir>/<mind_id>/calibration.signing-key.priv`` (PKCS8
+  PEM, 0o600 POSIX) + public key (SubjectPublicKeyInfo PEM,
+  0o644 POSIX). Per-mind ``_SIGNING_KEY_LOCKS: LRULockDict``
+  serialises concurrent POSTs (mirrors ``_START_LOCKS`` pattern).
+  ``voice.calibration.signing_key.generated{source, mode,
+  mind_id_hash, fingerprint_short}`` event for adoption telemetry.
+  This is the **prerequisite** for STRICT-mode default flip in
+  v0.33.0+ — per ``_signing.py:26-31``, flipping STRICT default
+  before this surface lands would break every existing operator's
+  unsigned profile load.
+
+- **`docs/contributing/voice-wake-words.md`** — operator-actionable
+  guide covering openWakeWord training, phonetic-only fallback via
+  MindConfig.wake_word, community contribution path. Corrects
+  mission spec misstatement on openWakeWord license (Apache 2.0
+  for code + CC BY-NC-SA 4.0 for shipped pretrained models).
+
+### Fixed (Phase C — paranoid audit round 3 closures)
+
+- **Wake-word C1 (CRITICAL): Multi-mind false-fire dispatched to
+  wrong detector.** ``_orchestrator.py::_notify_wake_word_false_fire``
+  used the single-fallback ``self._wake_word.note_false_fire``
+  even in router mode. Adaptive cooldown sliding window per mind
+  was corrupted: matched mind's window never incremented; an
+  unrelated detector over-counted. Fix: dispatch via
+  ``self._wake_word_router.note_false_fire(MindId(self.
+  _current_mind_id))`` when router wired; fall through to legacy
+  single-detector path otherwise.
+
+- **Wake-word C2 (CRITICAL): STT-fallback bridge timeout (5s)
+  blocked audio thread.** ``transcribe_sync`` ran on the audio
+  thread; a 5s STT stall starved one audio-thread worker for the
+  full duration, exceeding the 2s call-spacing window. Dual-defense
+  fix: (a) tighten timeout to 1.5s default via new
+  ``EngineConfig.tuning.voice.stt_fallback_timeout_seconds`` field
+  (bounds [0.1, 10.0]); (b) single-flight gate via
+  ``threading.Lock`` — overlapping calls drop with
+  ``voice.stt_fallback.dropped_overlapping_call`` event.
+
+- **Plugin Sandbox C1 (CRITICAL): SSRF via 30x redirect bypass.**
+  Pre-v0.32.0 SandboxedHttpClient ran ``_validate_url`` only on
+  the original URL; httpx's auto-follow with
+  ``follow_redirects=True`` bypassed allowlist + private-IP
+  checks for redirect targets. Attack: 302 →
+  ``http://169.254.169.254/`` (AWS metadata). Fix: manual
+  redirect walker — ``follow_redirects=False`` + new
+  ``_request_with_redirect_validation`` re-runs ``_validate_url``
+  on every hop. Method semantics match ``requests``: 301/302/303
+  downgrade POST→GET + strip body + body-headers; 307/308
+  preserve.
+
+- **Plugin Sandbox C2 (CRITICAL): unload/reload tore down plugin
+  while tools mid-execution.** In-flight ``execute()`` coroutines
+  held HTTP clients + sandbox enforcers; teardown stripped
+  ``_health`` entries → AttributeError in finally + module-cache
+  clearing orphaned in-flight handlers. Fix: per-plugin
+  ``_in_flight_tasks: dict[str, set[Task]]`` registered in
+  ``execute()`` via ``done_callback``. New
+  ``unload(name, *, timeout=30.0)`` /
+  ``reload(name, *, timeout=30.0)`` /
+  ``reconfigure(name, config, *, timeout=30.0)`` drain in-flight
+  tasks via cooperative ``asyncio.wait`` + 1s force-cancel grace
+  per task BEFORE teardown. Self-deadlock guard: current task is
+  excluded from wait set. ``plugin.unload.waiting_for_tasks`` +
+  ``plugin.unload.forced_cancel`` events.
+
+- **Plugin Sandbox C3 (CRITICAL): ImportGuard race in concurrent
+  execution.** ``sys.meta_path`` is process-global; two concurrent
+  guards from different plugins could race
+  ``insert``/``remove`` — plugin A's guard could be uninstalled
+  by plugin B's exit, leaving A executing without import
+  enforcement. Fix: module-level
+  ``_META_PATH_LOCK = threading.Lock()`` wraps install/uninstall.
+  Used ``threading.Lock`` not ``asyncio.Lock`` because import
+  hooks may fire from sync contexts (``asyncio.to_thread``
+  workers).
+
+- **Plugin Sandbox M1 (MEDIUM): entry-point auto-load supply
+  chain.** Pre-v0.32.0 ``_discover_entry_points`` called
+  ``ep.load()`` directly — a malicious pip package could register
+  a ``sovyx.plugins`` entry point + auto-load on next daemon
+  start with full process privilege at import time. Fix:
+  default-deny supply-chain gate via new
+  ``EngineConfig.plugins.allow_third_party_plugins: bool = False``
+  + ``trusted_plugin_packages: list[str] = []`` (operator
+  opt-in). First-party (``ep.dist.name == "sovyx"``) always
+  loads. Pre-load ``_resolve_ep_dist_name`` is fail-closed: empty
+  string on any error → never matches first-party or allowlist.
+  ``plugin.entry_point.skipped_third_party{package, reason}``
+  events.
+
+- **macOS HIGH-1: hotplug listener was Noop stub.** Sprint 4 /
+  Task #28 (native ``AudioObjectAddPropertyListener``) deferred;
+  AirPods disconnect / Bluetooth route changes / USB mic unplug
+  weren't detected. Fix: new
+  ``_SubprocessHotplugListenerAdapter`` bridges the existing
+  ``MacosHotplugSubprocessWatchdog`` to the ``HotplugListener``
+  protocol. ``EngineConfig.tuning.voice.voice_macos_hotplug
+  _subprocess_enabled`` flipped to platform-conditional ON for
+  darwin (``Field(default_factory=lambda: sys.platform ==
+  "darwin")``). Cost: ~0.2% CPU at 30s polling interval.
+
+- **macOS HIGH-2: ``voice_check_mic_permission_enabled`` was
+  default OFF.** TCC silent-deny was the canonical fresh-install
+  failure mode but the gate was dormant. Fix: platform-conditional
+  default flipped ON for darwin only. Linux stays OFF (PulseAudio/
+  PipeWire/ALSA handle ACLs at kernel layer). Windows stays OFF
+  as soak-debt — registry-based detection has known false-positive
+  cases that haven't been telemetry-validated.
+
+### Fixed (Phase B — structural mitigations)
+
+- **Anti-pattern #35 (5 occurrences) STRUCTURALLY closed via
+  ``useResolvedMindId`` hook + ESLint rule.** No more recurrence
+  vector — every page-level mind-id consumer routes through one
+  resolver; lint fires at edit time on any literal sentinel.
+
+- **Phase 8 mission doc drift fix.** ``MISSION-voice-final-skype-
+  grade-2026.md`` claimed ``All 22 closed`` while the per-task
+  table showed T8.11 + T8.22 unmarked. 5 sites flipped to
+  ``20 of 22``; new ``Phase 8 — Deferred items`` section
+  documents T8.11 (100-name pre-trained wake-word pool) +
+  T8.22 (multi-mind voice GA tag) blockers explicitly.
+
+### Notes
+
+- 11 commits + bump. ruff/mypy strict (514 src files)/bandit
+  (0 issues)/tsc clean. Vitest 1299 passed (junit-confirmed
+  zero failures, zero errors). Pytest run in progress at tag
+  time — affected suites all green during incremental runs.
+- v0.32.0 is **strictly behaviour-improving** with these specific
+  caveats:
+  - macOS operators on darwin will see ``VoicePermissionError``
+    at startup if TCC has previously denied microphone — this
+    is the operator's actual problem to fix, not a regression.
+  - macOS operators will see ~0.2% CPU usage from
+    ``system_profiler`` polling. Override via
+    ``SOVYX_TUNING__VOICE__VOICE_MACOS_HOTPLUG_SUBPROCESS_ENABLED=False``.
+  - Plugin operators: third-party pip packages registering
+    ``sovyx.plugins`` entry points will now SKIP unless added to
+    ``EngineConfig.plugins.trusted_plugin_packages``. Default-deny
+    supply-chain gate.
+- STRICT-mode signing flip remains v0.33.0+ work — v0.32.0
+  ships only the prerequisite (key generation surface).
+  Telemetry event ``voice.calibration.signing_key.generated``
+  is the adoption signal that gates the future flip.
+- Operator validation gate: re-run on canonical Sony VAIO + Mint
+  + Razer to confirm (a) calibration page shows new "Voice
+  signing key" card; (b) ``sovyx voice generate-signing-key``
+  CLI command completes; (c) wake-word in multi-mind mode
+  correctly routes false-fire signals; (d) STT-fallback under
+  slow-STT conditions doesn't starve audio thread; (e) plugin
+  reload during voice session waits for in-flight tools.
 
 ## [0.31.7] — 2026-05-08
 
