@@ -394,8 +394,18 @@ def _safe_mind_id(pipeline: Any) -> str:  # noqa: ANN401
         config = getattr(pipeline, "_config", None)
         if config is not None:
             return str(getattr(config, "mind_id", "default"))
-    except Exception:  # noqa: BLE001
-        pass
+    except Exception as exc:  # noqa: BLE001
+        # v0.32.6 Phase 5.B — anti-pattern #27 conversion. Reading
+        # private attrs is best-effort defensive (the pipeline contract
+        # may evolve); the fallback to ``"default"`` keeps the call
+        # site safe but the debug log gives visibility into recurring
+        # private-attribute access failures during dev.
+        logger.debug(
+            "voice.failover.safe_mind_id_failed",
+            pipeline_type=type(pipeline).__name__,
+            error=str(exc),
+            error_type=type(exc).__name__,
+        )
     return "default"
 
 
@@ -436,8 +446,17 @@ def _resolve_target_safe(
         )
         if entry is not None and entry.canonical_name:
             excluded_physical = (entry.canonical_name,)
-    except Exception:  # noqa: BLE001 — physical exclusion is best-effort only
-        pass
+    except Exception as exc:  # noqa: BLE001 — physical exclusion is best-effort only
+        # v0.32.6 Phase 5.B — anti-pattern #27 conversion. Without the
+        # physical exclusion the failover may try to re-open the same
+        # endpoint that just failed (one extra ineligible candidate);
+        # not catastrophic but the debug log helps diagnose if this
+        # path becomes the dominant cause of a failover loop.
+        logger.debug(
+            "voice.failover.physical_exclusion_failed",
+            error=str(exc),
+            error_type=type(exc).__name__,
+        )
 
     try:
         target = select_alternative_endpoint(
@@ -463,7 +482,16 @@ def _resolve_target_safe(
             if entry.canonical_name not in excluded_physical
             and not quarantine.is_quarantined(entry.canonical_name)
         )
-    except Exception:  # noqa: BLE001
-        pass
+    except Exception as exc:  # noqa: BLE001
+        # v0.32.6 Phase 5.B — anti-pattern #27 conversion. The
+        # candidates-remaining count drives the dashboard's "next
+        # restart will exhaust the chain" badge; failure here leaves
+        # the count at its initial 0 (under-reports), which is the
+        # safer default. Log for diagnostic visibility.
+        logger.debug(
+            "voice.failover.candidates_remaining_count_failed",
+            error=str(exc),
+            error_type=type(exc).__name__,
+        )
 
     return target, candidates_remaining, None

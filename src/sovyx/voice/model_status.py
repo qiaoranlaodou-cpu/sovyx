@@ -154,15 +154,24 @@ def check_voice_models_status(
         # with an opaque parse error and the wizard offers no recovery,
         # so we require a non-zero size before declaring victory.
         installed = False
+        # v0.32.6 Phase 5.B — anti-pattern #27 conversion. Pre-fix this
+        # was raw ``try/except: pass`` with an inline comment; converted
+        # to ``contextlib.suppress`` + ``logger.debug`` so a recurring
+        # mid-race vanish becomes greppable in dev mode without flooding
+        # production at WARN.
+        stat: object | None = None
         try:
             stat = path.stat()
-        except OSError:
-            # Missing or vanished mid-race — leave installed=False.
-            pass
-        else:
-            if stat.st_size > 0:
-                installed = True
-                size_mb = round(stat.st_size / (1024 * 1024), 1)
+        except OSError as exc:
+            logger.debug(
+                "voice.model_status.path_stat_failed",
+                path=str(path),
+                error=str(exc),
+                error_type=type(exc).__name__,
+            )
+        if stat is not None and stat.st_size > 0:  # type: ignore[attr-defined]
+            installed = True
+            size_mb = round(stat.st_size / (1024 * 1024), 1)  # type: ignore[attr-defined]
 
         if not installed and info.download_available:
             missing_count += 1

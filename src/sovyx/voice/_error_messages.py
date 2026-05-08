@@ -607,8 +607,17 @@ def _emit_translation_metric(error_class: str) -> None:
         )
 
         record_audio_error_translated(error_class=error_class)
-    except Exception:  # noqa: BLE001 — best-effort by design
-        pass
+    except Exception as exc:  # noqa: BLE001 — best-effort by design
+        # v0.32.6 Phase 5.B — anti-pattern #27 conversion. Metric
+        # record failure is genuinely benign (telemetry, not control
+        # flow) so the silent ignore stays; the debug log gives dev-
+        # mode visibility into recurring metric-emit gaps.
+        logger.debug(
+            "voice.error_translation.metric_record_failed",
+            error_class=error_class,
+            error=str(exc),
+            error_type=type(exc).__name__,
+        )
 
 
 def translation_count() -> int:
