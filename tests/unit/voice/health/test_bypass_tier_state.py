@@ -19,6 +19,7 @@ from sovyx.voice.health._bypass_tier_state import (
     mark_tier1_raw_outcome,
     mark_tier2_host_api_rotate_attempted,
     mark_tier2_host_api_rotate_outcome,
+    mark_tier_disengaged,
     reset_for_tests,
     snapshot,
 )
@@ -205,8 +206,11 @@ class TestMixedScenarios:
         for _ in range(2):
             mark_strategy_verdict(strategy="win.wasapi_exclusive", verdict="applied_still_dead")
 
+        # v0.32.3 Phase 3.B.2.c — current_bypass_tier now tracks the
+        # most-recently-engaged tier (was perpetually None pre-fix).
+        # Tier 3 was the last engage in this scenario, so it stamps 3.
         assert snapshot() == {
-            "current_bypass_tier": None,
+            "current_bypass_tier": 3,
             "tier1_raw_attempted": 5,
             "tier1_raw_succeeded": 3,
             "tier2_host_api_rotate_attempted": 4,
@@ -214,3 +218,88 @@ class TestMixedScenarios:
             "tier3_wasapi_exclusive_attempted": 6,
             "tier3_wasapi_exclusive_succeeded": 4,
         }
+
+
+class TestCurrentBypassTierEngageTracking:
+    """v0.32.3 Phase 3.B.2.c — closes audit gap P0.B5.
+
+    Pre-fix ``current_bypass_tier`` was perpetually ``None`` (a v0.27.0
+    deferral that landed 5 versions late). The success-verdict filters
+    in the tier-specific helpers already isolated the engage moment;
+    Phase 3.B.2.c added the field-write inside each filter branch +
+    a ``mark_tier_disengaged`` reset for the revert path.
+
+    Pin every transition the dashboard renders against:
+      * No engage → ``None``
+      * Tier 1 RAW success → 1
+      * Tier 2 rotate success → 2 (overrides Tier 1)
+      * Tier 3 WASAPI exclusive success → 3 (overrides Tier 2)
+      * Disengage → ``None``
+    """
+
+    def setup_method(self) -> None:
+        reset_for_tests()
+
+    def test_no_engage_means_current_tier_none(self) -> None:
+        """Attempts without success must not stamp the engaged tier."""
+        mark_tier1_raw_attempted()
+        mark_tier2_host_api_rotate_attempted()
+        # No success verdicts fired; current_bypass_tier should stay None.
+        assert snapshot()["current_bypass_tier"] is None
+
+    def test_tier1_success_stamps_engaged_tier_1(self) -> None:
+        mark_tier1_raw_attempted()
+        mark_tier1_raw_outcome("raw_engaged")
+        assert snapshot()["current_bypass_tier"] == 1
+
+    def test_tier1_failure_does_not_stamp_engaged_tier(self) -> None:
+        mark_tier1_raw_attempted()
+        mark_tier1_raw_outcome("property_rejected_by_driver")
+        assert snapshot()["current_bypass_tier"] is None
+
+    def test_tier2_success_overrides_tier1(self) -> None:
+        mark_tier1_raw_outcome("raw_engaged")
+        assert snapshot()["current_bypass_tier"] == 1
+        mark_tier2_host_api_rotate_outcome(
+            phase_a_verdict="rotated_success",
+            phase_b_verdict="exclusive_engaged",
+        )
+        assert snapshot()["current_bypass_tier"] == 2
+
+    def test_tier3_success_overrides_tier2(self) -> None:
+        mark_tier2_host_api_rotate_outcome(
+            phase_a_verdict="rotated_success",
+            phase_b_verdict="exclusive_engaged",
+        )
+        assert snapshot()["current_bypass_tier"] == 2
+        mark_strategy_verdict(strategy="win.wasapi_exclusive", verdict="applied_healthy")
+        assert snapshot()["current_bypass_tier"] == 3
+
+    def test_tier3_unhealthy_does_not_stamp(self) -> None:
+        mark_tier1_raw_outcome("raw_engaged")
+        mark_strategy_verdict(strategy="win.wasapi_exclusive", verdict="applied_still_dead")
+        # Verdict was not the success token; Tier 1 stamp persists.
+        assert snapshot()["current_bypass_tier"] == 1
+
+    def test_disengage_resets_to_none(self) -> None:
+        mark_strategy_verdict(strategy="win.wasapi_exclusive", verdict="applied_healthy")
+        assert snapshot()["current_bypass_tier"] == 3
+        mark_tier_disengaged()
+        assert snapshot()["current_bypass_tier"] is None
+
+    def test_disengage_idempotent_when_already_none(self) -> None:
+        assert snapshot()["current_bypass_tier"] is None
+        mark_tier_disengaged()
+        assert snapshot()["current_bypass_tier"] is None
+
+    def test_disengage_does_not_decrement_counters(self) -> None:
+        """Disengage only resets the engaged-tier badge; lifecycle
+        counters accumulate over the daemon lifetime regardless."""
+        mark_tier1_raw_attempted()
+        mark_tier1_raw_outcome("raw_engaged")
+        before = snapshot()
+        mark_tier_disengaged()
+        after = snapshot()
+        assert after["current_bypass_tier"] is None
+        assert after["tier1_raw_attempted"] == before["tier1_raw_attempted"]
+        assert after["tier1_raw_succeeded"] == before["tier1_raw_succeeded"]
