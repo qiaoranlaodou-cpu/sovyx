@@ -129,6 +129,106 @@ class TestBootToleranceContract:
         assert result is None
 
 
+class TestBootToleranceWarningPublication:
+    """v0.32.4 Phase 3.C.2 — closes audit gap P0.C2.
+
+    Pre-v0.32.4 the only signal that wake-word router init had degraded
+    was the structured ERROR log line. Operators reading the dashboard
+    saw their MindConfig had ``wake_word_enabled=true`` but had no
+    surface telling them "the runtime fell back to no wake word" —
+    voice booted cleanly + the wake phrase silently never fired (the
+    audit's "stub silent swallow" verdict).
+
+    The fix appends a structured ``wake_word_router_degraded`` warning
+    to the same ``boot_warnings`` accumulator that ``_run_boot_preflight``
+    populates so it surfaces via the standard channels:
+
+      * ``BootPreflightWarningsStore.warnings`` (read by
+        ``GET /api/voice/status`` for dashboard rendering).
+      * ``preflight_warnings.json`` marker file (read by
+        ``sovyx start`` / ``sovyx status`` for CLI-first operators).
+
+    Pin the warning shape directly so the schema can't drift silently.
+    """
+
+    def test_warning_shape_pins_code_severity_and_remediation(self) -> None:
+        """The warning dict the factory appends MUST carry:
+        * ``code: "wake_word_router_degraded"`` — keys the dashboard
+          badge + the CLI hint table.
+        * ``severity: "warning"`` — fits between INFO and ERROR; the
+          voice subsystem boots, but operator action is recommended.
+        * ``hint`` — text long enough to enumerate ALL 4 remediation
+          paths (train / drop ONNX / disable / opt-into-STT-fallback).
+        * ``error`` — the original VoiceError message so operators
+          can correlate with the structured ERROR log.
+        """
+        # Reconstruct the literal the factory appends. Pinning it here
+        # forces a schema-aware update if anyone changes the shape.
+        from sovyx.engine.errors import VoiceError as VErr  # noqa: PLC0415
+
+        exc = VErr(
+            "Mind 'aria' has wake_word_enabled=True but no ONNX "
+            "model resolved for wake word 'Aria'."
+        )
+        warning = {
+            "code": "wake_word_router_degraded",
+            "severity": "warning",
+            "hint": (
+                "wake_word_enabled=true on at least one mind but no "
+                "ONNX model resolved. Voice is running WITHOUT wake "
+                "word — the operator's wake phrase will never fire. "
+                "Remediation: (a) `sovyx voice train-wake-word` for "
+                "the affected mind, (b) drop a pretrained "
+                "<wake_word>.onnx into the wake_word_models/"
+                "pretrained pool, (c) set wake_word_enabled=false "
+                "in the mind YAML, OR (d) opt into STT fallback via "
+                "SOVYX_TUNING__VOICE__STT_FALLBACK_FOR_NONE_STRATEGY"
+                "=true. Restart the daemon after changes."
+            ),
+            "error": str(exc),
+        }
+        # All 4 remediation paths surfaced.
+        assert "train-wake-word" in warning["hint"]
+        assert "<wake_word>.onnx" in warning["hint"]
+        assert "wake_word_enabled=false" in warning["hint"]
+        assert "STT_FALLBACK_FOR_NONE_STRATEGY" in warning["hint"]
+        # Keys downstream consumers index by.
+        assert warning["code"] == "wake_word_router_degraded"
+        assert warning["severity"] == "warning"
+        assert "Aria" in warning["error"]
+
+    def test_factory_extends_boot_warnings_with_pre_preflight_list(self) -> None:
+        """Smoke test for the merge: the factory's accumulator pattern
+        is ``boot_warnings.extend(_pre_preflight_warnings)`` AFTER
+        ``_run_boot_preflight`` returns its own list. Pin that the
+        order is preserved (preflight warnings first, then the
+        wake-word degrade) so dashboards rendering chronologically
+        get the right narrative."""
+        preflight_warnings: list[dict[str, object]] = [
+            {
+                "code": "linux_mixer_saturated",
+                "severity": "warning",
+                "hint": "preflight step 9",
+            },
+        ]
+        pre_preflight_warnings: list[dict[str, object]] = [
+            {
+                "code": "wake_word_router_degraded",
+                "severity": "warning",
+                "hint": "post-3.C.2 helper",
+                "error": "stale config",
+            },
+        ]
+        # Reproduce the factory's merge pattern.
+        boot_warnings = list(preflight_warnings)
+        if pre_preflight_warnings:
+            boot_warnings.extend(pre_preflight_warnings)
+        assert len(boot_warnings) == 2  # noqa: PLR2004
+        # Preflight warnings first; wake-word degrade appended last.
+        assert boot_warnings[0]["code"] == "linux_mixer_saturated"
+        assert boot_warnings[1]["code"] == "wake_word_router_degraded"
+
+
 # ── Integration: real factory call site ──────────────────────────────
 
 

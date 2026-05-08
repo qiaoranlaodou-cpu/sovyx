@@ -744,6 +744,13 @@ async def create_voice_pipeline(
     )
 
     wake_word_router = None
+    # v0.32.4 Phase 3.C.2 — pre-preflight warning accumulator. The
+    # wake-word router init at the catch path below appends here when
+    # it degrades to ``router=None``; the list is merged into the main
+    # ``boot_warnings`` accumulator before the BootPreflightWarningsStore
+    # publishes the snapshot. List (not tuple) so the catch path can
+    # mutate.
+    _pre_preflight_warnings: list[dict[str, object]] = []
     if data_dir is not None:
         from sovyx.engine.errors import VoiceError  # noqa: PLC0415
 
@@ -805,6 +812,43 @@ async def create_voice_pipeline(
                 },
             )
             wake_word_router = None
+            # v0.32.4 Phase 3.C.2 closure (audit gap P0.C2): pre-fix the
+            # only signal of this degrade was the structured ERROR log
+            # above. Operators reading the dashboard saw
+            # ``wake_word_enabled=true`` in their MindConfig but had no
+            # surface for "the runtime fell back to no wake word". This
+            # produced the audit's "silent swallow" verdict — voice
+            # boots cleanly, the dashboard implies wake word is on, but
+            # the operator's "Hey Aria" never fires.
+            #
+            # Capture a structured warning here + thread it through the
+            # ``boot_preflight_warnings`` accumulator so
+            # ``GET /api/voice/status`` (which reads the warnings
+            # snapshot from ``BootPreflightWarningsStore``) surfaces a
+            # ``wake_word_router_degraded`` badge that operators can
+            # see + act on. The persisted marker file
+            # (``preflight_warnings.json``) also picks it up so CLI-
+            # first operators see it on ``sovyx start`` / ``sovyx
+            # status`` too.
+            _pre_preflight_warnings.append(
+                {
+                    "code": "wake_word_router_degraded",
+                    "severity": "warning",
+                    "hint": (
+                        "wake_word_enabled=true on at least one mind but no "
+                        "ONNX model resolved. Voice is running WITHOUT wake "
+                        "word — the operator's wake phrase will never fire. "
+                        "Remediation: (a) `sovyx voice train-wake-word` for "
+                        "the affected mind, (b) drop a pretrained "
+                        "<wake_word>.onnx into the wake_word_models/"
+                        "pretrained pool, (c) set wake_word_enabled=false "
+                        "in the mind YAML, OR (d) opt into STT fallback via "
+                        "SOVYX_TUNING__VOICE__STT_FALLBACK_FOR_NONE_STRATEGY"
+                        "=true. Restart the daemon after changes."
+                    ),
+                    "error": str(exc),
+                },
+            )
 
     # ── 5. Resolve device + detect capture APOs BEFORE the pipeline ──
     # The detector result (``voice_clarity_active``) is threaded into
@@ -1183,6 +1227,13 @@ async def create_voice_pipeline(
     # v1.3 §-1C #1 alt (e): a passing preflight cleans any marker
     # written by a prior saturated boot.
     boot_warnings = await _run_boot_preflight(tuning=tuning)
+    # v0.32.4 Phase 3.C.2 — merge pre-preflight warnings (currently
+    # only the wake-word-router-degraded code from the catch path
+    # above) into the same accumulator so they surface through the
+    # standard channels (BootPreflightWarningsStore + the persisted
+    # marker file). Empty list when no degrade fired.
+    if _pre_preflight_warnings:
+        boot_warnings.extend(_pre_preflight_warnings)
     for warning in boot_warnings:
         logger.warning(
             "voice_pipeline_boot_preflight_warning",
