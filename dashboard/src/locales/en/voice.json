@@ -548,6 +548,67 @@
       "ws_connection_error": "Calibration WebSocket connection error"
     }
   },
+  "qualityPanel": {
+    "loading": "Loading voice quality snapshot…",
+    "errorPrefix": "Voice quality snapshot unavailable: {{error}}",
+    "errorBody": "The endpoint returns 503 until the engine registry is ready. Enable voice (or wait a few seconds) and the panel populates automatically on the next 5-second poll.",
+    "snr": {
+      "title": "Capture SNR distribution",
+      "p50Label": "p50 = <0>{{value}} dB</0> · {{count}}",
+      "sampleSingular": "sample in window",
+      "samplePlural": "samples in window",
+      "noSamples": "No samples in the rolling 10-second window.",
+      "thresholds": {
+        "excellent": "<0>≥17 dB</0> excellent",
+        "good": "<0>9-17 dB</0> good",
+        "degraded": "<0>3-9 dB</0> degraded",
+        "poor": "<0>&lt;3 dB</0> poor"
+      },
+      "verdict": {
+        "excellent": "Excellent",
+        "good": "Good",
+        "degraded": "Degraded",
+        "poor": "Poor",
+        "noSignal": "Warming up"
+      },
+      "verdictDescription": {
+        "excellent": "Studio-grade capture. Moonshine + Silero operate at calibrated rates.",
+        "good": "Typical office desk mic with HVAC running. <1% STT degradation.",
+        "degraded": "Loud open-plan office, fan close to mic. STT substitution rate climbs ~3-5× per dB lost. Move the mic 30 cm closer or enable in-process noise suppression.",
+        "poor": "Mic in a noisy environment (cafe, vehicle). STT becomes unreliable; VAD onset latency climbs. Move the mic, enable noise suppression, or relocate the speaker.",
+        "noSignal": "No SNR samples in the rolling 10-second window. Typical right after boot or during a long silence run. The panel updates automatically once speech frames flow."
+      }
+    },
+    "mos": {
+      "title": "Voice quality MOS",
+      "awaitingSamples": "Awaiting samples",
+      "snrProxyDetail": "SNR-proxy estimate (1 + SNR/7), derived from p50 = {{snr}} dB",
+      "dnsmosDetail": "DNSMOS p50 = {{mos}}",
+      "scaleHint": "MOS scale: 1.0 (poor) — 4.5 (excellent). Skype/Zoom acceptable threshold is ≥ 3.5; below 3.0 is \"poor\" per ITU-T P.800.",
+      "proxyDisclaimerTitle": "SNR-proxy mode (DNSMOS extras not installed)",
+      "proxyDisclaimerBody": "Sovyx ships without the optional ``dnsmos`` extras because the package is large + Windows-build-flaky. Until you install them, the MOS reading above is an SNR-derived estimate, NOT a real DNSMOS DNN inference. To enable true DNSMOS:",
+      "proxyDisclaimerStep1": "<0>pip install \"sovyx[dnsmos]\"</0> (or your package manager equivalent).",
+      "proxyDisclaimerStep2": "Restart the daemon. The endpoint flips ``dnsmos_extras_installed`` to ``true`` on the next poll and this disclaimer disappears.",
+      "proxyDisclaimerStep3": "The DNSMOS T4.23-T4.30 wire-up sequence (heartbeat p50/p95, alert thresholds 3.5 / 3.0, bucketing, drift) is operator-gated to keep the SNR-proxy path simple for users who don't care about DNN-based MOS.",
+      "dnsmosLiveBadge": "DNSMOS extras detected — reading is live DNN inference."
+    },
+    "drift": {
+      "title": "Noise-floor drift baseline",
+      "driftLine": "Drift = <0>{{value}}</0> <1>(short {{shortDb}} dB vs long {{longDb}} dB)</1>",
+      "driftMissing": "—",
+      "driftFormula": "Drift = mean(short window, ~60 s) − mean(long window, ~5 min). Alert fires when sustained drift exceeds the configured threshold (default 10 dB) for the configured de-flap count (default 3 heartbeats).",
+      "warmingUp": "Warming up — long-window baseline needs ~5 minutes of samples before drift is meaningful ({{count}} collected)."
+    },
+    "agc2": {
+      "title": "AGC2 controller",
+      "currentGain": "Current gain",
+      "speechLevelEst": "Speech level est.",
+      "framesProcessed": "Frames processed",
+      "vadSilenced": "VAD-silenced",
+      "vadSilencedNote": "``frames_vad_silenced`` counts frames where the T4.52 VAD-feedback gate vetoed an estimator update. Non-zero only when ``voice_agc2_vad_feedback_enabled = True``.",
+      "notActive": "AGC2 not active — voice pipeline isn't running OR ``voice_agc2_enabled`` is False."
+    }
+  },
   "setupModal": {
     "trigger": "Set up Voice",
     "title": "Set up Voice",

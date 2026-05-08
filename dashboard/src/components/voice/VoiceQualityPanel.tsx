@@ -27,6 +27,7 @@
  */
 
 import { useCallback, useEffect, useState, type ReactElement } from "react";
+import { Trans, useTranslation } from "react-i18next";
 import {
   AlertTriangleIcon,
   ActivityIcon,
@@ -54,12 +55,17 @@ function snrToMosProxy(snrDb: number): number {
   return Math.max(1.0, Math.min(4.5, raw));
 }
 
-const VERDICT_LABEL: Record<VoiceQualityVerdict, string> = {
-  excellent: "Excellent",
-  good: "Good",
-  degraded: "Degraded",
-  poor: "Poor",
-  no_signal: "Warming up",
+// v0.32.5 Phase 4.B.2 — verdict-keyed maps now resolve i18n keys
+// (translated at render time via ``t()``) instead of literal English
+// strings. Keys mirror the backend's ``VoiceQualityVerdict`` enum so a
+// new verdict added server-side surfaces here as a missing-key warning
+// in i18n debug mode rather than silently rendering nothing.
+const VERDICT_LABEL_KEY: Record<VoiceQualityVerdict, string> = {
+  excellent: "qualityPanel.snr.verdict.excellent",
+  good: "qualityPanel.snr.verdict.good",
+  degraded: "qualityPanel.snr.verdict.degraded",
+  poor: "qualityPanel.snr.verdict.poor",
+  no_signal: "qualityPanel.snr.verdict.noSignal",
 };
 
 const VERDICT_COLOR: Record<VoiceQualityVerdict, string> = {
@@ -78,18 +84,16 @@ const VERDICT_ICON: Record<VoiceQualityVerdict, ReactElement> = {
   no_signal: <ClockIcon className="h-5 w-5 text-muted-foreground" />,
 };
 
-const VERDICT_DESCRIPTION: Record<VoiceQualityVerdict, string> = {
-  excellent:
-    "Studio-grade capture. Moonshine + Silero operate at calibrated rates.",
-  good: "Typical office desk mic with HVAC running. <1% STT degradation.",
-  degraded:
-    "Loud open-plan office, fan close to mic. STT substitution rate climbs ~3-5× per dB lost. Move the mic 30 cm closer or enable in-process noise suppression.",
-  poor: "Mic in a noisy environment (cafe, vehicle). STT becomes unreliable; VAD onset latency climbs. Move the mic, enable noise suppression, or relocate the speaker.",
-  no_signal:
-    "No SNR samples in the rolling 10-second window. Typical right after boot or during a long silence run. The panel updates automatically once speech frames flow.",
+const VERDICT_DESCRIPTION_KEY: Record<VoiceQualityVerdict, string> = {
+  excellent: "qualityPanel.snr.verdictDescription.excellent",
+  good: "qualityPanel.snr.verdictDescription.good",
+  degraded: "qualityPanel.snr.verdictDescription.degraded",
+  poor: "qualityPanel.snr.verdictDescription.poor",
+  no_signal: "qualityPanel.snr.verdictDescription.noSignal",
 };
 
 export function VoiceQualityPanel() {
+  const { t } = useTranslation("voice");
   const [snapshot, setSnapshot] = useState<VoiceQualitySnapshotResponse | null>(
     null,
   );
@@ -106,6 +110,12 @@ export function VoiceQualityPanel() {
       setError(null);
     } catch (err) {
       if (isAbortError(err)) return;
+      // ``Snapshot fetch failed`` was the legacy fallback string —
+      // post-v0.32.5 the wrapping ``errorPrefix`` template carries the
+      // localised "Voice quality snapshot unavailable: {error}" prose
+      // and ``error`` here remains the raw underlying message (often a
+      // status-code string from ``api.get``) so operators see the
+      // technical signal even if i18n misses the wrapper.
       setError(err instanceof Error ? err.message : "Snapshot fetch failed");
     } finally {
       setLoading(false);
@@ -129,7 +139,7 @@ export function VoiceQualityPanel() {
       <div className="rounded-lg border bg-card p-6">
         <div className="flex items-center gap-2 text-muted-foreground">
           <Loader2Icon className="h-4 w-4 animate-spin" />
-          <span>Loading voice quality snapshot…</span>
+          <span>{t("qualityPanel.loading")}</span>
         </div>
       </div>
     );
@@ -140,12 +150,10 @@ export function VoiceQualityPanel() {
       <div className="rounded-lg border border-rose-500/30 bg-card p-6">
         <div className="flex items-center gap-2 text-rose-500">
           <AlertTriangleIcon className="h-4 w-4" />
-          <span>Voice quality snapshot unavailable: {error}</span>
+          <span>{t("qualityPanel.errorPrefix", { error })}</span>
         </div>
         <p className="mt-2 text-xs text-muted-foreground">
-          The endpoint returns 503 until the engine registry is ready.
-          Enable voice (or wait a few seconds) and the panel populates
-          automatically on the next 5-second poll.
+          {t("qualityPanel.errorBody")}
         </p>
       </div>
     );
@@ -161,7 +169,7 @@ export function VoiceQualityPanel() {
       <div className="mb-3 flex items-center justify-between">
         <h3 className="flex items-center gap-2 text-sm font-semibold">
           <AudioWaveformIcon className="h-4 w-4" />
-          Capture SNR distribution
+          {t("qualityPanel.snr.title")}
         </h3>
         <span className="text-xs text-muted-foreground">T4.37</span>
       </div>
@@ -169,39 +177,60 @@ export function VoiceQualityPanel() {
         {VERDICT_ICON[verdict]}
         <div>
           <div className={`text-2xl font-semibold ${VERDICT_COLOR[verdict]}`}>
-            {VERDICT_LABEL[verdict]}
+            {t(VERDICT_LABEL_KEY[verdict])}
           </div>
           <div className="text-xs text-muted-foreground">
             {snapshot.snr_p50_db !== null ? (
-              <>
-                p50 = <span className="font-mono">{snapshot.snr_p50_db.toFixed(1)} dB</span>
-                {" · "}
-                <span>
-                  {snapshot.snr_sample_count} sample
-                  {snapshot.snr_sample_count === 1 ? "" : "s"} in window
-                </span>
-              </>
+              <Trans
+                i18nKey="qualityPanel.snr.p50Label"
+                ns="voice"
+                values={{
+                  value: snapshot.snr_p50_db.toFixed(1),
+                  count: `${snapshot.snr_sample_count} ${
+                    snapshot.snr_sample_count === 1
+                      ? t("qualityPanel.snr.sampleSingular")
+                      : t("qualityPanel.snr.samplePlural")
+                  }`,
+                }}
+                components={[<span className="font-mono" key="p50" />]}
+              />
             ) : (
-              <>No samples in the rolling 10-second window.</>
+              <>{t("qualityPanel.snr.noSamples")}</>
             )}
           </div>
         </div>
       </div>
       <p className="mt-3 text-sm text-muted-foreground">
-        {VERDICT_DESCRIPTION[verdict]}
+        {t(VERDICT_DESCRIPTION_KEY[verdict])}
       </p>
       <div className="mt-3 flex flex-wrap gap-3 text-xs text-muted-foreground">
         <span>
-          <strong>≥17 dB</strong> excellent
+          <Trans
+            i18nKey="qualityPanel.snr.thresholds.excellent"
+            ns="voice"
+            components={[<strong key="t" />]}
+          />
         </span>
         <span>
-          <strong>9-17 dB</strong> good
+          <Trans
+            i18nKey="qualityPanel.snr.thresholds.good"
+            ns="voice"
+            components={[<strong key="t" />]}
+          />
         </span>
         <span>
-          <strong>3-9 dB</strong> degraded
+          <Trans
+            i18nKey="qualityPanel.snr.thresholds.degraded"
+            ns="voice"
+            components={[<strong key="t" />]}
+          />
         </span>
         <span>
-          <strong>&lt;3 dB</strong> poor
+          <Trans
+            i18nKey="qualityPanel.snr.thresholds.poor"
+            ns="voice"
+            components={[<strong key="t" />]}
+          />
         </span>
       </div>
     </div>
@@ -209,13 +238,15 @@ export function VoiceQualityPanel() {
 
   const showProxy = !snapshot.dnsmos_extras_installed;
   let mosLabel = "—";
-  let mosDetail = "Awaiting samples";
+  let mosDetail = t("qualityPanel.mos.awaitingSamples");
   if (snapshot.snr_p50_db !== null) {
     const mos = snrToMosProxy(snapshot.snr_p50_db);
     mosLabel = mos.toFixed(2);
     mosDetail = showProxy
-      ? `SNR-proxy estimate (1 + SNR/7), derived from p50 = ${snapshot.snr_p50_db.toFixed(1)} dB`
-      : `DNSMOS p50 = ${mosLabel}`;
+      ? t("qualityPanel.mos.snrProxyDetail", {
+          snr: snapshot.snr_p50_db.toFixed(1),
+        })
+      : t("qualityPanel.mos.dnsmosDetail", { mos: mosLabel });
   }
 
   const mosPanel = (
@@ -223,7 +254,7 @@ export function VoiceQualityPanel() {
       <div className="mb-3 flex items-center justify-between">
         <h3 className="flex items-center gap-2 text-sm font-semibold">
           <TrendingUpIcon className="h-4 w-4" />
-          Voice quality MOS
+          {t("qualityPanel.mos.title")}
         </h3>
         <span className="text-xs text-muted-foreground">T4.26</span>
       </div>
@@ -235,47 +266,36 @@ export function VoiceQualityPanel() {
         </div>
       </div>
       <p className="mt-3 text-sm text-muted-foreground">
-        MOS scale: 1.0 (poor) — 4.5 (excellent). Skype/Zoom acceptable
-        threshold is ≥ 3.5; below 3.0 is "poor" per ITU-T P.800.
+        {t("qualityPanel.mos.scaleHint")}
       </p>
       {showProxy && (
         <div className="mt-3 rounded-md border border-amber-500/30 bg-amber-50/50 p-3 text-xs dark:bg-amber-500/10">
           <div className="mb-1 flex items-center gap-2 font-semibold text-amber-700 dark:text-amber-400">
             <InfoIcon className="h-3.5 w-3.5" />
-            SNR-proxy mode (DNSMOS extras not installed)
+            {t("qualityPanel.mos.proxyDisclaimerTitle")}
           </div>
           <p className="text-muted-foreground">
-            Sovyx ships without the optional ``dnsmos`` extras
-            because the package is large + Windows-build-flaky. Until
-            you install them, the MOS reading above is an SNR-derived
-            estimate, NOT a real DNSMOS DNN inference. To enable true
-            DNSMOS:
+            {t("qualityPanel.mos.proxyDisclaimerBody")}
           </p>
           <ol className="mt-2 list-decimal pl-5 text-muted-foreground">
             <li>
-              <code className="rounded bg-muted px-1">
-                pip install &quot;sovyx[dnsmos]&quot;
-              </code>{" "}
-              (or your package manager equivalent).
+              <Trans
+                i18nKey="qualityPanel.mos.proxyDisclaimerStep1"
+                ns="voice"
+                components={[
+                  <code className="rounded bg-muted px-1" key="cmd" />,
+                ]}
+              />
             </li>
-            <li>
-              Restart the daemon. The endpoint flips
-              ``dnsmos_extras_installed`` to ``true`` on the next
-              poll and this disclaimer disappears.
-            </li>
-            <li>
-              The DNSMOS T4.23-T4.30 wire-up sequence (heartbeat
-              p50/p95, alert thresholds 3.5 / 3.0, bucketing, drift)
-              is operator-gated to keep the SNR-proxy path simple
-              for users who don't care about DNN-based MOS.
-            </li>
+            <li>{t("qualityPanel.mos.proxyDisclaimerStep2")}</li>
+            <li>{t("qualityPanel.mos.proxyDisclaimerStep3")}</li>
           </ol>
         </div>
       )}
       {!showProxy && (
         <div className="mt-3 flex items-center gap-2 text-xs text-emerald-700 dark:text-emerald-400">
           <PackageIcon className="h-3.5 w-3.5" />
-          DNSMOS extras detected — reading is live DNN inference.
+          {t("qualityPanel.mos.dnsmosLiveBadge")}
         </div>
       )}
     </div>
@@ -287,38 +307,44 @@ export function VoiceQualityPanel() {
       <div className="mb-3 flex items-center justify-between">
         <h3 className="flex items-center gap-2 text-sm font-semibold">
           <ActivityIcon className="h-4 w-4" />
-          Noise-floor drift baseline
+          {t("qualityPanel.drift.title")}
         </h3>
         <span className="text-xs text-muted-foreground">T4.38</span>
       </div>
       {snapshot.noise_floor.ready ? (
         <div className="text-sm">
           <div>
-            Drift ={" "}
-            <span className="font-mono">
-              {snapshot.noise_floor.drift_db !== null
-                ? `${snapshot.noise_floor.drift_db.toFixed(2)} dB`
-                : "—"}
-            </span>
-            <span className="ml-2 text-xs text-muted-foreground">
-              (short {snapshot.noise_floor.short_avg_db?.toFixed(1)} dB vs long{" "}
-              {snapshot.noise_floor.long_avg_db?.toFixed(1)} dB)
-            </span>
+            <Trans
+              i18nKey="qualityPanel.drift.driftLine"
+              ns="voice"
+              values={{
+                value:
+                  snapshot.noise_floor.drift_db !== null
+                    ? `${snapshot.noise_floor.drift_db.toFixed(2)} dB`
+                    : t("qualityPanel.drift.driftMissing"),
+                shortDb: snapshot.noise_floor.short_avg_db?.toFixed(1) ?? "—",
+                longDb: snapshot.noise_floor.long_avg_db?.toFixed(1) ?? "—",
+              }}
+              components={[
+                <span className="font-mono" key="drift" />,
+                <span
+                  className="ml-2 text-xs text-muted-foreground"
+                  key="windows"
+                />,
+              ]}
+            />
           </div>
           <p className="mt-2 text-xs text-muted-foreground">
-            Drift = mean(short window, ~60 s) − mean(long window, ~5 min).
-            Alert fires when sustained drift exceeds the configured
-            threshold (default 10 dB) for the configured de-flap count
-            (default 3 heartbeats).
+            {t("qualityPanel.drift.driftFormula")}
           </p>
         </div>
       ) : (
         <div className="flex items-center gap-2 text-sm text-muted-foreground">
           <Loader2Icon className="h-4 w-4 animate-spin" />
           <span>
-            Warming up — long-window baseline needs ~5 minutes of
-            samples before drift is meaningful (
-            {snapshot.noise_floor.long_sample_count} collected).
+            {t("qualityPanel.drift.warmingUp", {
+              count: snapshot.noise_floor.long_sample_count,
+            })}
           </span>
         </div>
       )}
@@ -330,31 +356,39 @@ export function VoiceQualityPanel() {
       <div className="mb-3 flex items-center justify-between">
         <h3 className="flex items-center gap-2 text-sm font-semibold">
           <AudioWaveformIcon className="h-4 w-4" />
-          AGC2 controller
+          {t("qualityPanel.agc2.title")}
         </h3>
         <span className="text-xs text-muted-foreground">T4.51-T4.52</span>
       </div>
       <div className="grid grid-cols-2 gap-3 text-sm">
         <div>
-          <div className="text-xs text-muted-foreground">Current gain</div>
+          <div className="text-xs text-muted-foreground">
+            {t("qualityPanel.agc2.currentGain")}
+          </div>
           <div className="font-mono text-base">
             {snapshot.agc2.current_gain_db.toFixed(2)} dB
           </div>
         </div>
         <div>
-          <div className="text-xs text-muted-foreground">Speech level est.</div>
+          <div className="text-xs text-muted-foreground">
+            {t("qualityPanel.agc2.speechLevelEst")}
+          </div>
           <div className="font-mono text-base">
             {snapshot.agc2.speech_level_dbfs.toFixed(2)} dBFS
           </div>
         </div>
         <div>
-          <div className="text-xs text-muted-foreground">Frames processed</div>
+          <div className="text-xs text-muted-foreground">
+            {t("qualityPanel.agc2.framesProcessed")}
+          </div>
           <div className="font-mono text-base">
             {snapshot.agc2.frames_processed.toLocaleString()}
           </div>
         </div>
         <div>
-          <div className="text-xs text-muted-foreground">VAD-silenced</div>
+          <div className="text-xs text-muted-foreground">
+            {t("qualityPanel.agc2.vadSilenced")}
+          </div>
           <div className="font-mono text-base">
             {snapshot.agc2.frames_vad_silenced.toLocaleString()}
             {snapshot.agc2.frames_processed > 0 && (
@@ -371,9 +405,7 @@ export function VoiceQualityPanel() {
         </div>
       </div>
       <p className="mt-3 text-xs text-muted-foreground">
-        ``frames_vad_silenced`` counts frames where the T4.52 VAD-feedback
-        gate vetoed an estimator update. Non-zero only when
-        ``voice_agc2_vad_feedback_enabled = True``.
+        {t("qualityPanel.agc2.vadSilencedNote")}
       </p>
     </div>
   ) : (
@@ -381,16 +413,13 @@ export function VoiceQualityPanel() {
       <div className="mb-3 flex items-center justify-between">
         <h3 className="flex items-center gap-2 text-sm font-semibold">
           <AudioWaveformIcon className="h-4 w-4" />
-          AGC2 controller
+          {t("qualityPanel.agc2.title")}
         </h3>
         <span className="text-xs text-muted-foreground">T4.51-T4.52</span>
       </div>
       <div className="flex items-center gap-2 text-sm text-muted-foreground">
         <InfoIcon className="h-4 w-4" />
-        <span>
-          AGC2 not active — voice pipeline isn&apos;t running OR
-          ``voice_agc2_enabled`` is False.
-        </span>
+        <span>{t("qualityPanel.agc2.notActive")}</span>
       </div>
     </div>
   );

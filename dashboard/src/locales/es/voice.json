@@ -548,6 +548,67 @@
       "ws_connection_error": "Error de conexión WebSocket de calibración"
     }
   },
+  "qualityPanel": {
+    "loading": "Cargando snapshot de calidad de voz…",
+    "errorPrefix": "Snapshot de calidad de voz no disponible: {{error}}",
+    "errorBody": "El endpoint devuelve 503 hasta que el registry del engine esté listo. Activa la voz (o espera unos segundos) y el panel se llena automáticamente en el próximo poll de 5 segundos.",
+    "snr": {
+      "title": "Distribución de SNR de captura",
+      "p50Label": "p50 = <0>{{value}} dB</0> · {{count}}",
+      "sampleSingular": "muestra en la ventana",
+      "samplePlural": "muestras en la ventana",
+      "noSamples": "Sin muestras en la ventana rodante de 10 segundos.",
+      "thresholds": {
+        "excellent": "<0>≥17 dB</0> excelente",
+        "good": "<0>9-17 dB</0> bueno",
+        "degraded": "<0>3-9 dB</0> degradado",
+        "poor": "<0>&lt;3 dB</0> pobre"
+      },
+      "verdict": {
+        "excellent": "Excelente",
+        "good": "Bueno",
+        "degraded": "Degradado",
+        "poor": "Pobre",
+        "noSignal": "Calentando"
+      },
+      "verdictDescription": {
+        "excellent": "Captura de calidad de estudio. Moonshine + Silero operan a tasas calibradas.",
+        "good": "Micrófono de escritorio típico con HVAC funcionando. Degradación de STT < 1%.",
+        "degraded": "Oficina abierta ruidosa, ventilador cerca del mic. La tasa de sustitución del STT sube ~3-5× por dB perdido. Acerca el mic 30 cm o activa supresión de ruido in-process.",
+        "poor": "Mic en entorno ruidoso (café, vehículo). STT se vuelve poco confiable; la latencia de onset del VAD sube. Mueve el mic, activa supresión de ruido o reubica al hablante.",
+        "noSignal": "Sin muestras de SNR en la ventana rodante de 10 segundos. Típico justo después del boot o durante un silencio largo. El panel se actualiza automáticamente cuando fluyan frames de habla."
+      }
+    },
+    "mos": {
+      "title": "MOS de calidad de voz",
+      "awaitingSamples": "Esperando muestras",
+      "snrProxyDetail": "Estimación SNR-proxy (1 + SNR/7), derivada de p50 = {{snr}} dB",
+      "dnsmosDetail": "DNSMOS p50 = {{mos}}",
+      "scaleHint": "Escala MOS: 1.0 (pobre) — 4.5 (excelente). Umbral aceptable Skype/Zoom es ≥ 3.5; por debajo de 3.0 es \"pobre\" según ITU-T P.800.",
+      "proxyDisclaimerTitle": "Modo SNR-proxy (extras DNSMOS no instalados)",
+      "proxyDisclaimerBody": "Sovyx se distribuye sin los extras opcionales ``dnsmos`` porque el paquete es grande + la build en Windows es inestable. Hasta que los instales, la lectura de MOS de arriba es una estimación derivada de SNR, NO una inferencia real de DNN DNSMOS. Para activar DNSMOS verdadero:",
+      "proxyDisclaimerStep1": "<0>pip install \"sovyx[dnsmos]\"</0> (o equivalente de tu gestor de paquetes).",
+      "proxyDisclaimerStep2": "Reinicia el daemon. El endpoint cambia ``dnsmos_extras_installed`` a ``true`` en el próximo poll y este aviso desaparece.",
+      "proxyDisclaimerStep3": "La secuencia de wire-up DNSMOS T4.23-T4.30 (heartbeat p50/p95, umbrales de alerta 3.5 / 3.0, bucketing, drift) está gateada por el operador para mantener el camino SNR-proxy simple para quienes no necesitan MOS basado en DNN.",
+      "dnsmosLiveBadge": "Extras DNSMOS detectados — lectura es inferencia DNN en vivo."
+    },
+    "drift": {
+      "title": "Línea base de drift del piso de ruido",
+      "driftLine": "Drift = <0>{{value}}</0> <1>(corto {{shortDb}} dB vs largo {{longDb}} dB)</1>",
+      "driftMissing": "—",
+      "driftFormula": "Drift = media(ventana corta, ~60 s) − media(ventana larga, ~5 min). La alerta se dispara cuando el drift sostenido excede el umbral configurado (predeterminado 10 dB) por el número configurado de heartbeats anti-flap (predeterminado 3).",
+      "warmingUp": "Calentando — la línea base de ventana larga necesita ~5 minutos de muestras antes de que el drift sea significativo ({{count}} recolectadas)."
+    },
+    "agc2": {
+      "title": "Controlador AGC2",
+      "currentGain": "Ganancia actual",
+      "speechLevelEst": "Nivel de habla est.",
+      "framesProcessed": "Frames procesados",
+      "vadSilenced": "Silenciados por VAD",
+      "vadSilencedNote": "``frames_vad_silenced`` cuenta frames donde el gate de feedback del VAD T4.52 vetó una actualización del estimador. No-cero solo cuando ``voice_agc2_vad_feedback_enabled = True``.",
+      "notActive": "AGC2 no activo — pipeline de voz no está corriendo O ``voice_agc2_enabled`` es False."
+    }
+  },
   "setupModal": {
     "trigger": "Configurar voz",
     "title": "Configurar voz",
