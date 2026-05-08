@@ -239,6 +239,76 @@ class TestMicPermissionGate:
         assert len(crash_events) == 1
         assert crash_events[0]["error_type"] == "RuntimeError"
 
+    def test_enabled_macos_no_fda_returns_unknown_proceeds(
+        self,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """v0.32.3 Phase 3.B.3 (P0.B6) regression — macOS FDA-fallback path.
+
+        When ``query_macos_microphone_permission`` returns ``(None, ...)``
+        because TCC.db can't be opened (no Full Disk Access granted to
+        Sovyx OR to its parent process), the higher-level
+        ``check_microphone_permission`` collapses to
+        ``MicPermissionStatus.UNKNOWN`` carrying the structured FDA
+        note. The factory's mic-permission gate MUST log + proceed —
+        it MUST NOT raise ``VoicePermissionError`` on UNKNOWN because:
+
+          * TCC's no-row case (``count=0``) genuinely means "Sovyx
+            never asked"; the OS will surface the consent prompt on
+            first capture attempt.
+          * TCC's open-failed case (no FDA) means "we can't read the
+            DB"; Sovyx may still have mic permission granted via a
+            parent process inheritance. False-DENIED would block
+            valid setups.
+
+        Pre-Phase-3.A audit (P0.B6) wondered whether v0.32.0 HIGH-2
+        wired UNKNOWN→VoicePermissionError end-to-end. Verification
+        showed HIGH-2 only flipped the gate ON by default for darwin
+        (commit 529df6bb); the UNKNOWN→proceed contract was already
+        the design intent. This test pins the no-FDA UNKNOWN path
+        specifically (the existing UNKNOWN test only covers the
+        no-row case via a generic stub).
+        """
+        from sovyx.voice.health._mic_permission import (
+            MicPermissionReport,
+            MicPermissionStatus,
+        )
+
+        no_fda_unknown = MicPermissionReport(
+            status=MicPermissionStatus.UNKNOWN,
+            machine_value=None,
+            user_value=None,
+            notes=(
+                "sqlite3 open failed (likely needs Full Disk Access): "
+                "OperationalError('unable to open database file')",
+            ),
+        )
+        with (
+            patch(
+                "sovyx.engine.config.VoiceTuningConfig",
+                return_value=MagicMock(voice_check_mic_permission_enabled=True),
+            ),
+            patch(
+                "sovyx.voice.health._mic_permission.check_microphone_permission",
+                return_value=no_fda_unknown,
+            ),
+        ):
+            caplog.set_level(logging.INFO, logger=_FACTORY_LOGGER)
+            _maybe_check_mic_permission()  # MUST NOT raise.
+
+        # Must surface the no-FDA note in the structured INFO event so
+        # operators triaging "voice silent on macOS" see the FDA hint.
+        unknown_events = [
+            r.msg
+            for r in caplog.records
+            if isinstance(r.msg, dict)
+            and r.msg.get("event") == "voice.factory.mic_permission_unknown"
+        ]
+        assert len(unknown_events) == 1
+        notes_field = unknown_events[0].get("voice.notes", [])
+        joined = " || ".join(notes_field) if isinstance(notes_field, list) else ""
+        assert "Full Disk Access" in joined or "FDA" in joined.upper()
+
 
 # ── LLM reachable gate (band-aid #28 wire-up) ─────────────────────
 
