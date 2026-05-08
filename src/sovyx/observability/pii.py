@@ -32,6 +32,7 @@ under P11+.4).
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import re
 from typing import TYPE_CHECKING, Any, Final, Literal
@@ -236,14 +237,76 @@ _PROTECTED_KEYS: Final[frozenset[str]] = frozenset(
 # without ever exposing the device label). Mirrors the approach used
 # for ``mind_id_hash`` / ``profile_id_hash`` upstream — those keys are
 # pre-hashed by callers; the keys below are hashed by the redactor.
+#
+# v0.31.7 T2.3 — sibling hardware-fingerprint keys discovered in the
+# paranoid round-2 audit. The same physical fingerprint flows under
+# multiple lexical forms across Windows / Linux / macOS emit sites:
+# ``audio.apo.scan`` uses ``voice.active_endpoint_name`` /
+# ``voice.resolved_name``; per-endpoint dicts under ``voice.endpoints``
+# use ``endpoint_name`` / ``device_interface_name``; macOS watchdog
+# correlated events use ``device_name``; Windows APO detector uses
+# ``friendly_name`` / ``active_device_name`` / ``endpoint_id``.
+#
+# Each key resolves independently because dotted forms (``voice.X``)
+# never collide with the bare form (``X``) at the structlog dict
+# layer — they are distinct keys on the wire. Listing both forms is
+# intentional; an emit site picks one and the redactor catches it.
 _HASH_REDACT_KEYS: Final[frozenset[str]] = frozenset(
     {
+        # v0.31.6 T3.6
         "voice_input_device_name",
         "voice_input_device_host_api",
         "voice.input_device_name",
         "voice.input_device_host_api",
+        # v0.31.7 T2.3 — APO scan + per-endpoint dicts
+        "endpoint_name",
+        "voice.active_endpoint_name",
+        "voice.resolved_name",
+        "device_interface_name",
+        "voice.device_interface_name",
+        "friendly_name",
+        "voice.friendly_name",
+        "active_device_name",
+        "voice.active_device_name",
+        "endpoint_id",
+        "voice.active_endpoint_id",
+        # v0.31.7 T2.3 — macOS watchdog correlated emit (device_name=)
+        "device_name",
+        "voice.device_name",
+        "device_uid",
+        "voice.device_uid",
+        # v0.31.7 T2.3 — APO scan top-level "endpoint" string field
+        # (sibling of "endpoint_name" — voice_apo_detected uses bare
+        # ``endpoint=active.endpoint_name``)
+        "endpoint",
+        "voice.endpoint",
+        # v0.31.7 T2.3 — list payload under ``voice.endpoints``. Each
+        # item is a dict carrying ``endpoint_name`` /
+        # ``device_interface_name`` etc. Hashing the whole list (via
+        # _hash_value(repr(value))) is the cheapest defence: a single
+        # sentinel per unique fingerprint payload, no per-item leak,
+        # and the recursive walk below still handles non-list emit
+        # paths (single dict at root) via the per-key inner-key match.
+        "voice.endpoints",
     }
 )
+
+
+# v0.31.7 T2.3 — recursive container walk. The pre-T2.3 redactor
+# early-returned on every non-string value, so a nested dict like
+# ``{"audio.apo.scan": {"voice.endpoints": [{"endpoint_name": ...}]}}``
+# bypassed BOTH the hash redact set AND the global regex sweep. The
+# walk below visits dicts and lists/tuples up to a bounded depth,
+# applies the per-key logic at every level, and falls through to the
+# scalar redaction on primitive leaves.
+#
+# Bounded depth (``_MAX_RECURSION_DEPTH``) defends against cyclic
+# references and pathologically nested structlog payloads. Depth 8 is
+# generous: real emit sites never nest beyond depth 3 (event → list →
+# dict → primitive). On exceeded depth the value is replaced with the
+# sentinel ``"[redacted-depth-exceeded]"`` so the leak is impossible
+# even on malformed input.
+_MAX_RECURSION_DEPTH: Final[int] = 8
 
 
 class PIIRedactor:
@@ -268,21 +331,134 @@ class PIIRedactor:
         event_dict: MutableMapping[str, Any],
     ) -> MutableMapping[str, Any]:
         """Redact PII in-place inside *event_dict*."""
+        seen: set[int] = set()
         for key in list(event_dict):
-            value = event_dict[key]
-            if not isinstance(value, str):
-                continue
-            if key in _PROTECTED_KEYS:
-                continue
-            if key in _HASH_REDACT_KEYS:
-                event_dict[key] = _hash_value(value)
-                continue
-            mode = self._field_modes.get(key)
-            if mode is not None:
-                event_dict[key] = _apply_verbosity(value, mode)
-            else:
-                event_dict[key] = _apply_regex_sweep(value)
+            event_dict[key] = self._redact_value(key, event_dict[key], depth=0, seen=seen)
         return event_dict
+
+    def _redact_value(
+        self,
+        key: str,
+        value: Any,  # noqa: ANN401
+        *,
+        depth: int,
+        seen: set[int],
+    ) -> Any:  # noqa: ANN401
+        """Apply per-key redaction logic to *value*.
+
+        The function is recursive: dicts and lists/tuples are walked
+        with the same per-key logic at every level, with the parent
+        key inherited for list/tuple items so a list value under a
+        hash-redact key (e.g. ``voice.endpoints``) hashes the whole
+        payload rather than leaking item-by-item.
+
+        Termination is bounded by THREE independent guards so the
+        redactor NEVER blocks a log emit (privacy gate is never a
+        denial-of-service vector):
+
+        1. ``_MAX_RECURSION_DEPTH`` — depth cap (8 levels).
+        2. ``seen`` — id-based visited set. A self-referential dict
+           or list visits each container at most ONCE; the second
+           visit returns a sentinel without descending. This is the
+           load-bearing guard against the in-place-mutation hazard:
+           if the recursion descended a second time AND wrote a
+           sentinel into the shared dict, the outer view of the
+           original keys would be clobbered.
+        3. ``contextlib.suppress`` around recursive calls catches
+           defensive failures (TypeError / AttributeError on hostile
+           types) without blocking the emit (anti-pattern #27).
+        """
+        # Depth guard — replaces deep payload with an explicit
+        # sentinel so a pathologically nested input can't blow
+        # Python's recursion limit.
+        if depth > _MAX_RECURSION_DEPTH:
+            return "[redacted-depth-exceeded]"
+
+        # Protected envelope keys — never touched, even when nested.
+        if key in _PROTECTED_KEYS:
+            return value
+
+        # Hash-redact keys — collapse the entire value (string or
+        # container) to a deterministic sentinel. For containers we
+        # canonicalise via repr() so two equal payloads produce equal
+        # hashes; the goal is correlation across log lines, not
+        # round-trip recovery (which would defeat the hash). ``repr``
+        # of a self-referential container is bounded by Python itself
+        # (uses ``[...]`` / ``{...}`` for cycles) so this is safe even
+        # on cyclic input.
+        if key in _HASH_REDACT_KEYS:
+            if isinstance(value, str):
+                return _hash_value(value)
+            return _hash_value(repr(value))
+
+        # Recurse into dicts. Cyclic-reference guard: track the
+        # container's id() in ``seen`` so we never descend twice into
+        # the same physical object. Without this guard, a self-ref
+        # dict ``d["self"] = d`` would not just hit the depth cap —
+        # the in-place mutation at depth N would clobber an outer
+        # key reachable at depth 0 because both views share the same
+        # underlying dict object.
+        if isinstance(value, dict):
+            container_id = id(value)
+            if container_id in seen:
+                return "[redacted-cycle]"
+            seen.add(container_id)
+            for sub_key in list(value):
+                with _suppress_recursion_error():
+                    value[sub_key] = self._redact_value(
+                        sub_key,
+                        value[sub_key],
+                        depth=depth + 1,
+                        seen=seen,
+                    )
+            return value
+
+        # Recurse into lists/tuples. Lists mutate in place; tuples
+        # are rebuilt because they're immutable. The parent key is
+        # inherited so a list under a hash-redact key (e.g.
+        # ``voice.endpoints``) hashes the whole payload upstream
+        # before we get here — but if a list value lands under a
+        # neutral key, each element still gets the per-key sweep
+        # against its own structure (dict items inside the list).
+        if isinstance(value, list):
+            container_id = id(value)
+            if container_id in seen:
+                return "[redacted-cycle]"
+            seen.add(container_id)
+            for i, item in enumerate(value):
+                with _suppress_recursion_error():
+                    value[i] = self._redact_value(key, item, depth=depth + 1, seen=seen)
+            return value
+        if isinstance(value, tuple):
+            container_id = id(value)
+            if container_id in seen:
+                return "[redacted-cycle]"
+            seen.add(container_id)
+            return tuple(
+                self._redact_value(key, item, depth=depth + 1, seen=seen) for item in value
+            )
+
+        # Primitive leaves — only strings need redaction.
+        if not isinstance(value, str):
+            return value
+
+        mode = self._field_modes.get(key)
+        if mode is not None:
+            return _apply_verbosity(value, mode)
+        return _apply_regex_sweep(value)
+
+
+def _suppress_recursion_error() -> contextlib.AbstractContextManager[None]:
+    """Suppress RecursionError / TypeError around defensive recursion.
+
+    Wraps :func:`contextlib.suppress` per CLAUDE.md anti-pattern #27
+    so the call site reads as a single statement and the failure is
+    explicit (named exceptions, not bare ``except``). Debug logging
+    is intentionally absent here — a hot-path emit recursion fault
+    is not actionable per-event; downstream metrics surface the
+    rate via redactor health gauges.
+    """
+    return contextlib.suppress(RecursionError, TypeError, AttributeError)
 
 
 __all__ = [

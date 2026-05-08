@@ -289,6 +289,198 @@ class TestHashRedactKeys:
         assert out["profile_id_hash"] == "sha256:0123456789ab"
 
 
+class TestNestedContainerRedaction:
+    """v0.31.7 T2.3 — recursive walk + sibling hardware-fingerprint keys.
+
+    Round-2 audit of v0.31.6 found two compounding gaps in the
+    pre-T2.3 redactor:
+
+    1. The redactor early-returned on every non-string value, so
+       nested dicts / lists bypassed the entire pipeline (hash redact
+       set + global regex sweep).
+    2. The same fingerprint flowed under sibling keys
+       (``endpoint_name`` / ``voice.active_endpoint_name`` /
+       ``device_interface_name`` etc.) that weren't in the v0.31.6
+       hash-redact set.
+
+    These tests are the regression contract for both fixes.
+    """
+
+    @pytest.mark.parametrize(
+        "key",
+        [
+            "endpoint_name",
+            "voice.active_endpoint_name",
+            "voice.resolved_name",
+            "device_interface_name",
+            "friendly_name",
+            "active_device_name",
+            "endpoint_id",
+            "voice.active_endpoint_id",
+            "device_name",
+            "device_uid",
+            "endpoint",
+        ],
+    )
+    def test_sibling_hardware_keys_hashed_at_top_level(self, key: str) -> None:
+        red = _redactor()
+        out = _call(red, {key: "Razer BlackShark V2 Pro"})
+        assert out[key] != "Razer BlackShark V2 Pro"
+        assert isinstance(out[key], str)
+        assert out[key].startswith("sha256:")
+
+    def test_nested_dict_endpoint_name_redacted(self) -> None:
+        """Inner ``voice.active_endpoint_name`` inside a dict value is hashed."""
+        red = _redactor()
+        out = _call(
+            red,
+            {
+                "audio.apo.scan": {
+                    "voice.active_endpoint_name": "Microphone (Razer BlackShark V2 Pro)",
+                    "voice.endpoint_count": 1,
+                },
+            },
+        )
+        inner = out["audio.apo.scan"]
+        assert isinstance(inner, dict)
+        assert inner["voice.active_endpoint_name"] != ("Microphone (Razer BlackShark V2 Pro)")
+        assert inner["voice.active_endpoint_name"].startswith("sha256:")
+        # Non-fingerprint keys survive unchanged.
+        assert inner["voice.endpoint_count"] == 1
+
+    def test_nested_list_endpoints_hashed_as_whole_payload(self) -> None:
+        """``voice.endpoints`` list at top level is hashed as a single sentinel."""
+        red = _redactor()
+        endpoints = [
+            {"endpoint_name": "Razer BlackShark V2 Pro", "fx_binding_count": 3},
+            {"endpoint_name": "Internal Microphone", "fx_binding_count": 0},
+        ]
+        out = _call(red, {"voice.endpoints": endpoints})
+        # The whole list value collapses to a hash sentinel string.
+        assert isinstance(out["voice.endpoints"], str)
+        assert out["voice.endpoints"].startswith("sha256:")
+        # And the raw device names never reached the output.
+        assert "Razer" not in out["voice.endpoints"]
+        assert "Internal" not in out["voice.endpoints"]
+
+    def test_voice_endpoints_whole_payload_hash_is_deterministic(self) -> None:
+        """Same payload → same sentinel (correlation across log lines)."""
+        red = _redactor()
+        endpoints = [{"endpoint_name": "Razer BlackShark V2 Pro"}]
+        first = _call(red, {"voice.endpoints": list(endpoints)})
+        second = _call(red, {"voice.endpoints": list(endpoints)})
+        assert first["voice.endpoints"] == second["voice.endpoints"]
+
+    def test_nested_list_under_neutral_key_recurses_into_inner_dict(self) -> None:
+        """A list under a NON-redact key still walks each item's inner keys."""
+        red = _redactor()
+        # ``per_endpoint_detail`` is not a redact key, so the list passes
+        # through item-by-item; each inner dict's ``endpoint_name`` is
+        # hashed because the redact set catches the inner key.
+        out = _call(
+            red,
+            {
+                "per_endpoint_detail": [
+                    {"endpoint_name": "Razer BlackShark V2 Pro", "rank": 1},
+                    {"endpoint_name": "Internal Microphone", "rank": 2},
+                ],
+            },
+        )
+        items = out["per_endpoint_detail"]
+        assert isinstance(items, list)
+        for item in items:
+            assert item["endpoint_name"].startswith("sha256:")
+        assert items[0]["rank"] == 1
+
+    def test_existing_redact_keys_still_redacted_after_split(self) -> None:
+        """v0.31.6 T3.6 keys still hash — sanity check for no regression."""
+        red = _redactor()
+        out = _call(red, {"voice_input_device_name": "Razer BlackShark V2 Pro"})
+        assert out["voice_input_device_name"].startswith("sha256:")
+
+    def test_pre_hashed_forms_pass_through(self) -> None:
+        """Pre-hashed keys (``mind_id_hash`` etc.) survive the recursive walk."""
+        red = _redactor()
+        out = _call(
+            red,
+            {
+                "mind_id_hash": "abc123def456",
+                "profile_id_hash": "0123456789ab",
+                "fingerprint_hash": "deadbeefcafe",
+            },
+        )
+        assert out["mind_id_hash"] == "abc123def456"
+        assert out["profile_id_hash"] == "0123456789ab"
+        assert out["fingerprint_hash"] == "deadbeefcafe"
+
+    def test_recursive_walk_terminates_on_circular_ref(self) -> None:
+        """A self-referential dict must not blow the stack."""
+        red = _redactor()
+        cyclic: dict[str, Any] = {"self_ref_marker": "outer"}
+        cyclic["self"] = cyclic  # type: ignore[assignment]
+        # Must NOT raise RecursionError. The depth guard kicks in
+        # before Python's recursion limit; the deepest reachable
+        # node becomes a sentinel.
+        out = _call(red, {"audit": cyclic})
+        # Outer marker is still reachable + redacted (no PII regex
+        # match → string passes through the global sweep unchanged).
+        assert out["audit"]["self_ref_marker"] == "outer"
+
+    def test_recursive_walk_terminates_on_circular_list(self) -> None:
+        """A list containing itself must not blow the stack."""
+        red = _redactor()
+        cyclic_list: list[Any] = ["sentinel-marker"]
+        cyclic_list.append(cyclic_list)
+        out = _call(red, {"audit": cyclic_list})
+        # First element is still a string (regex-swept).
+        assert out["audit"][0] == "sentinel-marker"
+
+    def test_recursive_walk_no_op_on_event_without_redact_keys(self) -> None:
+        """Events with only safe primitives don't recurse — strings get swept,
+        non-strings return as-is.
+        """
+        red = _redactor()
+        out = _call(
+            red,
+            {
+                "count": 42,
+                "flag": True,
+                "label": "no-pii-here",
+                "missing": None,
+            },
+        )
+        assert out["count"] == 42
+        assert out["flag"] is True
+        assert out["label"] == "no-pii-here"
+        assert out["missing"] is None
+
+    def test_deeply_nested_dict_replaces_with_sentinel_at_max_depth(self) -> None:
+        """Beyond ``_MAX_RECURSION_DEPTH`` the value is replaced with sentinel."""
+        red = _redactor()
+        # Build depth-12 nested dict — exceeds depth 8 limit.
+        deep: dict[str, Any] = {"leaf": "deep-value"}
+        for _ in range(12):
+            deep = {"wrap": deep}
+        out = _call(red, {"root": deep})
+        # Walk down until we hit the sentinel.
+        cursor: Any = out["root"]
+        for _ in range(12):
+            if cursor == "[redacted-depth-exceeded]":
+                break
+            cursor = cursor["wrap"] if isinstance(cursor, dict) else cursor
+        assert cursor == "[redacted-depth-exceeded]"
+
+    def test_tuple_value_redacted_recursively(self) -> None:
+        """Tuple containing a fingerprint key in a sub-dict gets walked."""
+        red = _redactor()
+        payload = ({"endpoint_name": "Razer BlackShark V2 Pro"},)
+        out = _call(red, {"voice.endpoint_tuple": payload})
+        result = out["voice.endpoint_tuple"]
+        assert isinstance(result, tuple)
+        inner = result[0]
+        assert inner["endpoint_name"].startswith("sha256:")
+
+
 # ── Idempotence ────────────────────────────────────────────────────────
 
 

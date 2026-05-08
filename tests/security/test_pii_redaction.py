@@ -360,10 +360,13 @@ class TestNestedPayloads:
     def test_pii_inside_list_of_strings_is_masked(
         self, tmp_path: Path, _clean_state: None
     ) -> None:
-        # PIIRedactor only walks top-level string fields; a list passes
-        # through as-is. This test documents the current contract: callers
-        # that log user content MUST route it through a top-level string
-        # field (user_message, transcript, etc.) where the redactor runs.
+        # v0.31.7 T2.3 contract flip: PIIRedactor now walks dicts and
+        # lists/tuples recursively (bounded depth + cycle-safe), so PII
+        # inside a list payload IS redacted. The previous contract
+        # ("only top-level strings get the sweep") was a leak vector
+        # for the ``audio.apo.scan`` and ``voice.endpoints`` emit sites
+        # where the operator's hardware fingerprint flowed through a
+        # list of dicts.
         log_file = _setup(tmp_path)
         get_logger("security.pii").info(
             "raw.payload",
@@ -373,13 +376,9 @@ class TestNestedPayloads:
         _wait_for_file(log_file)
 
         blob = _read(log_file)
-        # Documenting the guard: if this invariant ever changes (deep walk
-        # added), update the assertion — but the fixture must keep synthetic
-        # values so we never ship a real address through the test suite.
-        assert _FAKE_EMAIL in blob, (
-            "nested-list redaction is NOT yet part of the contract; if you "
-            "added it, flip this assertion and update the docs"
-        )
+        # New contract: the email is regex-swept inside the list item.
+        assert _FAKE_EMAIL not in blob
+        assert "[redacted-email]" in blob
 
     def test_multiple_pii_kinds_in_one_field_all_masked(
         self, tmp_path: Path, _clean_state: None
@@ -474,3 +473,72 @@ class TestSecretMaskerLayering:
         ]
         assert len(records) == 1
         assert records[0]["password"] == "***"
+
+
+class TestHardwareFingerprintNestedRedaction:
+    """v0.31.7 T2.3 — sibling hardware-fingerprint keys + recursive container walk.
+
+    End-to-end coverage that the round-2-audit gap (nested
+    ``audio.apo.scan`` + ``voice.endpoints`` payloads bypassing the
+    redactor) is actually closed at the on-disk JSON layer.
+    """
+
+    def test_active_endpoint_name_in_dict_payload_is_hashed(
+        self, tmp_path: Path, _clean_state: None
+    ) -> None:
+        log_file = _setup(tmp_path)
+        get_logger("security.pii").info(
+            "audio.apo.scan",
+            **{
+                "voice.active_endpoint_name": "Microphone (Razer BlackShark V2 Pro)",
+                "voice.endpoint_count": 1,
+            },
+        )
+        shutdown_logging(timeout=3.0)
+        _wait_for_file(log_file)
+
+        blob = _read(log_file)
+        assert "Razer BlackShark V2 Pro" not in blob
+        assert "sha256:" in blob
+
+    def test_voice_endpoints_list_payload_is_hashed_as_sentinel(
+        self, tmp_path: Path, _clean_state: None
+    ) -> None:
+        log_file = _setup(tmp_path)
+        get_logger("security.pii").info(
+            "audio.apo.scan",
+            **{
+                "voice.endpoints": [
+                    {"endpoint_name": "Razer BlackShark V2 Pro", "fx_binding_count": 3},
+                    {"endpoint_name": "Internal Microphone", "fx_binding_count": 0},
+                ],
+            },
+        )
+        shutdown_logging(timeout=3.0)
+        _wait_for_file(log_file)
+
+        blob = _read(log_file)
+        assert "Razer BlackShark V2 Pro" not in blob
+        assert "Internal Microphone" not in blob
+        assert "sha256:" in blob
+
+    def test_nested_endpoint_name_under_neutral_dict_is_hashed(
+        self, tmp_path: Path, _clean_state: None
+    ) -> None:
+        log_file = _setup(tmp_path)
+        # ``per_endpoint_detail`` is not in the redact set, so the
+        # walker descends into the dict and applies per-key redaction
+        # to each ``endpoint_name`` inside.
+        get_logger("security.pii").info(
+            "audio.apo.snapshot",
+            per_endpoint_detail={
+                "primary": {"endpoint_name": "Razer BlackShark V2 Pro"},
+                "fallback": {"endpoint_name": "Internal Microphone"},
+            },
+        )
+        shutdown_logging(timeout=3.0)
+        _wait_for_file(log_file)
+
+        blob = _read(log_file)
+        assert "Razer BlackShark V2 Pro" not in blob
+        assert "Internal Microphone" not in blob
