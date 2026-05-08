@@ -221,10 +221,15 @@ class TestPerformance:
         guard = OutputGuard(SafetyConfig(content_filter="standard"))
         text = "A normal response about programming. " * 20  # ~800 chars
 
-        start = time.monotonic()
+        # v0.31.5: use ``perf_counter`` (high-resolution) rather than
+        # ``monotonic`` (~15.6 ms tick on Windows per CLAUDE.md
+        # anti-pattern #22). For total budgets > 1 tick this isn't
+        # strictly required, but consistency across the perf-test
+        # suite avoids accidental future-hardware drift.
+        start = time.perf_counter()
         for _ in range(100):
             guard.check(text)
-        elapsed_ms = (time.monotonic() - start) * 1000
+        elapsed_ms = (time.perf_counter() - start) * 1000
 
         per_call = elapsed_ms / 100
         assert per_call < 5, f"Too slow: {per_call:.2f}ms per call"
@@ -233,10 +238,15 @@ class TestPerformance:
         guard = OutputGuard(SafetyConfig(content_filter="strict"))
         text = "A normal response about cooking recipes. " * 20
 
-        start = time.monotonic()
+        # v0.31.5: use ``perf_counter`` (high-resolution) rather than
+        # ``monotonic`` (~15.6 ms tick on Windows per CLAUDE.md
+        # anti-pattern #22). For total budgets > 1 tick this isn't
+        # strictly required, but consistency across the perf-test
+        # suite avoids accidental future-hardware drift.
+        start = time.perf_counter()
         for _ in range(100):
             guard.check(text)
-        elapsed_ms = (time.monotonic() - start) * 1000
+        elapsed_ms = (time.perf_counter() - start) * 1000
 
         per_call = elapsed_ms / 100
         assert per_call < 5, f"Too slow: {per_call:.2f}ms per call"
@@ -244,10 +254,18 @@ class TestPerformance:
     def test_none_near_zero(self) -> None:
         guard = OutputGuard(SafetyConfig(content_filter="none"))
 
-        start = time.monotonic()
+        # v0.31.5 LE-fix: use ``time.perf_counter`` (high-resolution
+        # — sub-µs on every supported platform) rather than
+        # ``time.monotonic`` (~15.6 ms tick on Windows per CLAUDE.md
+        # anti-pattern #22). The test asserts a < 5 ms budget for
+        # 1000 no-op checks; on a Windows host the monotonic clock
+        # resolution alone could read 16 ms even when actual
+        # elapsed work was sub-millisecond. ``perf_counter`` is the
+        # canonical Python primitive for short-duration timing.
+        start = time.perf_counter()
         for _ in range(1000):
             guard.check("some text")
-        elapsed_ms = (time.monotonic() - start) * 1000
+        elapsed_ms = (time.perf_counter() - start) * 1000
 
         assert elapsed_ms < 5, f"None filter too slow: {elapsed_ms:.1f}ms"
 
