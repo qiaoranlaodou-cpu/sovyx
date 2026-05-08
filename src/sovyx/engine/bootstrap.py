@@ -45,6 +45,24 @@ async def _auto_resume_voice_pipeline(
     (release any partially-acquired ONNX session + sounddevice handles)
     before re-raising.
 
+    v0.31.7 paranoid-closure T2.1 (M1): mirror the FULL sub-component
+    registration set the HTTP enable path uses. Pre-v0.31.7 auto-resume
+    only registered ``VoicePipeline`` + ``AudioCaptureTask``, leaving
+    ``SileroVAD`` / ``STTEngine`` / ``TTSEngine`` / ``WakeWordDetector``
+    / ``VoiceCognitiveBridge`` / ``BootPreflightWarningsStore``
+    unregistered. Symptom: ``/api/voice/status`` reported
+    ``pipeline.running=true`` but "No engine configured" for STT/TTS/VAD,
+    and any caller resolving a sub-component via the registry crashed.
+    The fix mirrors the route handler's exact registration set + order.
+
+    The cognitive bridge + ``BootPreflightWarningsStore`` are
+    reconstructed here using the same closure pattern the HTTP route
+    uses (``bridge_ref[0]`` holder filled after the bundle exists, so
+    the on_perception callback the factory wires can find the bridge).
+    Per the T1.2 contract, registry mutation runs only AFTER
+    ``start()`` succeeds and is NOT rolled back if a later
+    ``replace_instance`` fails — already-published instances stay.
+
     DEFENSIVE: any exception is allowed to propagate; the caller wraps
     in try/except so daemon startup is never blocked by voice failure.
     """
@@ -52,9 +70,70 @@ async def _auto_resume_voice_pipeline(
     # early; voice.factory imports onnxruntime + sounddevice which are
     # heavy + optional. Deferring keeps cold-start fast for non-voice
     # daemons.
+    from sovyx.cognitive.loop import CognitiveLoop
+    from sovyx.engine.events import EventBus
     from sovyx.voice._capture_task import AudioCaptureTask
+    from sovyx.voice.cognitive_bridge import VoiceCognitiveBridge
     from sovyx.voice.factory import create_voice_pipeline
+    from sovyx.voice.health import BootPreflightWarningsStore
     from sovyx.voice.pipeline._orchestrator import VoicePipeline
+    from sovyx.voice.stt import STTEngine
+    from sovyx.voice.tts_piper import TTSEngine
+    from sovyx.voice.vad import SileroVAD
+    from sovyx.voice.wake_word import WakeWordDetector
+
+    # Resolve event_bus + cognitive_loop optimistically — both are
+    # registered earlier in bootstrap (well before this helper runs),
+    # but ``is_registered`` is the contract-compatible probe.
+    event_bus = await registry.resolve(EventBus) if registry.is_registered(EventBus) else None
+    cognitive_loop = (
+        await registry.resolve(CognitiveLoop) if registry.is_registered(CognitiveLoop) else None
+    )
+
+    # Bridge holder — same closure pattern as ``_enable_voice_locked``.
+    # Filled AFTER bundle creation so the perception callback the
+    # factory wires can reach the bridge (chicken-and-egg avoidance:
+    # the bridge needs the pipeline, the pipeline needs the callback).
+    bridge_ref: list[VoiceCognitiveBridge | None] = [None]
+
+    async def _on_perception(text: str, mind_id_str: str) -> None:
+        """Feed a transcription into the cogloop via the bridge.
+
+        Simpler than the HTTP route's variant — auto-resume runs once
+        at boot; there's no per-request task lifecycle to track. The
+        bridge's own internal cancel-hook bookkeeping handles barge-in
+        cancellation.
+        """
+        bridge = bridge_ref[0]
+        if bridge is None or not text.strip():
+            return
+        from uuid import uuid4
+
+        from sovyx.cognitive.gate import CognitiveRequest
+        from sovyx.cognitive.perceive import Perception
+        from sovyx.engine.types import ConversationId, MindId, PerceptionType
+
+        cog_request = CognitiveRequest(
+            perception=Perception(
+                id=str(uuid4()),
+                type=PerceptionType.USER_MESSAGE,
+                source="voice",
+                content=text,
+            ),
+            mind_id=MindId(mind_id_str),
+            conversation_id=ConversationId(f"voice-{mind_id_str}"),
+            conversation_history=[],
+            person_name=None,
+        )
+        try:
+            await bridge.process(cog_request)
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                "voice_auto_resume_bridge_failed",
+                mind_id=mind_id_str,
+            )
+
+    on_perception_cb = _on_perception if cognitive_loop is not None else None
 
     bundle = await create_voice_pipeline(
         data_dir=engine_config.data_dir,
@@ -64,6 +143,8 @@ async def _auto_resume_voice_pipeline(
         wake_word_enabled=getattr(mind_config, "wake_word_enabled", False),
         input_device_name=mind_config.voice_input_device_name or None,
         input_device_host_api=mind_config.voice_input_device_host_api or None,
+        event_bus=event_bus,
+        on_perception=on_perception_cb,
         # ``allow_inoperative_capture=True``: even if the mic isn't
         # currently available (USB unplugged, audio service down),
         # daemon still comes up + voice surfaces an error rather than
@@ -93,11 +174,61 @@ async def _auto_resume_voice_pipeline(
         )
         raise
 
+    # Wire the cognitive bridge BEFORE registering it so the holder is
+    # ready and the bridge instance exists. Streaming follows the
+    # mind's LLM config (matches HTTP route contract).
+    if cognitive_loop is not None:
+        # Defensive ``getattr`` — tests build a minimal MindConfig
+        # without an ``llm`` field, and v0.1 single-mind doesn't
+        # mandate one for voice auto-resume to work.
+        llm_cfg = getattr(mind_config, "llm", None)
+        streaming = bool(getattr(llm_cfg, "streaming", True)) if llm_cfg is not None else True
+        bridge_ref[0] = VoiceCognitiveBridge(
+            cognitive_loop,
+            bundle.pipeline,
+            streaming=streaming,
+        )
+
     # start() succeeded — only NOW publish the running instances into
     # the registry, so downstream callers never observe a half-started
-    # bundle.
+    # bundle. Order mirrors ``_enable_voice_locked`` exactly so any
+    # ordering invariant the route handler depends on is preserved.
+    #
+    # T1.2 contract: if any ``replace_instance`` after the first one
+    # fails, the previously-registered instances stay registered (no
+    # rollback). That's acceptable because start() already succeeded
+    # — the audio thread is alive + producing frames, and partial
+    # registration is strictly better than dropping a working
+    # pipeline back to a clean slate.
     await registry.replace_instance(VoicePipeline, bundle.pipeline)
     await registry.replace_instance(AudioCaptureTask, bundle.capture_task)
+    await registry.replace_instance(SileroVAD, bundle.pipeline.vad)
+    # ``STTEngine`` / ``TTSEngine`` are ABCs by design — every concrete
+    # backend (Moonshine, Piper, Kokoro, Wyoming) inherits the abstract
+    # base. Mypy strict's ``type-abstract`` rule rejects passing an
+    # abstract class as ``type[T]``, but the registry semantics expressly
+    # use the abstract type as the LOOKUP KEY (so callers resolve the
+    # interface, not the implementation). The HTTP route at
+    # ``dashboard/routes/voice.py::_enable_voice_locked`` lives behind a
+    # ``Any``-typed registry and silently dodges the same check —
+    # bootstrap is strict-typed, hence the explicit ignore.
+    await registry.replace_instance(STTEngine, bundle.pipeline.stt)  # type: ignore[type-abstract]
+    await registry.replace_instance(TTSEngine, bundle.pipeline.tts)  # type: ignore[type-abstract]
+    if bundle.pipeline.config.wake_word_enabled:
+        await registry.replace_instance(WakeWordDetector, bundle.pipeline.wake_word)
+    if bridge_ref[0] is not None:
+        await registry.replace_instance(VoiceCognitiveBridge, bridge_ref[0])
+
+    # Boot-preflight warnings store — same publish-or-refresh pattern
+    # the HTTP route uses, so dashboard surfaces see the auto-resume
+    # warnings just like a manual /enable.
+    if registry.is_registered(BootPreflightWarningsStore):
+        preflight_store = await registry.resolve(BootPreflightWarningsStore)
+    else:
+        preflight_store = BootPreflightWarningsStore()
+        registry.register_instance(BootPreflightWarningsStore, preflight_store)
+    preflight_store.set_warnings(list(bundle.boot_preflight_warnings))
+
     logger.info(
         "voice_auto_resume_succeeded",
         mind_id=mind_config.id,
