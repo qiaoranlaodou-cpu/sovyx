@@ -19,6 +19,12 @@
       "noAudio": "No audio hardware detected. Connect a microphone and speakers.",
       "enableFailed": "Failed to enable voice",
       "pipelineFailed": "Failed to enable voice pipeline"
+    },
+    "verify": {
+      "not_running": "Voice was enabled but the pipeline isn't running yet. Open Voice settings and try again.",
+      "auth_failure": "Your session expired while enabling voice. Sign in again to finish setup.",
+      "endpoint_missing": "Voice routes aren't available on this Sovyx daemon. Upgrade Sovyx or contact your operator.",
+      "transient_failure": "Couldn't reach the voice service to verify setup. Check your network and retry."
     }
   },
   "providers": {

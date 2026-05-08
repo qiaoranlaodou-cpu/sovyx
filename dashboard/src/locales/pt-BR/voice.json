@@ -114,6 +114,14 @@
       "cutoffLabel": "Corte (UTC)"
     }
   },
+  "setup": {
+    "verify": {
+      "not_running": "A voz foi habilitada mas o pipeline ainda não está rodando. Abra as configurações de Voz e tente de novo.",
+      "auth_failure": "Sua sessão expirou ao habilitar a voz. Entre novamente para concluir a configuração.",
+      "endpoint_missing": "As rotas de voz não estão disponíveis nesta versão do Sovyx. Atualize o Sovyx ou contate o operador.",
+      "transient_failure": "Não foi possível alcançar o serviço de voz para verificar a configuração. Verifique sua rede e tente de novo."
+    }
+  },
   "wizard": {
     "title": "Assistente de Configuração de Voz",
     "openHint": "Percorra 4 passos para escolher e testar seu microfone.",
@@ -167,6 +175,11 @@
     "done": {
       "message": "Tudo pronto! Seu microfone está configurado.",
       "close": "Fechar"
+    },
+    "error": {
+      "missing_deps": "Dependências de voz ausentes: {{deps}}. Instale com: pip install 'sovyx[voice]'.",
+      "capture_silence": "O microfone capturou silêncio — verifique se o dispositivo de entrada não está mudo.",
+      "capture_device_contended": "O microfone está em uso por outro aplicativo. Feche-o e tente novamente."
     }
   },
   "training": {
@@ -516,7 +529,10 @@
       "decision_explanation": "A Sovyx detectou seu hardware e aplicou o ajuste de áudio correspondente automaticamente. Clique em confirmar para continuar. Se a voz ainda não funcionar como esperado, você pode rodar a calibração novamente em Configurações → Voz.",
       "confirm": "Confirmar e continuar",
       "verifying": "Verificando pipeline de voz…",
-      "verification_failed": "A calibração terminou mas o pipeline de voz ainda não está rodando. Abra Configurações → Voz → Recalibrar para tentar de novo, ou habilite manualmente na página de Voz."
+      "verification_failed": "A calibração terminou mas o pipeline de voz ainda não está rodando. Abra Configurações → Voz → Recalibrar para tentar de novo, ou habilite manualmente na página de Voz.",
+      "auth_failed": "Sua sessão expirou durante a calibração. Entre novamente para confirmar a configuração de voz.",
+      "endpoint_missing": "As rotas de voz não estão disponíveis neste Sovyx. Atualize o Sovyx ou contate o operador.",
+      "transient_failure": "Não foi possível alcançar o serviço de voz para verificar a configuração ({{lastError}}). Verifique sua rede e tente novamente."
     },
     "cancel": {
       "title": "Cancelar calibração?",

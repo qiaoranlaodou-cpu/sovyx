@@ -19,6 +19,12 @@
       "noAudio": "Nenhum hardware de áudio detectado. Conecte um microfone e alto-falantes.",
       "enableFailed": "Falha ao habilitar voz",
       "pipelineFailed": "Falha ao habilitar pipeline de voz"
+    },
+    "verify": {
+      "not_running": "A voz foi habilitada mas o pipeline ainda não está rodando. Abra as configurações de Voz e tente de novo.",
+      "auth_failure": "Sua sessão expirou ao habilitar a voz. Entre novamente para concluir a configuração.",
+      "endpoint_missing": "As rotas de voz não estão disponíveis nesta versão do Sovyx. Atualize o Sovyx ou contate o operador.",
+      "transient_failure": "Não foi possível alcançar o serviço de voz para verificar a configuração. Verifique sua rede e tente de novo."
     }
   },
   "providers": {

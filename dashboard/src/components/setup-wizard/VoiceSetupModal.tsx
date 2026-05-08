@@ -11,6 +11,7 @@
  */
 
 import { useCallback, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import {
   MicIcon,
@@ -23,6 +24,7 @@ import {
   Volume2Icon,
 } from "lucide-react";
 import { api, ApiError } from "@/lib/api";
+import { verifyVoiceRunning } from "@/hooks/use-voice-running-verification";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -67,6 +69,7 @@ interface VoiceSetupModalProps {
 }
 
 export function VoiceSetupModal({ trigger, onEnabled }: VoiceSetupModalProps) {
+  const { t } = useTranslation("voice");
   const [open, setOpen] = useState(false);
   const [enabling, setEnabling] = useState(false);
   const [detected, setDetected] = useState(false);
@@ -97,6 +100,19 @@ export function VoiceSetupModal({ trigger, onEnabled }: VoiceSetupModalProps) {
     try {
       const result = await api.post<EnableResponse>("/api/voice/enable", devices);
       if (result.ok) {
+        // v0.31.6 T3.1 — backend ``ok: true`` only proves the enable
+        // request did not error; it does NOT prove the pipeline is
+        // actually running (mind.yaml write under contextlib.suppress
+        // can drop the persisted state silently). Poll /api/voice/status
+        // before declaring success + closing the modal so an operator
+        // doesn't see "Voice enabled!" toast immediately followed by a
+        // dead voice surface on the next page.
+        const verdict = await verifyVoiceRunning();
+        if (verdict.status !== "running") {
+          setEnableError(t(`setup.verify.${verdict.status}`));
+          setEnabling(false);
+          return;
+        }
         toast.success(
           `Voice pipeline enabled${result.tts_engine ? ` (${result.tts_engine} TTS)` : ""}`,
         );
@@ -139,7 +155,7 @@ export function VoiceSetupModal({ trigger, onEnabled }: VoiceSetupModalProps) {
     } finally {
       setEnabling(false);
     }
-  }, [onEnabled, devices]);
+  }, [onEnabled, devices, t]);
 
   const handleCopy = useCallback(
     (command: string) => {

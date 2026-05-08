@@ -20,51 +20,28 @@
  * Subcomponent of VoiceCalibrationStep per spec §6.3 (T3.4 split).
  * History: introduced in v0.30.25; rc.7 docstring synced with the
  * actual rendered surface (no rollback button — CLI command only).
+ *
+ * v0.31.6 T3.1 + T3.5 — the inline ``_verifyVoiceRunning`` was
+ * extracted to ``hooks/use-voice-running-verification.ts`` so the
+ * receipt-check pattern can be parity-ported across every "voice
+ * just enabled" surface (VoiceSetupModal + VoiceStep::enableWithDevices),
+ * AND swallow-all-errors was replaced with a classified verdict so
+ * 401/403/404 surface differentiated banners (auth_failed,
+ * endpoint_missing) instead of looping the wrong "transient blip"
+ * banner forever.
  */
 
 import { useCallback, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { AlertCircleIcon, CheckCircle2Icon, LoaderIcon } from "lucide-react";
 
-import { api } from "@/lib/api";
 import { Button } from "@/components/ui/button";
+import { verifyVoiceRunning } from "@/hooks/use-voice-running-verification";
 
 interface ProfileReviewProps {
   triageWinnerHid: string | null;
   profilePath: string | null;
   onCompleted: () => void;
-}
-
-interface VoiceStatusResponse {
-  pipeline: { running: boolean };
-}
-
-// v0.31.4 GAP 7 closure: receipt-check retry loop tuning.
-const _STATUS_CHECK_RETRIES = 3;
-const _STATUS_CHECK_DELAY_MS = 1000;
-
-async function _verifyVoiceRunning(): Promise<boolean> {
-  // Polls /api/voice/status up to 3 times with 1s delays. Returns
-  // true the first time pipeline.running===true; false if all
-  // retries exhaust without seeing a running pipeline. Network
-  // errors are treated as transient (continue retry); only a
-  // confirmed not-running state at the final attempt returns false.
-  for (let attempt = 0; attempt < _STATUS_CHECK_RETRIES; attempt += 1) {
-    if (attempt > 0) {
-      await new Promise((resolve) =>
-        setTimeout(resolve, _STATUS_CHECK_DELAY_MS),
-      );
-    }
-    try {
-      const status = await api.get<VoiceStatusResponse>("/api/voice/status");
-      if (status.pipeline.running === true) {
-        return true;
-      }
-    } catch {
-      // Network blip / 4xx — retry up to the cap.
-    }
-  }
-  return false;
 }
 
 export function ProfileReview({
@@ -76,28 +53,62 @@ export function ProfileReview({
   const [verifying, setVerifying] = useState(false);
   const [verificationError, setVerificationError] = useState<string | null>(null);
 
-  // v0.31.4 GAP 7 closure: pre-v0.31.4 ``onCompleted`` advanced the
-  // onboarding immediately on Confirm click — without polling
-  // /api/voice/status to verify the pipeline actually registered.
-  // If backend persistence failed silently (e.g. mind.yaml write
-  // wrapped in contextlib.suppress), operator saw "Confirm" → next
-  // onboarding step + voice off. Now: poll voice status; if running
-  // confirmed → advance; otherwise show error banner with explicit
-  // recovery path (retry / manual enable on Voice page).
+  // v0.31.4 GAP 7 closure (re-extracted in v0.31.6 T3.1): pre-v0.31.4
+  // ``onCompleted`` advanced the onboarding immediately on Confirm
+  // click — without polling /api/voice/status to verify the pipeline
+  // actually registered. If backend persistence failed silently (e.g.
+  // mind.yaml write wrapped in contextlib.suppress), operator saw
+  // "Confirm" → next onboarding step + voice off. Now: poll voice
+  // status; if running confirmed → advance; otherwise show the
+  // verdict-specific banner with explicit recovery path (auth retry,
+  // upgrade Sovyx, retry from settings, …).
   const handleConfirm = useCallback(async () => {
     setVerifying(true);
     setVerificationError(null);
     try {
-      const running = await _verifyVoiceRunning();
-      if (running) {
+      const verdict = await verifyVoiceRunning();
+      if (verdict.status === "running") {
         onCompleted();
-      } else {
-        setVerificationError(
-          t("calibration.review.verification_failed", {
-            defaultValue:
-              "Calibration finished but the voice pipeline isn't running yet. Open Settings → Voice → Recalibrate to retry, or enable manually from the Voice page.",
-          }),
-        );
+        return;
+      }
+      // Map each non-running verdict to a differentiated i18n key so
+      // the operator gets the actionable next step (sign in again,
+      // upgrade, retry from settings) instead of the catch-all banner.
+      switch (verdict.status) {
+        case "auth_failure":
+          setVerificationError(
+            t("calibration.review.auth_failed", {
+              defaultValue:
+                "Your session expired during calibration. Sign in again to confirm voice setup.",
+            }),
+          );
+          break;
+        case "endpoint_missing":
+          setVerificationError(
+            t("calibration.review.endpoint_missing", {
+              defaultValue:
+                "Voice routes aren't available on this Sovyx daemon. Upgrade Sovyx or contact your operator.",
+            }),
+          );
+          break;
+        case "transient_failure":
+          setVerificationError(
+            t("calibration.review.transient_failure", {
+              defaultValue:
+                "Couldn't reach the voice service to verify setup ({{lastError}}). Check your network and retry.",
+              lastError: verdict.lastError,
+            }),
+          );
+          break;
+        case "not_running":
+        default:
+          setVerificationError(
+            t("calibration.review.verification_failed", {
+              defaultValue:
+                "Calibration finished but the voice pipeline isn't running yet. Open Settings → Voice → Recalibrate to retry, or enable manually from the Voice page.",
+            }),
+          );
+          break;
       }
     } finally {
       setVerifying(false);

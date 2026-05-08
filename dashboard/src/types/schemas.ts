@@ -109,6 +109,28 @@ export const OnboardingStateSchema = z.object({
   ollama_models: z.array(z.string()),
 });
 
+/**
+ * POST /api/onboarding/complete runtime schema.
+ *
+ * Backend contract (v0.31.4 GAP 8 closure → v0.31.6 frontend wire-up):
+ *   - ``ok``: always present, ``true`` on success.
+ *   - ``voice_configured``: NEW in v0.31.4. Defensively ``false`` when the
+ *     mind requested ``voice_enabled: true`` but ``VoicePipeline`` is NOT
+ *     registered (registry malfunction OR auto-resume failure). ``true``
+ *     otherwise (voice not requested OR voice came up cleanly).
+ *
+ * ``voice_configured`` is ``.optional()`` so pre-v0.31.4 daemons that don't
+ * emit the field don't trip the schema validator. ``passthrough()`` forwards
+ * any future fields unchanged. Mission:
+ * ``MISSION-voice-v0_31_6-paranoid-closure-2026-05-08.md`` §Phase 3 T3.2.
+ */
+export const OnboardingCompleteResponseSchema = z
+  .object({
+    ok: z.boolean(),
+    voice_configured: z.boolean().optional(),
+  })
+  .passthrough();
+
 // ── Conversations ──
 
 export const MessageSchema = z.object({
@@ -1611,3 +1633,19 @@ export const CalibrationFeatureFlagResponseSchema = z.object({
 export const CalibrationFeatureFlagUpdateRequestSchema = z.object({
   enabled: z.boolean(),
 });
+
+/* ── Voice status receipt-check schema — v0.31.6 T3.1 ──
+ *
+ * Used by ``hooks/use-voice-running-verification.ts`` to confirm the
+ * pipeline actually wired up after ``/api/voice/enable`` returned
+ * ``ok: true`` (or after the calibration completion flow). Only the
+ * single ``pipeline.running`` boolean is load-bearing for the receipt
+ * check — every other ``/api/voice/status`` field is irrelevant here,
+ * so the schema uses ``passthrough()`` to tolerate forward-compatible
+ * additions without warning.
+ */
+export const VoiceStatusResponseSchema = z
+  .object({
+    pipeline: z.object({ running: z.boolean() }),
+  })
+  .passthrough();

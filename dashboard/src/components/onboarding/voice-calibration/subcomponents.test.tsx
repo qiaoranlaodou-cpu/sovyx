@@ -217,6 +217,45 @@ describe("ProfileReview", () => {
     expect(onCompleted).not.toHaveBeenCalled();
     getSpy.mockRestore();
   });
+
+  it("shows auth-failed banner when the verifier returns auth_failure (T3.5)", async () => {
+    // v0.31.6 T3.5: pre-T3.5 the inline _verifyVoiceRunning swallowed
+    // ALL errors as transient blips, so a 401 (token expired during
+    // the 8-12 min calibration) looped the wrong "transient blip"
+    // banner forever. The classified verifier now surfaces a
+    // differentiated i18n key — operator sees "Sign in again" CTA.
+    const { vi: vitest } = await import("vitest");
+    const apiMod = await import("@/lib/api");
+    const getSpy = vitest
+      .spyOn(apiMod.api, "get")
+      .mockRejectedValue(new apiMod.ApiError(401, "Unauthorized"));
+
+    const onCompleted = vi.fn();
+    render(
+      <ProfileReview
+        triageWinnerHid={null}
+        profilePath={null}
+        onCompleted={onCompleted}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button"));
+    const { waitFor } = await import("@/test/test-utils");
+    await waitFor(
+      () =>
+        expect(
+          screen.getByTestId("voice-calibration-verification-failed"),
+        ).toBeInTheDocument(),
+      { timeout: 5000 },
+    );
+    // The auth-failed copy specifically calls out the session expiry
+    // ("session expired", "sign in"); it must NOT use the generic
+    // verification_failed copy ("Recalibrate to retry").
+    const banner = screen.getByTestId("voice-calibration-verification-failed");
+    expect(banner.textContent).toMatch(/session expired/i);
+    expect(banner.textContent).not.toMatch(/Recalibrate/i);
+    expect(onCompleted).not.toHaveBeenCalled();
+    getSpy.mockRestore();
+  });
 });
 
 describe("FallbackBanner", () => {

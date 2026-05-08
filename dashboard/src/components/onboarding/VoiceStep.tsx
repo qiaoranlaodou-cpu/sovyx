@@ -10,6 +10,7 @@ import {
 } from "lucide-react";
 import { useDashboardStore } from "@/stores/dashboard";
 import { api, ApiError } from "@/lib/api";
+import { verifyVoiceRunning } from "@/hooks/use-voice-running-verification";
 import { VoiceCalibrationStep } from "@/components/onboarding/VoiceCalibrationStep";
 import { Button } from "@/components/ui/button";
 import {
@@ -173,6 +174,20 @@ export function VoiceStep({
         }
         const result = await api.post<EnableResult>("/api/voice/enable", body);
         if (result.ok) {
+          // v0.31.6 T3.1 — backend ``ok: true`` only proves the enable
+          // request did not error; it does NOT prove the pipeline is
+          // actually running. Poll /api/voice/status before flipping
+          // setEnabled(true) so the operator doesn't see the "Voice
+          // configured" success state on a dead pipeline (the canonical
+          // v0.31.4 GAP 7 case). Differentiated banner per verdict so
+          // 401/403/404 surface their own actionable message instead of
+          // a single catch-all "verification failed" forever (T3.5).
+          const verdict = await verifyVoiceRunning();
+          if (verdict.status !== "running") {
+            setError(t(`voice.verify.${verdict.status}`));
+            setEnabling(false);
+            return;
+          }
           setEnabled(true);
         }
       } catch (err) {
