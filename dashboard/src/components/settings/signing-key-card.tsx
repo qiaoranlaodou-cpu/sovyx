@@ -31,10 +31,15 @@ import { KeyRoundIcon, Loader2Icon } from "lucide-react";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
+import { useResolvedMindId } from "@/hooks/use-resolved-mind-id";
 import { useDashboardStore } from "@/stores/dashboard";
 
 export function SigningKeyCard() {
   const { t } = useTranslation(["settings"]);
+  // v0.32.2 Phase 3.A Layer A — resolve the active mind id at the
+  // component boundary so every slice call carries an explicit
+  // ``mind_id`` (anti-pattern #35 cluster P0.A7).
+  const { mindId } = useResolvedMindId();
   const status = useDashboardStore((s) => s.signingKeyStatus);
   const loadStatus = useDashboardStore((s) => s.loadSigningKeyStatus);
   const generateKey = useDashboardStore((s) => s.generateSigningKey);
@@ -44,14 +49,14 @@ export function SigningKeyCard() {
 
   // Load on mount; idempotent.
   useEffect(() => {
-    void loadStatus();
-  }, [loadStatus]);
+    void loadStatus(mindId);
+  }, [loadStatus, mindId]);
 
   const handleGenerate = useCallback(
     async (force: boolean) => {
       setBusy(true);
       try {
-        const result = await generateKey({ force });
+        const result = await generateKey(mindId, { force });
         if (result === null) {
           toast.error(t("settings:signingKey.generateFailed"));
           return;
@@ -66,7 +71,7 @@ export function SigningKeyCard() {
         setConfirming(false);
       }
     },
-    [generateKey, t],
+    [generateKey, mindId, t],
   );
 
   const exists = status?.exists ?? false;

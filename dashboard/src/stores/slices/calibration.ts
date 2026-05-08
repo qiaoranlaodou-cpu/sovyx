@@ -155,8 +155,18 @@ export interface CalibrationSlice {
    * Populates ``calibrationBackupCount``; on failure leaves the
    * field null (RollbackButton treats null as "do not render"
    * — conservative gate).
+   *
+   * v0.32.2 Phase 3.A Layer A — anti-pattern #35 cluster P0.A7:
+   * the ``mindId`` argument is REQUIRED so the slice can carry an
+   * explicit ``mind_id`` query parameter to the backend; pre-fix
+   * the backend's ``mind_id="default"`` body default acted as an
+   * implicit sentinel that callers couldn't see at the slice
+   * boundary. Components MUST resolve via ``useResolvedMindId()``
+   * and pass the snapshot's ``mindId`` (which is the canonical
+   * sentinel ``"default"`` while loading — backend resolver
+   * handles that case).
    */
-  loadCalibrationBackups: () => Promise<number | null>;
+  loadCalibrationBackups: (mindId: string) => Promise<number | null>;
 
   /**
    * rc.12 — POST ``/api/voice/calibration/rollback``. Restores
@@ -164,8 +174,13 @@ export interface CalibrationSlice {
    * full response (with remaining-generations counter) on success
    * or null on failure (409 chain exhausted / 500 corrupt backup
    * / 401 / etc.) — error string populated for UI.
+   *
+   * v0.32.2 Phase 3.A Layer A — ``mindId`` REQUIRED. Same contract
+   * as ``loadCalibrationBackups``.
    */
-  rollbackCalibration: () => Promise<CalibrationRollbackResponse | null>;
+  rollbackCalibration: (
+    mindId: string,
+  ) => Promise<CalibrationRollbackResponse | null>;
 
   // ── BT.B.3 (v0.32.0) — Ed25519 signing-key surface ──
 
@@ -182,8 +197,12 @@ export interface CalibrationSlice {
    * Fetch the current signing-key status from the daemon. Idempotent
    * + cheap. Populates ``signingKeyStatus``; on failure leaves the
    * field null (conservative gate; the card stays in "Loading...").
+   *
+   * v0.32.2 Phase 3.A Layer A — ``mindId`` REQUIRED.
    */
-  loadSigningKeyStatus: () => Promise<SigningKeyStatusResponse | null>;
+  loadSigningKeyStatus: (
+    mindId: string,
+  ) => Promise<SigningKeyStatusResponse | null>;
 
   /**
    * Generate a new calibration signing keypair. Returns the full
@@ -191,9 +210,13 @@ export interface CalibrationSlice {
    * null on failure (409 already-exists without force / 500 / etc.)
    * — error string populated for UI. On success the slice also
    * refreshes ``signingKeyStatus`` so the card flips to Generated.
+   *
+   * v0.32.2 Phase 3.A Layer A — ``mindId`` REQUIRED, threaded into
+   * the body. The optional ``req`` carries the ``force`` flag.
    */
   generateSigningKey: (
-    req?: GenerateSigningKeyRequest,
+    mindId: string,
+    req?: Omit<GenerateSigningKeyRequest, "mind_id">,
   ) => Promise<GenerateSigningKeyResponse | null>;
 }
 
@@ -422,10 +445,14 @@ export const createCalibrationSlice: StateCreator<
   },
 
   // ── loadCalibrationBackups (rc.12) ──
-  loadCalibrationBackups: async () => {
+  loadCalibrationBackups: async (mindId: string) => {
     try {
       const data = await api.get<CalibrationBackupListResponse>(
-        "/api/voice/calibration/backups",
+        // v0.32.2 Phase 3.A Layer A — explicit ``mind_id`` query param.
+        // Pre-fix the backend's ``mind_id="default"`` query default
+        // hid the dependency from the slice; now every load explicitly
+        // names which mind's backups it's enumerating.
+        `/api/voice/calibration/backups?mind_id=${encodeURIComponent(mindId)}`,
         { schema: CalibrationBackupListResponseSchema },
       );
       set({ calibrationBackupCount: data.generations.length });
@@ -442,10 +469,11 @@ export const createCalibrationSlice: StateCreator<
   },
 
   // ── loadSigningKeyStatus (BT.B.3) ──
-  loadSigningKeyStatus: async () => {
+  loadSigningKeyStatus: async (mindId: string) => {
     try {
       const data = await api.get<SigningKeyStatusResponse>(
-        "/api/voice/calibration/signing-key",
+        // v0.32.2 Phase 3.A Layer A — explicit ``mind_id`` query param.
+        `/api/voice/calibration/signing-key?mind_id=${encodeURIComponent(mindId)}`,
         { schema: SigningKeyStatusResponseSchema },
       );
       set({ signingKeyStatus: data });
@@ -463,12 +491,22 @@ export const createCalibrationSlice: StateCreator<
   },
 
   // ── generateSigningKey (BT.B.3) ──
-  generateSigningKey: async (req?: GenerateSigningKeyRequest) => {
+  generateSigningKey: async (
+    mindId: string,
+    req?: Omit<GenerateSigningKeyRequest, "mind_id">,
+  ) => {
     set({ calibrationLoading: true, calibrationError: null });
     try {
+      // v0.32.2 Phase 3.A Layer A — thread mindId into the body. The
+      // ``Omit`` on the param keeps callers from supplying their own
+      // mind_id (single source of truth: the resolver via the hook).
+      const body: GenerateSigningKeyRequest = {
+        force: req?.force ?? false,
+        mind_id: mindId,
+      };
       const data = await api.post<GenerateSigningKeyResponse>(
         "/api/voice/calibration/generate-signing-key",
-        req ?? {},
+        body,
         { schema: GenerateSigningKeyResponseSchema },
       );
       // Refresh the status so the card flips from "Not yet generated"
@@ -494,12 +532,14 @@ export const createCalibrationSlice: StateCreator<
   },
 
   // ── rollbackCalibration (rc.12) ──
-  rollbackCalibration: async () => {
+  rollbackCalibration: async (mindId: string) => {
     set({ calibrationLoading: true, calibrationError: null });
     try {
+      // v0.32.2 Phase 3.A Layer A — thread mindId into the body so
+      // multi-mind operators don't roll back the wrong profile.
       const data = await api.post<CalibrationRollbackResponse>(
         "/api/voice/calibration/rollback",
-        {},
+        { mind_id: mindId },
         { schema: CalibrationRollbackResponseSchema },
       );
       set({
@@ -521,7 +561,10 @@ export const createCalibrationSlice: StateCreator<
       // disabling the button) immediately. Best-effort: if the
       // refresh ALSO fails, the conservative-gate path leaves the
       // count null (button disabled) which is the safe fallback.
-      void get().loadCalibrationBackups();
+      //
+      // v0.32.2 Phase 3.A Layer A — thread the same mindId we used
+      // for the rollback so the refresh is consistent.
+      void get().loadCalibrationBackups(mindId);
       return null;
     }
   },

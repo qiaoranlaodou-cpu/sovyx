@@ -9,6 +9,10 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@/test/test-utils";
 
+import {
+  __resetResolvedMindIdCacheForTests,
+  __seedResolvedMindIdForTests,
+} from "@/hooks/use-resolved-mind-id";
 import { VoiceSetupWizard } from "./VoiceSetupWizard";
 
 const mockGet = vi.fn();
@@ -19,6 +23,13 @@ vi.mock("@/lib/api", () => ({
     get: (...args: unknown[]) => mockGet(...args),
     post: (...args: unknown[]) => mockPost(...args),
   },
+  // v0.32.2 Phase 3.A Layer A — VoiceSetupWizard now consumes
+  // ``useResolvedMindId`` so ``handleSave`` carries an explicit
+  // ``mind_id`` to ``/api/voice/enable`` (anti-pattern #35 P0.A3).
+  // The hook calls isAbortError; tests mocking @/lib/api must
+  // expose it.
+  isAbortError: (err: unknown) =>
+    err instanceof Error && err.name === "AbortError",
 }));
 
 const DEVICES_RESPONSE = {
@@ -76,6 +87,21 @@ beforeEach(() => {
   // own mockResolvedValueOnce. Without a default, every transition
   // would crash on .catch() since the unstubbed mock returns undefined.
   mockPost.mockResolvedValue({});
+  // v0.32.2 Phase 3.A Layer A — reset + seed the canonical mindId
+  // hook so the wizard's handleSave POST body carries a deterministic
+  // ``mind_id``. Tests assert the body shape and would flake if the
+  // singleton bled an unexpected mindId from a prior test.
+  __resetResolvedMindIdCacheForTests();
+  __seedResolvedMindIdForTests({
+    complete: true,
+    mind_name: "Default",
+    mind_id: "default",
+    provider_configured: true,
+    default_provider: "ollama",
+    default_model: "llama3.1:latest",
+    ollama_available: true,
+    ollama_models: ["llama3.1:latest"],
+  });
 });
 
 describe("VoiceSetupWizard — devices step", () => {
@@ -390,7 +416,15 @@ describe("VoiceSetupWizard — save + done", () => {
       // NaN; impl emits ``null``. Production device_ids are numeric
       // strings (e.g. ``"5"`` for PortAudio device 5) and would parse
       // to the int. The null fallback lets the backend resolver pick.
-      expect(enableCalls[0][1]).toEqual({ input_device: null });
+      //
+      // v0.32.2 Phase 3.A Layer A — body now ALSO carries an explicit
+      // ``mind_id`` resolved via ``useResolvedMindId``; the seeded
+      // ``"default"`` mindId is honoured by the backend resolver
+      // (it falls through to the active mind via T1.2).
+      expect(enableCalls[0][1]).toEqual({
+        input_device: null,
+        mind_id: "default",
+      });
     });
     await waitFor(() => {
       expect(screen.getByText(/All set/)).toBeInTheDocument();

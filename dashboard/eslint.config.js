@@ -19,6 +19,16 @@ import { defineConfig, globalIgnores } from 'eslint/config'
 //   2. JSX literal:           <Foo mind_id="default" />
 //   3. Default param/destruct: function Foo({ mindId = "default" })
 //   4. Default param/destruct: function Foo({ mind_id = "default" })
+//   5. Object literal value:   { mindId: "default" }   ← v0.32.2 Phase 3.A
+//   6. Object literal value:   { mind_id: "default" }  ← v0.32.2 Phase 3.A
+//
+// v0.32.2 Phase 3.A Layer A extends the rule with patterns 5 + 6 because
+// the audit (MISSION-voice-zero-defect-2026-05-08.md §P0.A7) found four
+// ``stores/slices/calibration.ts`` POST bodies that pre-fix would have
+// hit ``{ mind_id: "default" }`` had a developer added the field by hand
+// instead of routing through the resolver. The rule now blocks that path
+// at lint time so future contributors can't reintroduce the sentinel via
+// an object-literal entry to a request body or a hook config.
 //
 // Test fixtures legitimately need to drive components with the sentinel
 // to validate fallback behaviour (e.g. ``recalibrate-button.test.tsx``
@@ -63,6 +73,29 @@ const MIND_ID_DEFAULT_RULES = {
         'Make the prop required (no default) or accept ``string | null`` and ' +
         'resolve via useResolvedMindId(). The sentinel must never originate ' +
         'in a destructure default.',
+    },
+    {
+      // v0.32.2 Phase 3.A Layer A — Pattern 5: object literal property
+      // ``{ mindId: "default" }``. Catches the missing-field variant of
+      // anti-pattern #35: pre-fix VoiceSetupWizard.handleSave omitted
+      // mind_id entirely, but a "fix" that hardcoded ``"default"`` in
+      // the body would also be wrong. The rule now blocks both.
+      selector:
+        'Property[key.type="Identifier"][key.name="mindId"][value.type="Literal"][value.value="default"]',
+      message:
+        'Object property `mindId: "default"` is forbidden — CLAUDE.md anti-pattern #35. ' +
+        'Resolve via the useResolvedMindId() hook and pass the snapshot\'s ' +
+        '``mindId`` instead of hardcoding the sentinel. The backend\'s T1.2 ' +
+        'resolver is the safety net for ``"default"`` callers, but production ' +
+        'code MUST NOT originate the sentinel.',
+    },
+    {
+      selector:
+        'Property[key.type="Identifier"][key.name="mind_id"][value.type="Literal"][value.value="default"]',
+      message:
+        'Object property `mind_id: "default"` is forbidden — CLAUDE.md anti-pattern #35. ' +
+        'Resolve via the useResolvedMindId() hook and pass the snapshot\'s ' +
+        '``mindId`` to the request body instead of hardcoding the sentinel.',
     },
   ],
 }

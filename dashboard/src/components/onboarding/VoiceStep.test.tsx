@@ -13,6 +13,10 @@ import { render, screen, waitFor, fireEvent } from "@testing-library/react";
 // Initialize i18n synchronously so VoiceStep's useTranslation finds
 // resources. v0.30.4 migrated the wizard opt-in strings to t() calls.
 import "@/lib/i18n";
+import {
+  __resetResolvedMindIdCacheForTests,
+  __seedResolvedMindIdForTests,
+} from "@/hooks/use-resolved-mind-id";
 import { VoiceStep } from "./VoiceStep";
 
 const mockGet = vi.fn();
@@ -31,6 +35,12 @@ vi.mock("@/lib/api", () => ({
       super(message);
     }
   },
+  // v0.32.2 Phase 3.A Layer A — VoiceStep now consumes
+  // ``useResolvedMindId`` which calls ``isAbortError`` in its catch
+  // path. Tests that mock ``@/lib/api`` MUST surface this export or
+  // the hook crashes with an UnhandledRejection.
+  isAbortError: (err: unknown) =>
+    err instanceof Error && err.name === "AbortError",
 }));
 
 const hardwareInfo = {
@@ -91,6 +101,14 @@ beforeEach(() => {
   // step_dwell + completion telemetry calls api.post; without a
   // default, undefined.catch() crashes the cleanup hook on unmount.
   mockPost.mockResolvedValue({ ok: true });
+  // v0.32.2 Phase 3.A Layer A — VoiceStep now subscribes to
+  // ``useResolvedMindId``. Reset its module-level singleton between
+  // tests so cached state from one test doesn't leak into the next.
+  // Tests that need a real mindId from the hook seed it explicitly;
+  // tests that exercise the fallback path leave it unseeded so the
+  // hook's first subscription fires the fetch (and the test's mockGet
+  // is configured to fail or return null mind_id as appropriate).
+  __resetResolvedMindIdCacheForTests();
 });
 
 describe("VoiceStep", () => {
@@ -512,6 +530,20 @@ describe("VoiceStep — mindId resolution (v0.31.6 C1)", () => {
       runtime_override_active: false,
       platform_supported: true,
     });
+    // v0.32.2 Phase 3.A Layer A — VoiceStep also subscribes to the
+    // canonical hook (the prop wins, but the subscription still
+    // kicks off a fetch). Seed the singleton with a benign payload
+    // so the hook's first-mount fetch is short-circuited.
+    __seedResolvedMindIdForTests({
+      complete: true,
+      mind_name: "Meu Mind",
+      mind_id: "meu-mind",
+      provider_configured: true,
+      default_provider: "ollama",
+      default_model: "llama3.1:latest",
+      ollama_available: true,
+      ollama_models: ["llama3.1:latest"],
+    });
 
     render(
       <VoiceStep
@@ -545,6 +577,31 @@ describe("VoiceStep — mindId resolution (v0.31.6 C1)", () => {
       platform_supported: true,
     });
 
+    // v0.32.2 Phase 3.A Layer A — VoiceStep now reads the canonical
+    // ``useResolvedMindId`` hook when the prop is null. The hook fires
+    // its OWN warn breadcrumb on the fallback path. Override the
+    // ``stubGetsWithCalibrationFlag`` mock to ALSO reject
+    // ``/api/onboarding/state`` so the hook's fallback path engages
+    // while keeping the calibration-step's other GETs satisfied.
+    const flag = {
+      enabled: true,
+      runtime_override_active: false,
+      platform_supported: true,
+    };
+    mockGet.mockImplementation((url: string) => {
+      if (url === "/api/voice/hardware-detect")
+        return Promise.resolve(hardwareInfo);
+      if (url === "/api/voice/voices") return Promise.resolve(voiceCatalog);
+      if (url === "/api/voice/models/status")
+        return Promise.resolve(modelsStatus);
+      if (url === "/api/voice/calibration/feature-flag")
+        return Promise.resolve(flag);
+      if (url === "/api/voice/wizard/devices")
+        return Promise.resolve({ devices: [] });
+      if (url === "/api/onboarding/state")
+        return Promise.reject(new Error("simulated /onboarding/state failure"));
+      return Promise.reject(new Error(`unexpected GET ${url}`));
+    });
     const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
 
     render(
@@ -563,8 +620,15 @@ describe("VoiceStep — mindId resolution (v0.31.6 C1)", () => {
     const node = screen.getByTestId("voice-calibration-step-sentinel");
     expect(node.getAttribute("data-mind-id")).toBe("default");
     expect(calibrationMindIdSpy).toHaveBeenCalledWith("default");
-    expect(warnSpy).toHaveBeenCalled();
-    expect(warnSpy.mock.calls[0]?.[0]).toMatch(/falling back to 'default'/);
+    // The hook fires a warn — assert the canonical message anchor
+    // that the singleton emits (not the legacy resolveMindId text).
+    await waitFor(() => {
+      expect(warnSpy).toHaveBeenCalled();
+    });
+    const messages = warnSpy.mock.calls
+      .map((call) => String(call[0]))
+      .join(" || ");
+    expect(messages).toMatch(/useResolvedMindId|falling back/);
 
     warnSpy.mockRestore();
   });
@@ -577,12 +641,28 @@ describe("VoiceStep — mindId resolution (v0.31.6 C1)", () => {
         platform_supported: true,
       },
     });
-    stubGetsWithCalibrationFlag({
+    // v0.32.2 Phase 3.A Layer A — same hook-driven fallback contract.
+    // Force the hook's /api/onboarding/state fetch to fail so the
+    // sentinel "default" surfaces and the hook fires its warn.
+    const flag = {
       enabled: true,
       runtime_override_active: false,
       platform_supported: true,
+    };
+    mockGet.mockImplementation((url: string) => {
+      if (url === "/api/voice/hardware-detect")
+        return Promise.resolve(hardwareInfo);
+      if (url === "/api/voice/voices") return Promise.resolve(voiceCatalog);
+      if (url === "/api/voice/models/status")
+        return Promise.resolve(modelsStatus);
+      if (url === "/api/voice/calibration/feature-flag")
+        return Promise.resolve(flag);
+      if (url === "/api/voice/wizard/devices")
+        return Promise.resolve({ devices: [] });
+      if (url === "/api/onboarding/state")
+        return Promise.reject(new Error("simulated /onboarding/state failure"));
+      return Promise.reject(new Error(`unexpected GET ${url}`));
     });
-
     const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
 
     render(<VoiceStep onConfigured={() => {}} onSkip={() => {}} />);
@@ -593,7 +673,9 @@ describe("VoiceStep — mindId resolution (v0.31.6 C1)", () => {
       ).toBeInTheDocument();
     });
     expect(calibrationMindIdSpy).toHaveBeenCalledWith("default");
-    expect(warnSpy).toHaveBeenCalled();
+    await waitFor(() => {
+      expect(warnSpy).toHaveBeenCalled();
+    });
 
     warnSpy.mockRestore();
   });

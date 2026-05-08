@@ -159,9 +159,16 @@ export const createTrainingSlice: StateCreator<
     // Resolve auth token from sessionStorage (in-memory fallback per
     // CLAUDE.md auth rule). If absent, the WS handshake will fail
     // with 4401 and the slice surfaces a sensible error.
+    //
+    // v0.32.2 Phase 3.A Layer A — closes anti-pattern #35 cluster
+    // P0.A5: pre-fix this read ``sovyx_auth_token`` while every other
+    // site (lib/api.ts, hooks, calibration slice) reads ``sovyx_token``.
+    // Wake-word training WS auth was the only consumer hitting the
+    // wrong key, masked by a co-bugged test that ALSO read the wrong
+    // key. Operators trying to train wake words got 4401 silently.
     const token =
       typeof window !== "undefined"
-        ? window.sessionStorage.getItem("sovyx_auth_token") || ""
+        ? window.sessionStorage.getItem("sovyx_token") || ""
         : "";
 
     // Construct ws:// or wss:// URL. BASE_URL may be empty (relative

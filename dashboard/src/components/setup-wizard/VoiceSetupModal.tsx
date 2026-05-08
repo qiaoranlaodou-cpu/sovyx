@@ -24,6 +24,7 @@ import {
   Volume2Icon,
 } from "lucide-react";
 import { api, ApiError } from "@/lib/api";
+import { useResolvedMindId } from "@/hooks/use-resolved-mind-id";
 import { verifyVoiceRunning } from "@/hooks/use-voice-running-verification";
 import { Button } from "@/components/ui/button";
 import {
@@ -70,6 +71,11 @@ interface VoiceSetupModalProps {
 
 export function VoiceSetupModal({ trigger, onEnabled }: VoiceSetupModalProps) {
   const { t } = useTranslation("voice");
+  // v0.32.2 Phase 3.A Layer A — anti-pattern #35 cluster P0.A4. Pre-fix
+  // ``handleEnable`` POSTed the bare ``devices`` array as the body
+  // (zero ``mind_id``); now the body wraps the devices alongside the
+  // resolved mind_id so multi-mind operators target the right mind.
+  const { mindId } = useResolvedMindId();
   const [open, setOpen] = useState(false);
   const [enabling, setEnabling] = useState(false);
   const [detected, setDetected] = useState(false);
@@ -98,7 +104,14 @@ export function VoiceSetupModal({ trigger, onEnabled }: VoiceSetupModalProps) {
     setEnableError(null);
 
     try {
-      const result = await api.post<EnableResponse>("/api/voice/enable", devices);
+      // v0.32.2 Phase 3.A Layer A — body wraps devices + explicit mind_id.
+      // The backend's ``/api/voice/enable`` accepts `input_device` /
+      // `output_device` at the top level alongside `mind_id`; spreading
+      // the existing `devices` object keeps backward compatibility.
+      const result = await api.post<EnableResponse>("/api/voice/enable", {
+        ...devices,
+        mind_id: mindId,
+      });
       if (result.ok) {
         // v0.31.6 T3.1 — backend ``ok: true`` only proves the enable
         // request did not error; it does NOT prove the pipeline is
@@ -155,7 +168,7 @@ export function VoiceSetupModal({ trigger, onEnabled }: VoiceSetupModalProps) {
     } finally {
       setEnabling(false);
     }
-  }, [onEnabled, devices, t]);
+  }, [onEnabled, devices, mindId, t]);
 
   const handleCopy = useCallback(
     (command: string) => {

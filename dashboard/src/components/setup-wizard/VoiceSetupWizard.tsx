@@ -18,6 +18,7 @@ import type { JSX } from "react";
 import { useEffect, useReducer, useRef } from "react";
 import { useTranslation } from "react-i18next";
 
+import { useResolvedMindId } from "@/hooks/use-resolved-mind-id";
 import { api } from "@/lib/api";
 import type {
   WizardDevicesResponse,
@@ -114,6 +115,13 @@ export function VoiceSetupWizard({
   onCancel,
 }: VoiceSetupWizardProps): JSX.Element {
   const { t } = useTranslation("voice");
+  // v0.32.2 Phase 3.A Layer A — anti-pattern #35 cluster P0.A3 closure.
+  // Pre-fix ``handleSave`` POSTed to ``/api/voice/enable`` with NO
+  // ``mind_id`` field; backend's resolver fixed-up the active mind in
+  // single-mind setups, but multi-mind operators couldn't target the
+  // intended mind explicitly. Now: thread the resolved mindId into
+  // every persistence call so the request is unambiguous.
+  const { mindId } = useResolvedMindId();
   const [state, dispatch] = useReducer(_reducer, _INITIAL_STATE);
 
   // ── A/B telemetry (Mission v0.30.1 §T1.2) ─────────────────────────
@@ -262,8 +270,13 @@ export function VoiceSetupWizard({
       // index. The wizard's WizardDeviceInfo.device_id IS the integer
       // index serialised as a string (see wizard backend route).
       const inputDevice = Number.parseInt(state.selectedDeviceId, 10);
+      // v0.32.2 Phase 3.A Layer A — explicit mind_id in body. The
+      // backend's POST /api/voice/enable resolver still handles the
+      // sentinel ``"default"`` (which the hook returns while loading),
+      // so the wizard's save path remains correct on first mount.
       const body: Record<string, unknown> = {
         input_device: Number.isFinite(inputDevice) ? inputDevice : null,
+        mind_id: mindId,
       };
       const result = await api.post<{ ok: boolean; error?: string }>(
         "/api/voice/enable",

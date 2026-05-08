@@ -30,6 +30,7 @@ import { Loader2Icon, RotateCcwIcon } from "lucide-react";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
+import { useResolvedMindId } from "@/hooks/use-resolved-mind-id";
 import { useDashboardStore } from "@/stores/dashboard";
 import { isWizardCalibrationTerminal } from "@/types/api";
 
@@ -39,6 +40,11 @@ const _RETRY_DELAY_MS = 1500;
 
 export function RollbackButton() {
   const { t } = useTranslation(["settings"]);
+  // v0.32.2 Phase 3.A Layer A — resolve the active mind id at the
+  // component boundary so every slice call carries an explicit
+  // ``mind_id``. The hook returns the canonical ``"default"``
+  // sentinel while loading; the backend resolver handles that case.
+  const { mindId } = useResolvedMindId();
   const backupCount = useDashboardStore((s) => s.calibrationBackupCount);
   const currentJob = useDashboardStore((s) => s.currentCalibrationJob);
   const loadBackups = useDashboardStore((s) => s.loadCalibrationBackups);
@@ -60,8 +66,8 @@ export function RollbackButton() {
   // Load backup count on mount. Idempotent + cheap (read-only
   // enumeration).
   useEffect(() => {
-    void loadBackups();
-  }, [loadBackups]);
+    void loadBackups(mindId);
+  }, [loadBackups, mindId]);
 
   // rc.15 LOW.1 — auto-refresh the backup count when a calibration
   // run reaches a terminal state. Pre-rc.15 the count loaded only at
@@ -75,8 +81,8 @@ export function RollbackButton() {
   useEffect(() => {
     if (currentJob === null) return;
     if (!isWizardCalibrationTerminal(currentJob.status)) return;
-    void loadBackups();
-  }, [currentJob?.job_id, currentJob?.status, loadBackups]);
+    void loadBackups(mindId);
+  }, [currentJob?.job_id, currentJob?.status, loadBackups, mindId]);
 
   // rc.15 LOW.4 — single retry on initial-mount load failure. The
   // api.get layer already retries 429/503/5xx; this catch covers the
@@ -90,15 +96,15 @@ export function RollbackButton() {
     if (backupCount !== null || retriedRef.current) return;
     const id = setTimeout(() => {
       retriedRef.current = true;
-      void loadBackups();
+      void loadBackups(mindId);
     }, _RETRY_DELAY_MS);
     return () => clearTimeout(id);
-  }, [backupCount, loadBackups]);
+  }, [backupCount, loadBackups, mindId]);
 
   const handleRollback = useCallback(async () => {
     setBusy(true);
     try {
-      const result = await rollbackCalibration();
+      const result = await rollbackCalibration(mindId);
       if (result === null) {
         toast.error(t("settings:rollback.failed"));
         return;
@@ -112,7 +118,7 @@ export function RollbackButton() {
       setBusy(false);
       setConfirming(false);
     }
-  }, [rollbackCalibration, t]);
+  }, [rollbackCalibration, mindId, t]);
 
   // Conservative gate: render disabled when the count hasn't loaded
   // yet (null), is zero, OR the platform doesn't support calibration

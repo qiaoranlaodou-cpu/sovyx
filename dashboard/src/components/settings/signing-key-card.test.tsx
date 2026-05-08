@@ -10,6 +10,10 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, waitFor } from "@/test/test-utils";
 
+import {
+  __resetResolvedMindIdCacheForTests,
+  __seedResolvedMindIdForTests,
+} from "@/hooks/use-resolved-mind-id";
 import { SigningKeyCard } from "./signing-key-card";
 
 const mockFetch = vi.fn();
@@ -36,6 +40,22 @@ beforeEach(() => {
   mockFetch.mockReset();
   mockToastSuccess.mockReset();
   mockToastError.mockReset();
+  // v0.32.2 Phase 3.A Layer A — SigningKeyCard now subscribes to
+  // ``useResolvedMindId`` so ``loadSigningKeyStatus`` / ``generateKey``
+  // can carry an explicit ``mind_id``. Reset + seed the hook so the
+  // mockFetch queue's strict ordering isn't disturbed by the hook's
+  // own /api/onboarding/state fetch.
+  __resetResolvedMindIdCacheForTests();
+  __seedResolvedMindIdForTests({
+    complete: true,
+    mind_name: "Default",
+    mind_id: "default",
+    provider_configured: true,
+    default_provider: "ollama",
+    default_model: "llama3.1:latest",
+    ollama_available: true,
+    ollama_models: ["llama3.1:latest"],
+  });
 });
 
 describe("SigningKeyCard", () => {

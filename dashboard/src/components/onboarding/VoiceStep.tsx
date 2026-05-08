@@ -10,6 +10,7 @@ import {
 } from "lucide-react";
 import { useDashboardStore } from "@/stores/dashboard";
 import { api, ApiError } from "@/lib/api";
+import { useResolvedMindId } from "@/hooks/use-resolved-mind-id";
 import { verifyVoiceRunning } from "@/hooks/use-voice-running-verification";
 import { VoiceCalibrationStep } from "@/components/onboarding/VoiceCalibrationStep";
 import { Button } from "@/components/ui/button";
@@ -58,38 +59,44 @@ interface EnableResult {
   tts_engine?: string;
 }
 
-/**
- * Resolve the active mind id, falling back to the literal ``"default"``
- * sentinel only when the resolver failed (state hasn't loaded OR no
- * mind_config mounted server-side). Emits a console.warn on the
- * fallback path so operators triaging "calibration ran under wrong
- * mind" have a breadcrumb. v0.31.6 C1 closure (anti-pattern #35
- * frontend reincidente).
- */
-function resolveMindId(mindId: string | null | undefined): string {
-  if (typeof mindId === "string" && mindId.length > 0) {
-    return mindId;
-  }
-  // eslint-disable-next-line no-console
-  console.warn(
-    "VoiceStep.resolveMindId: falling back to 'default' — backend " +
-      "/api/onboarding/state did not return a mind_id. Calibration " +
-      "may persist to the wrong path.",
-  );
-  return "default";
-}
+// v0.32.2 Phase 3.A Layer A — anti-pattern #35 cluster P0.A6 closure.
+//
+// Pre-fix: a module-level ``resolveMindId(prop) -> string`` function
+// returned the literal ``"default"`` sentinel as a fallback when the
+// prop was null/undefined. The ESLint rule blocks JSX literals + default
+// params with ``"default"`` but cannot detect a function-body fallback
+// — so the bug class re-surfaced here.
+//
+// Replacement contract: the component reads the active mind id from
+// :func:`useResolvedMindId` (the canonical singleton hook). Parents that
+// already resolved + threaded the prop (e.g. ``pages/onboarding.tsx``)
+// take precedence; the hook's resolved value is the fallback. When BOTH
+// are unavailable the hook itself fires a single console.warn breadcrumb
+// (once per page lifetime, gated by the singleton — no duplicate warns).
+// The literal ``"default"`` sentinel never originates here anymore.
 
 export function VoiceStep({
   onConfigured,
   onSkip,
   language,
-  mindId,
+  mindId: mindIdProp,
 }: VoiceStepProps) {
   // Two namespaces: ``onboarding`` is the dominant context (page copy
   // + error messages); ``voice`` is reused for wizard-related strings
   // shared with voice.tsx (Mission v0.30.4 §wizard.* keys).
   const { t } = useTranslation("onboarding");
   const { t: tVoice } = useTranslation("voice");
+  // v0.32.2 Phase 3.A Layer A — anti-pattern #35 cluster P0.A6.
+  // Prefer the parent-supplied prop (e.g. ``pages/onboarding.tsx``
+  // already resolved + threaded it); fall back to the canonical hook.
+  // The hook's snapshot returns the ``"default"`` sentinel only when
+  // the resolver itself failed AND emits a single console.warn
+  // breadcrumb gated by the module-level singleton — no duplicates.
+  const { mindId: hookMindId } = useResolvedMindId();
+  const resolvedMindId =
+    typeof mindIdProp === "string" && mindIdProp.length > 0
+      ? mindIdProp
+      : hookMindId;
   // v0.30.22 T3.10: replace the hardcoded CALIBRATION_WIZARD_ENABLED
   // const with a runtime fetch of GET /api/voice/calibration/feature-flag.
   // The flag's source-of-truth is now EngineConfig.voice.calibration_wizard_enabled
@@ -299,7 +306,7 @@ export function VoiceStep({
                        optional VoiceSetupWizard. */}
       {calibrationWizardEnabled && !enabled && !missingDeps && !wizardOpen ? (
         <VoiceCalibrationStep
-          mindId={resolveMindId(mindId)}
+          mindId={resolvedMindId}
           onCompleted={onConfigured}
           onFallback={() => {
             // FALLBACK terminal flips us to the legacy flow; the

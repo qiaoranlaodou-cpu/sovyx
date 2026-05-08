@@ -263,3 +263,59 @@ describe("training slice — unsubscribeFromTrainingJob", () => {
     expect(useDashboardStore.getState().trainingWs).toBeNull();
   });
 });
+
+// ── subscribeToTrainingJob — WS auth token regression ─────────────────
+//
+// Phase 3.A Layer A — anti-pattern #35 cluster P0.A5. Pre-fix this slice
+// read ``sessionStorage.sovyx_auth_token`` while every other site
+// (lib/api.ts, hooks, calibration slice) reads ``sovyx_token``. The
+// token-key drift broke wake-word training WS auth silently because
+// no test exercised the WS path. Pin the regression: the URL must
+// carry the canonical key's value.
+
+describe("training slice — subscribeToTrainingJob WS auth token", () => {
+  it("constructs ws URL using the canonical sovyx_token key", () => {
+    sessionStorage.clear();
+    sessionStorage.setItem("sovyx_token", "canonical-token-abc");
+    // Drift sentinel: if production code regresses to the wrong key,
+    // we want the test to fail with a clear signal rather than masking.
+    sessionStorage.setItem("sovyx_auth_token", "DRIFT-SENTINEL-MUST-NOT-APPEAR");
+
+    let observedUrl = "";
+    const OriginalWebSocket = globalThis.WebSocket;
+    class MockWebSocket {
+      url: string;
+      onopen: ((this: WebSocket) => unknown) | null = null;
+      onmessage: ((this: WebSocket, ev: MessageEvent) => unknown) | null = null;
+      onclose: ((this: WebSocket, ev: CloseEvent) => unknown) | null = null;
+      onerror: ((this: WebSocket, ev: Event) => unknown) | null = null;
+      readyState = 0;
+      constructor(url: string) {
+        this.url = url;
+        observedUrl = url;
+      }
+      close(): void {
+        this.readyState = 3;
+      }
+      send(): void {
+        // no-op — tests don't exercise outbound frames
+      }
+    }
+    // ts-eslint understandably balks at the assignment — this is the
+    // standard jsdom WebSocket-mock pattern.
+    (globalThis as { WebSocket: typeof WebSocket }).WebSocket =
+      MockWebSocket as unknown as typeof WebSocket;
+
+    try {
+      useDashboardStore.getState().subscribeToTrainingJob("aria-job-1");
+      expect(observedUrl).toContain("canonical-token-abc");
+      expect(observedUrl).not.toContain("DRIFT-SENTINEL-MUST-NOT-APPEAR");
+    } finally {
+      // Tear down the WS + restore the global so subsequent tests are clean.
+      useDashboardStore.getState().unsubscribeFromTrainingJob();
+      (globalThis as { WebSocket: typeof WebSocket }).WebSocket =
+        OriginalWebSocket;
+      sessionStorage.clear();
+    }
+  });
+});
