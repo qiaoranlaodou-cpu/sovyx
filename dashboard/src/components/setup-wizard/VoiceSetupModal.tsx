@@ -127,7 +127,9 @@ export function VoiceSetupModal({ trigger, onEnabled }: VoiceSetupModalProps) {
           return;
         }
         toast.success(
-          `Voice pipeline enabled${result.tts_engine ? ` (${result.tts_engine} TTS)` : ""}`,
+          result.tts_engine
+            ? t("setupModal.toastEnabledWithEngine", { engine: result.tts_engine })
+            : t("setupModal.toastEnabled"),
         );
         setOpen(false);
         onEnabled?.();
@@ -143,7 +145,7 @@ export function VoiceSetupModal({ trigger, onEnabled }: VoiceSetupModalProps) {
             });
           } else if (body.error === "capture_silence") {
             setSilenceInfo({
-              detail: body.detail ?? "Microphone delivered only silence.",
+              detail: body.detail ?? t("setupModal.fallbackError.silenceFallback"),
               device: body.device ?? null,
               hostApi: body.host_api ?? null,
               observedPeakRmsDb:
@@ -157,13 +159,13 @@ export function VoiceSetupModal({ trigger, onEnabled }: VoiceSetupModalProps) {
           ) {
             setAudioError(true);
           } else {
-            setEnableError(body.error ?? "Enable failed");
+            setEnableError(body.error ?? t("setupModal.fallbackError.enableFailed"));
           }
         } catch {
-          setEnableError(err.message || "Failed to enable voice pipeline");
+          setEnableError(err.message || t("setupModal.fallbackError.genericFailure"));
         }
       } else {
-        setEnableError("Failed to enable voice pipeline");
+        setEnableError(t("setupModal.fallbackError.genericFailure"));
       }
     } finally {
       setEnabling(false);
@@ -186,18 +188,15 @@ export function VoiceSetupModal({ trigger, onEnabled }: VoiceSetupModalProps) {
           (trigger as React.ReactElement) ?? (
             <Button variant="outline" size="sm">
               <MicIcon className="mr-1.5 size-3.5" />
-              Set up Voice
+              {t("setupModal.trigger")}
             </Button>
           )
         }
       />
       <DialogContent className="sm:max-w-lg">
         <DialogHeader>
-          <DialogTitle>Set up Voice</DialogTitle>
-          <DialogDescription>
-            Detect your hardware and enable the voice pipeline for local
-            speech-to-text, text-to-speech, and voice activity detection.
-          </DialogDescription>
+          <DialogTitle>{t("setupModal.title")}</DialogTitle>
+          <DialogDescription>{t("setupModal.description")}</DialogDescription>
         </DialogHeader>
 
         <div className="py-2 space-y-4">
@@ -208,7 +207,7 @@ export function VoiceSetupModal({ trigger, onEnabled }: VoiceSetupModalProps) {
             <div className="rounded-[var(--svx-radius-lg)] border border-[var(--svx-color-warning)]/40 bg-[var(--svx-color-warning)]/5 p-4 space-y-3">
               <div className="flex items-center gap-2 text-xs font-medium text-[var(--svx-color-text-primary)]">
                 <PackageIcon className="size-4 text-[var(--svx-color-warning)]" />
-                Voice Dependencies
+                {t("setupModal.depsPanel.title")}
               </div>
 
               <div className="space-y-1.5">
@@ -222,7 +221,7 @@ export function VoiceSetupModal({ trigger, onEnabled }: VoiceSetupModalProps) {
                       {dep.package}
                     </span>
                     <span className="text-[var(--svx-color-text-tertiary)]">
-                      (not installed)
+                      {t("setupModal.depsPanel.notInstalled")}
                     </span>
                   </div>
                 ))}
@@ -230,7 +229,7 @@ export function VoiceSetupModal({ trigger, onEnabled }: VoiceSetupModalProps) {
 
               <div className="space-y-2">
                 <p className="text-[11px] text-[var(--svx-color-text-secondary)]">
-                  One-time install:
+                  {t("setupModal.depsPanel.oneTimeInstall")}
                 </p>
                 <div className="flex items-center gap-2 rounded-[var(--svx-radius-md)] border border-[var(--svx-color-border-default)] bg-[var(--svx-color-bg-surface)] px-3 py-2">
                   <code className="flex-1 text-xs font-mono text-[var(--svx-color-text-primary)]">
@@ -240,7 +239,7 @@ export function VoiceSetupModal({ trigger, onEnabled }: VoiceSetupModalProps) {
                     type="button"
                     onClick={() => handleCopy(depsIssue.command)}
                     className="shrink-0 rounded-[var(--svx-radius-sm)] p-1 text-[var(--svx-color-text-tertiary)] hover:text-[var(--svx-color-text-primary)] transition-colors"
-                    aria-label="Copy command"
+                    aria-label={t("setupModal.depsPanel.copyCommandAria")}
                   >
                     {copied ? (
                       <CheckIcon className="size-3.5 text-[var(--svx-color-success)]" />
@@ -250,8 +249,7 @@ export function VoiceSetupModal({ trigger, onEnabled }: VoiceSetupModalProps) {
                   </button>
                 </div>
                 <p className="text-[11px] text-[var(--svx-color-text-tertiary)]">
-                  After installing, restart the Sovyx daemon and click Enable
-                  Voice again.
+                  {t("setupModal.depsPanel.afterInstallHint")}
                 </p>
               </div>
             </div>
@@ -262,10 +260,10 @@ export function VoiceSetupModal({ trigger, onEnabled }: VoiceSetupModalProps) {
             <div className="rounded-[var(--svx-radius-lg)] border border-[var(--svx-color-error)]/40 bg-[var(--svx-color-error)]/5 p-4 space-y-3">
               <div className="flex items-center gap-2 text-xs font-medium text-[var(--svx-color-text-primary)]">
                 <Volume2Icon className="size-4 text-[var(--svx-color-error)]" />
-                No Audio Hardware Detected
+                {t("setupModal.audioErrorPanel.title")}
               </div>
               <p className="text-xs text-[var(--svx-color-text-secondary)] leading-relaxed">
-                Voice requires a microphone and speakers. Connect audio hardware, then click Enable Voice again.
+                {t("setupModal.audioErrorPanel.body")}
               </p>
             </div>
           )}
@@ -277,18 +275,15 @@ export function VoiceSetupModal({ trigger, onEnabled }: VoiceSetupModalProps) {
             <div className="rounded-[var(--svx-radius-lg)] border border-[var(--svx-color-error)]/40 bg-[var(--svx-color-error)]/5 p-4 space-y-3">
               <div className="flex items-center gap-2 text-xs font-medium text-[var(--svx-color-text-primary)]">
                 <MicOffIcon className="size-4 text-[var(--svx-color-error)]" />
-                Microphone Delivered Only Silence
+                {t("setupModal.silencePanel.title")}
               </div>
               <p className="text-xs text-[var(--svx-color-text-secondary)] leading-relaxed">
-                The selected microphone opened successfully but produced no
-                audible signal on any host API. This usually means the mic is
-                muted in Windows privacy settings, held exclusively by another
-                app, or physically disconnected.
+                {t("setupModal.silencePanel.body")}
               </p>
               <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-[11px] font-mono text-[var(--svx-color-text-tertiary)]">
                 {silenceInfo.hostApi && (
                   <>
-                    <dt>Host API</dt>
+                    <dt>{t("setupModal.silencePanel.hostApiLabel")}</dt>
                     <dd className="text-[var(--svx-color-text-secondary)]">
                       {silenceInfo.hostApi}
                     </dd>
@@ -296,7 +291,7 @@ export function VoiceSetupModal({ trigger, onEnabled }: VoiceSetupModalProps) {
                 )}
                 {silenceInfo.device !== null && (
                   <>
-                    <dt>Device</dt>
+                    <dt>{t("setupModal.silencePanel.deviceLabel")}</dt>
                     <dd className="text-[var(--svx-color-text-secondary)]">
                       {String(silenceInfo.device)}
                     </dd>
@@ -304,7 +299,7 @@ export function VoiceSetupModal({ trigger, onEnabled }: VoiceSetupModalProps) {
                 )}
                 {Number.isFinite(silenceInfo.observedPeakRmsDb) && (
                   <>
-                    <dt>Peak RMS</dt>
+                    <dt>{t("setupModal.silencePanel.peakRmsLabel")}</dt>
                     <dd className="text-[var(--svx-color-text-secondary)]">
                       {silenceInfo.observedPeakRmsDb.toFixed(1)} dBFS
                     </dd>
@@ -312,7 +307,7 @@ export function VoiceSetupModal({ trigger, onEnabled }: VoiceSetupModalProps) {
                 )}
               </dl>
               <p className="text-[11px] text-[var(--svx-color-text-tertiary)]">
-                Fix the mic and click Enable Voice again.
+                {t("setupModal.silencePanel.fixHint")}
               </p>
             </div>
           )}
@@ -338,7 +333,7 @@ export function VoiceSetupModal({ trigger, onEnabled }: VoiceSetupModalProps) {
               ) : (
                 <MicIcon className="mr-2 size-3.5" />
               )}
-              {enabling ? "Enabling..." : "Enable Voice"}
+              {enabling ? t("setupModal.enablingAction") : t("setupModal.enableAction")}
             </Button>
           )}
         </DialogFooter>

@@ -548,6 +548,39 @@
       "ws_connection_error": "Error de conexión WebSocket de calibración"
     }
   },
+  "setupModal": {
+    "trigger": "Configurar voz",
+    "title": "Configurar voz",
+    "description": "Detecta tu hardware y activa el pipeline de voz para reconocimiento de voz, síntesis de voz y detección de actividad vocal locales.",
+    "enableAction": "Activar voz",
+    "enablingAction": "Activando...",
+    "toastEnabled": "Pipeline de voz activado",
+    "toastEnabledWithEngine": "Pipeline de voz activado (TTS {{engine}})",
+    "depsPanel": {
+      "title": "Dependencias de voz",
+      "notInstalled": "(no instalado)",
+      "oneTimeInstall": "Instalación única:",
+      "copyCommandAria": "Copiar comando",
+      "afterInstallHint": "Después de instalar, reinicia el daemon de Sovyx y pulsa Activar voz de nuevo."
+    },
+    "audioErrorPanel": {
+      "title": "No se detectó hardware de audio",
+      "body": "Voz requiere un micrófono y altavoces. Conecta el hardware de audio y pulsa Activar voz de nuevo."
+    },
+    "silencePanel": {
+      "title": "El micrófono entregó solo silencio",
+      "body": "El micrófono seleccionado se abrió correctamente pero no produjo señal audible en ninguna API de host. Esto generalmente significa que el micrófono está silenciado en la configuración de privacidad de Windows, está siendo usado exclusivamente por otra app, o está físicamente desconectado.",
+      "hostApiLabel": "API de host",
+      "deviceLabel": "Dispositivo",
+      "peakRmsLabel": "Pico RMS",
+      "fixHint": "Arregla el micrófono y pulsa Activar voz de nuevo."
+    },
+    "fallbackError": {
+      "enableFailed": "Falló la activación",
+      "genericFailure": "Falló la activación del pipeline de voz",
+      "silenceFallback": "El micrófono entregó solo silencio."
+    }
+  },
   "deviceContention": {
     "title": "El micrófono está siendo usado por otro cliente de audio",
     "namedBody": "<0>{{processHint}}</0> está capturando en <1>{{hostApi}}</1>. Sovyx puede probar un dispositivo virtual del gestor de sesión.",

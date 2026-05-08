@@ -548,6 +548,39 @@
       "ws_connection_error": "Erro de conexão WebSocket da calibração"
     }
   },
+  "setupModal": {
+    "trigger": "Configurar voz",
+    "title": "Configurar voz",
+    "description": "Detecte seu hardware e ative o pipeline de voz para reconhecimento de fala, síntese de fala e detecção de atividade vocal locais.",
+    "enableAction": "Ativar voz",
+    "enablingAction": "Ativando...",
+    "toastEnabled": "Pipeline de voz ativado",
+    "toastEnabledWithEngine": "Pipeline de voz ativado (TTS {{engine}})",
+    "depsPanel": {
+      "title": "Dependências de voz",
+      "notInstalled": "(não instalado)",
+      "oneTimeInstall": "Instalação única:",
+      "copyCommandAria": "Copiar comando",
+      "afterInstallHint": "Depois de instalar, reinicie o daemon do Sovyx e clique em Ativar voz novamente."
+    },
+    "audioErrorPanel": {
+      "title": "Nenhum hardware de áudio detectado",
+      "body": "Voz requer um microfone e alto-falantes. Conecte o hardware de áudio e clique em Ativar voz novamente."
+    },
+    "silencePanel": {
+      "title": "Microfone entregou apenas silêncio",
+      "body": "O microfone selecionado abriu com sucesso mas não produziu sinal audível em nenhuma API de host. Isso geralmente significa que o mic está mutado nas configurações de privacidade do Windows, sendo usado exclusivamente por outro app, ou desconectado fisicamente.",
+      "hostApiLabel": "API de host",
+      "deviceLabel": "Dispositivo",
+      "peakRmsLabel": "Pico RMS",
+      "fixHint": "Corrija o microfone e clique em Ativar voz novamente."
+    },
+    "fallbackError": {
+      "enableFailed": "Falha na ativação",
+      "genericFailure": "Falha ao ativar o pipeline de voz",
+      "silenceFallback": "Microfone entregou apenas silêncio."
+    }
+  },
   "deviceContention": {
     "title": "O microfone está sendo usado por outro cliente de áudio",
     "namedBody": "<0>{{processHint}}</0> está capturando em <1>{{hostApi}}</1>. O Sovyx pode tentar um dispositivo virtual do gerenciador de sessão.",

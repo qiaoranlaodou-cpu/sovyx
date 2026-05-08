@@ -548,6 +548,39 @@
       "ws_connection_error": "Calibration WebSocket connection error"
     }
   },
+  "setupModal": {
+    "trigger": "Set up Voice",
+    "title": "Set up Voice",
+    "description": "Detect your hardware and enable the voice pipeline for local speech-to-text, text-to-speech, and voice activity detection.",
+    "enableAction": "Enable Voice",
+    "enablingAction": "Enabling...",
+    "toastEnabled": "Voice pipeline enabled",
+    "toastEnabledWithEngine": "Voice pipeline enabled ({{engine}} TTS)",
+    "depsPanel": {
+      "title": "Voice Dependencies",
+      "notInstalled": "(not installed)",
+      "oneTimeInstall": "One-time install:",
+      "copyCommandAria": "Copy command",
+      "afterInstallHint": "After installing, restart the Sovyx daemon and click Enable Voice again."
+    },
+    "audioErrorPanel": {
+      "title": "No Audio Hardware Detected",
+      "body": "Voice requires a microphone and speakers. Connect audio hardware, then click Enable Voice again."
+    },
+    "silencePanel": {
+      "title": "Microphone Delivered Only Silence",
+      "body": "The selected microphone opened successfully but produced no audible signal on any host API. This usually means the mic is muted in Windows privacy settings, held exclusively by another app, or physically disconnected.",
+      "hostApiLabel": "Host API",
+      "deviceLabel": "Device",
+      "peakRmsLabel": "Peak RMS",
+      "fixHint": "Fix the mic and click Enable Voice again."
+    },
+    "fallbackError": {
+      "enableFailed": "Enable failed",
+      "genericFailure": "Failed to enable voice pipeline",
+      "silenceFallback": "Microphone delivered only silence."
+    }
+  },
   "deviceContention": {
     "title": "Microphone is held by another audio client",
     "namedBody": "<0>{{processHint}}</0> is currently capturing on <1>{{hostApi}}</1>. Sovyx can try a session-manager virtual device instead.",
