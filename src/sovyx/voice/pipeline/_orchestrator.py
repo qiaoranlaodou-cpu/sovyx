@@ -2189,14 +2189,31 @@ class VoicePipeline:
             ),
         )
         if self._on_perception is not None:
+            # v0.32.2 Phase 3.A Layer C — anti-pattern #35 cluster P0.A2.
+            # Pre-fix this dispatched ``self._config.mind_id`` to the
+            # cogloop. ``_config.mind_id`` is the configured-at-startup
+            # mind id (or the literal ``"default"`` sentinel when a non-
+            # resolver caller missed the wire-up); ``_current_mind_id``
+            # is the per-turn authoritative value, set by:
+            #   * ``_start`` to ``_config.mind_id`` (init default), AND
+            #   * the wake-word router to the matched mind id when a
+            #     multi-mind topology fires a per-mind wake word.
+            # Using ``_config.mind_id`` here meant: even when the
+            # operator spoke ``Hey Aria`` and the router matched mind
+            # ``aria``, the cogloop received the perception under the
+            # configured-at-startup mind (typically ``default`` if the
+            # factory caller missed the resolver). Multi-mind operation
+            # was effectively broken end-to-end. Use ``_current_mind_id``
+            # so the cogloop dispatches to the mind that actually owned
+            # this turn.
             logger.info(
                 "voice_perception_invoked",
-                mind_id=self._config.mind_id,
+                mind_id=self._current_mind_id,
                 text_length=len(result.text),
                 **{"voice.utterance_id": utterance_id},
             )
             try:
-                await self._on_perception(result.text, self._config.mind_id)
+                await self._on_perception(result.text, self._current_mind_id)
             except Exception as exc:  # noqa: BLE001 — perception callback isolation
                 logger.error(
                     "Perception callback failed",
@@ -2211,9 +2228,13 @@ class VoicePipeline:
                 # swallowed so a buggy cognitive layer can't take down
                 # the voice pipeline; the event is the structured
                 # observability trail.
+                #
+                # v0.32.2 Phase 3.A Layer C — same fix: report the
+                # actual per-turn mind id so the dashboard error banner
+                # tells operators which mind's cogloop blew up.
                 await self._emit(
                     PipelineErrorEvent(
-                        mind_id=self._config.mind_id,
+                        mind_id=self._current_mind_id,
                         error=f"perception_callback_failed: {exc}",
                         utterance_id=utterance_id,
                     )
@@ -2223,9 +2244,11 @@ class VoicePipeline:
             # is the "voice enabled but cognitive loop not registered"
             # misconfiguration; surface it so operators see why the
             # assistant is silent.
+            #
+            # v0.32.2 Phase 3.A Layer C — same fix: per-turn mind id.
             logger.warning(
                 "voice_perception_skipped_no_callback",
-                mind_id=self._config.mind_id,
+                mind_id=self._current_mind_id,
                 text_length=len(result.text),
                 **{"voice.utterance_id": utterance_id},
             )
