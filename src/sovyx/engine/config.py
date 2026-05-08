@@ -7,6 +7,7 @@ and programmatic overrides. Priority: overrides > env > yaml > defaults.
 from __future__ import annotations
 
 import os
+import sys
 from datetime import datetime  # noqa: TC003 — pydantic resolves field type at runtime.
 from pathlib import Path
 from typing import Any, Literal
@@ -320,20 +321,37 @@ class VoiceTuningConfig(BaseSettings):
     llm_preflight_timeout_seconds: float = Field(default=3.0, ge=0.5, le=60.0)
 
     # ── Voice factory preflight gates (band-aid #34 / #28 wire-ups) ──
-    # Both default to False to preserve pre-wire-up behaviour. Operators
-    # opt in once they've validated the gate doesn't false-fire on
-    # their hardware. Per the staged-adoption discipline saved as the
-    # ``Staged adoption — foundation → wire-up incrementally`` feedback
-    # memory: never bundle foundation + 5 call-site adoptions in one
-    # commit; lenient default for new validators.
-    voice_check_mic_permission_enabled: bool = False
+    # ``voice_check_llm_reachable_enabled`` keeps its False default to
+    # preserve pre-wire-up behaviour; operators opt in once they've
+    # validated the gate on their hardware (per the staged-adoption
+    # discipline). ``voice_check_mic_permission_enabled`` flipped
+    # platform-conditional ON for darwin in v0.32.0 — see Round 3
+    # paranoid audit HIGH-2 + the field docstring below.
+    voice_check_mic_permission_enabled: bool = Field(
+        default_factory=lambda: sys.platform == "darwin",
+    )
     """Band-aid #34 wire-up: when True the voice factory probes the
     OS microphone-permission state via
     :func:`sovyx.voice.health._mic_permission.check_microphone_permission`
-    BEFORE creating the pipeline. On Windows DENIED → raises
+    BEFORE creating the pipeline. On Windows / macOS DENIED → raises
     :class:`VoicePermissionError` with the literal Settings path
-    operators must navigate. On UNKNOWN / non-Windows the gate is a
-    no-op (the cascade's own deaf-detection covers the residual)."""
+    operators must navigate. On UNKNOWN the gate is a no-op (the
+    cascade's own deaf-detection covers the residual). On Linux the
+    probe short-circuits silently — PulseAudio / PipeWire / raw ALSA
+    handle ACLs at the kernel level, there's no OS gate to query.
+
+    Default flipped to True on darwin in v0.32.0 (Round 3 paranoid
+    audit HIGH-2): the canonical macOS failure mode for new operators
+    is TCC silent-deny — the pipeline starts, every PortAudio frame
+    arrives all-zero, the cascade's deaf-detection eventually surfaces
+    a generic "no signal" hint, but the operator has no signal that
+    the actual fix is the System Settings → Privacy & Security pane.
+    With this gate ON, the factory raises :class:`VoicePermissionError`
+    with the verbatim System Settings path the operator must visit,
+    BEFORE PortAudio ever opens. Linux remains a no-op; Windows stays
+    False (soak-debt — flip after telemetry confirms reliable Windows
+    TCC-equivalent detection on the registry path used by
+    :func:`check_microphone_permission`)."""
 
     voice_check_llm_reachable_enabled: bool = False
     """Band-aid #28 wire-up: when True the voice factory probes the
@@ -369,6 +387,48 @@ class VoiceTuningConfig(BaseSettings):
     rolling 30 s sc.exe queries are an additional process per
     Sovyx instance — operators opt in when they've observed
     audio-service-related issues. Non-Windows platforms skip."""
+
+    # ── macOS hotplug subprocess fallback (Round 3 paranoid audit HIGH-1) ──
+    # The pyobjc-backed ``AudioObjectAddPropertyListener`` path is the
+    # canonical hotplug listener on macOS, but the
+    # ``pyobjc-framework-CoreAudio`` extra is not bundled by default
+    # (Sprint 4 / Task #28). Until the native listener lands, the
+    # subprocess fallback at :mod:`sovyx.voice._hotplug_mac_subprocess`
+    # polls ``system_profiler SPAudioDataType -json`` every 30 s so
+    # AirPods disconnects / Bluetooth route changes / USB mic unplugs
+    # are at least observable to the watchdog (vs. the previous Noop
+    # listener which silently dropped every event). v0.32.0 flips the
+    # default to True for darwin; non-darwin platforms ignore the field.
+    voice_macos_hotplug_subprocess_enabled: bool = Field(
+        default_factory=lambda: sys.platform == "darwin",
+    )
+    """Round 3 paranoid audit HIGH-1 wire-up: when True (darwin only),
+    :func:`sovyx.voice.health._hotplug_mac.build_macos_hotplug_listener`
+    returns a wrapper around
+    :class:`sovyx.voice._hotplug_mac_subprocess.MacosHotplugSubprocessWatchdog`
+    so the watchdog receives device-change events via 30 s polling
+    instead of the previous Noop. Default flipped to True for darwin
+    in v0.32.0 — the native ``AudioObjectAddPropertyListener`` is
+    Sprint 4 work (Task #28); polling is the honest fallback. Linux +
+    Windows: native hotplug works without polling, default OFF. The
+    subprocess loop is bounded (8 s subprocess timeout, 30 s poll
+    interval, callback isolation) — see
+    :class:`MacosHotplugSubprocessWatchdog` docstring for the full
+    cost / latency analysis."""
+
+    voice_macos_hotplug_subprocess_interval_s: float = Field(
+        default=30.0,
+        ge=5.0,
+        le=300.0,
+    )
+    """Polling interval for the macOS hotplug subprocess fallback.
+    30 s is the sweet spot between human-perceived latency (plug-in a
+    headset, hear "speaking now" within 30 s) and cost (~0.2 % CPU).
+    Operators tuning for kiosk-style deployments can override via
+    ``SOVYX_TUNING__VOICE__VOICE_MACOS_HOTPLUG_SUBPROCESS_INTERVAL_S=15``
+    to cut the latency in half at proportional CPU cost. Bounds
+    [5 s, 300 s] match the watchdog's own bounds (see
+    :class:`MacosHotplugSubprocessWatchdog.__init__`)."""
 
     wake_word_phonetic_fallback_enabled: bool = True
     """Phase 8 / T8.12 — phonetic similarity matching fallback.
@@ -423,6 +483,33 @@ class VoiceTuningConfig(BaseSettings):
     regardless of flag value: the factory probes for an STT engine
     instance and degrades to the legacy raise path when none exists.
     """
+
+    stt_fallback_timeout_seconds: float = Field(default=1.5, ge=0.1, le=10.0)
+    """Per-call transcribe deadline for the STT-fallback bridge.
+
+    v0.32.0 / Round-3 paranoid audit C2 — moved from a hardcoded 5.0 s
+    constant in ``voice/factory/_stt_fallback_bridge.py`` to this knob.
+
+    Calibrated against the STT-fallback inter-call spacing (~2 s
+    default per ``STTWakeWordConfig.stt_call_interval_frames=25
+    frames × 80 ms``). The 1.5 s default is < spacing so a single
+    pathological STT call cannot starve the audio-thread worker
+    beyond one frame's spacing. Combined with the bridge's
+    single-flight pattern (overlapping calls during an in-flight
+    transcribe return ``""`` immediately + emit
+    ``voice.stt_fallback.dropped_overlapping_call``), the audio-thread
+    worker is bounded at most one timeout per spacing window.
+
+    Floor 0.1 s prevents instant-fail misconfigurations; ceiling
+    10.0 s is the legacy v0.31.x default — operators can opt back in
+    via env override if their cloud STT engine has known higher
+    p99 latency, accepting that the audio-thread worker may stall up
+    to that ceiling on a single pathological call.
+
+    Operators tune via
+    ``SOVYX_TUNING__VOICE__STT_FALLBACK_TIMEOUT_SECONDS=...``.
+    Moonshine tiny ≈ 240 ms / small ≈ 530 ms / cloud STT ≈ 200-400 ms
+    p50 — 1.5 s gives 3-7× headroom for typical latencies."""
 
     wake_word_phonetic_max_distance: int = Field(default=3, ge=0, le=20)
     """Maximum Levenshtein-on-phonemes distance for accepting a
@@ -2624,6 +2711,59 @@ class SecurityConfig(BaseModel):
     )
 
 
+class PluginConfig(BaseSettings):
+    """Operator-managed plugin discovery + supply-chain hardening.
+
+    Per v0.32.0 paranoid audit M1, the entry-point auto-load path was
+    a supply-chain risk: any pip-installed package registering a
+    ``sovyx.plugins`` entry point would auto-load on the next daemon
+    boot with full process privilege. Code in the package's module
+    body executes BEFORE the AST scanner could even run.
+
+    The fix: default-deny third-party entry-point plugins. First-party
+    plugins (``ep.dist.name == "sovyx"``) always load. Third-party
+    plugins require explicit operator opt-in:
+
+    1. ``allow_third_party_plugins=True`` — global gate, enables the
+       allowlist check.
+    2. ``trusted_plugin_packages`` — exact pip package names the
+       operator has audited.
+
+    With ``allow_third_party_plugins=False`` (default), the discovery
+    loop SKIPS third-party entry points entirely + emits a structured
+    ``plugin.entry_point.skipped_third_party`` event for the audit
+    trail. Per CLAUDE.md anti-pattern #34, default-OFF means
+    default-ABSENT (no overhead beyond the skip log).
+
+    Override via env or system.yaml::
+
+        SOVYX_PLUGINS__ALLOW_THIRD_PARTY_PLUGINS=true \\
+        SOVYX_PLUGINS__TRUSTED_PLUGIN_PACKAGES='["sovyx-finance","my-org-plugin"]' \\
+            sovyx start
+    """
+
+    model_config = SettingsConfigDict(env_prefix="SOVYX_PLUGINS__", env_nested_delimiter="__")
+
+    allow_third_party_plugins: bool = Field(
+        default=False,
+        description=(
+            "Master gate for third-party entry-point plugin loading. "
+            "Default False: only first-party (sovyx-distributed) plugins load. "
+            "Set True to enable the allowlist check; packages must also be in "
+            "trusted_plugin_packages to actually load."
+        ),
+    )
+    trusted_plugin_packages: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Exact pip package names (PEP 503 normalized as installed) the "
+            "operator has audited. Only consulted when "
+            "allow_third_party_plugins=True. Empty list with the gate enabled "
+            "still skips all third-party plugins."
+        ),
+    )
+
+
 class SocketConfig(BaseModel):
     """Unix socket path for daemon RPC.
 
@@ -2716,6 +2856,7 @@ class EngineConfig(BaseSettings):
     observability: ObservabilityConfig = Field(default_factory=ObservabilityConfig)
     security: SecurityConfig = Field(default_factory=SecurityConfig)
     compliance: ComplianceConfig = Field(default_factory=ComplianceConfig)
+    plugins: PluginConfig = Field(default_factory=PluginConfig)
 
     @model_validator(mode="after")
     def resolve_log_file(self) -> EngineConfig:

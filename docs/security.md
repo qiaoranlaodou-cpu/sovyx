@@ -59,6 +59,12 @@ catches dynamic bypasses the AST cannot see: string concatenation into
 guard is a per-plugin `MetaPathFinder` that raises `ImportError` on blocked
 modules and uninstalls cleanly when the plugin finishes setup.
 
+**Thread-safety (v0.32.0):** `sys.meta_path` is a process-global mutable list.
+`ImportGuard.install` and `uninstall` mutate it under a module-level
+`threading.Lock` so two plugins running concurrent tools cannot corrupt the
+list — the worst-case pre-fix outcome was plugin A's guard being removed by
+plugin B's exit, leaving plugin A executing without import enforcement.
+
 ### Layer 2 — Permission enforcer
 
 Every `PluginContext` access goes through `PermissionEnforcer.check(...)`.
@@ -108,6 +114,42 @@ Exceeding either raises `PermissionDeniedError`.
 4. Rate limit — 10 requests per minute by default, sliding 60 s window.
 5. Response size cap — 5 MB by default.
 6. Connection timeout — 10 s by default.
+
+### Plugin discovery — entry-point supply-chain gate (v0.32.0)
+
+Sovyx discovers plugins from three sources: programmatic registration,
+local directories under `~/.sovyx/plugins/`, and pip-installed packages
+that register a `sovyx.plugins` entry point. The third path is a
+classic supply-chain risk: any pip package could ship arbitrary code in
+its module body and have it auto-execute on the next daemon boot —
+**before** the AST scanner could even run, because importing the entry
+point's module is what triggers the AST-violating code.
+
+The fix in v0.32.0 is **default-deny** for third-party packages:
+
+* **First-party** plugins (`ep.dist.name == "sovyx"`) always load.
+  These ship in the same wheel as the engine and are covered by the
+  same release-signing posture.
+* **Third-party** plugins are skipped without ever calling `ep.load()`
+  unless the operator has explicitly opted in:
+
+  1. `EngineConfig.plugins.allow_third_party_plugins = true` — master
+     gate that enables the allowlist check.
+  2. `EngineConfig.plugins.trusted_plugin_packages` — list of exact
+     pip package names the operator has audited.
+
+Operators flip the gates via env vars or `system.yaml`:
+
+```bash
+SOVYX_PLUGINS__ALLOW_THIRD_PARTY_PLUGINS=true \
+SOVYX_PLUGINS__TRUSTED_PLUGIN_PACKAGES='["sovyx-finance","my-org-plugin"]' \
+    sovyx start
+```
+
+Every skip emits a structured `plugin.entry_point.skipped_third_party`
+event with the package name and reason (`default_deny` /
+`not_in_allowlist`) so operators have an audit trail of what a daemon
+COULD have loaded but didn't.
 
 ---
 

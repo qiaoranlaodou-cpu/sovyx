@@ -6,6 +6,7 @@ Coverage target: ≥95% on plugins/manager.py
 from __future__ import annotations
 
 import asyncio
+import time
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
@@ -515,12 +516,20 @@ class TestEdgeCases:
 
     @pytest.mark.anyio()
     async def test_entry_points_discovery(self, tmp_path: Path) -> None:
-        """Entry points discovery finds plugins."""
+        """Entry points discovery finds first-party plugins.
+
+        v0.32.0 Phase C M1 — entry-point auto-discovery is restricted
+        to first-party packages (``dist.name == 'sovyx'``) by default.
+        Third-party-allowlist coverage lives in
+        ``test_entry_point_allowlist.py``.
+        """
         from unittest.mock import MagicMock as MM
         from unittest.mock import patch
 
         mock_ep = MM()
         mock_ep.name = "weather"
+        mock_ep.dist = MM()
+        mock_ep.dist.name = "sovyx"  # first-party
         mock_ep.load.return_value = FakeWeatherPlugin
 
         with patch.object(_manager_mod, "entry_points", return_value=[mock_ep], create=True):
@@ -540,6 +549,8 @@ class TestEdgeCases:
 
         mock_ep = MM()
         mock_ep.name = "broken"
+        mock_ep.dist = MM()
+        mock_ep.dist.name = "sovyx"  # first-party so we reach load()
         mock_ep.load.side_effect = ImportError("missing")
 
         with patch("importlib.metadata.entry_points", return_value=[mock_ep]):
@@ -1055,3 +1066,146 @@ class TestPluginHealth:
         h.active_tasks = 2
         assert h.consecutive_failures == 3
         assert h.disabled is True
+
+
+# ── v0.32.0 Phase C C2 — unload/reload-while-active race ───────────
+
+
+class _TrackedSlowPlugin(ISovyxPlugin):
+    """Plugin whose tool sleeps for *delay* seconds; teardown_called flag."""
+
+    teardown_called: bool = False
+    teardown_observed_active: int = -1
+
+    @property
+    def name(self) -> str:
+        return "tracked-slow"
+
+    @property
+    def version(self) -> str:
+        return "1.0.0"
+
+    @property
+    def description(self) -> str:
+        return "Slow plugin that records teardown observation."
+
+    @tool(description="Slow tool")
+    async def slow_op(self, delay: float = 0.05) -> str:
+        await asyncio.sleep(delay)
+        return "done"
+
+    async def teardown(self) -> None:
+        # The whole point of C2: by the time teardown runs, no in-flight
+        # tasks must remain. Capture the count for the test to assert on.
+        type(self).teardown_called = True
+
+
+class TestUnloadInFlightRace:
+    """v0.32.0 Phase C C2 — unload/reload waits for in-flight tasks."""
+
+    @pytest.mark.anyio()
+    async def test_unload_waits_for_active_tasks(self, tmp_path: Path) -> None:
+        """Long-running tool tasks complete naturally before teardown.
+
+        C2 contract: ``unload`` MUST drain in-flight tool tasks before
+        running ``teardown()`` + dropping the registry entry.
+        """
+        _TrackedSlowPlugin.teardown_called = False
+        mgr = PluginManager(data_dir=tmp_path, discover_entry_points=False)
+        await mgr.load_single(_TrackedSlowPlugin())
+
+        # Kick off two long-running tool tasks.
+        task1 = asyncio.create_task(
+            mgr.execute("tracked-slow.slow_op", {"delay": 0.1}, timeout=5.0)
+        )
+        task2 = asyncio.create_task(
+            mgr.execute("tracked-slow.slow_op", {"delay": 0.1}, timeout=5.0)
+        )
+        # Yield so the tasks register themselves into _in_flight_tasks.
+        await asyncio.sleep(0.01)
+        assert len(mgr._in_flight_tasks["tracked-slow"]) == 2  # noqa: SLF001
+
+        # Unload with generous timeout — both tasks should finish naturally.
+        await mgr.unload("tracked-slow", timeout=5.0)
+
+        # Both tool tasks completed successfully (drained, not cancelled).
+        result1 = await task1
+        result2 = await task2
+        assert result1.success is True
+        assert result2.success is True
+        # Plugin gone from registry.
+        assert not mgr.is_plugin_loaded("tracked-slow")
+        assert _TrackedSlowPlugin.teardown_called is True
+
+    @pytest.mark.anyio()
+    async def test_unload_force_cancels_after_timeout(self, tmp_path: Path) -> None:
+        """Tasks still running past the unload timeout get cancelled.
+
+        C2 contract: after the cooperative wait expires, ``unload``
+        force-cancels via ``task.cancel()`` so it cannot stall on a
+        misbehaving plugin.
+        """
+        _TrackedSlowPlugin.teardown_called = False
+        mgr = PluginManager(data_dir=tmp_path, discover_entry_points=False)
+        await mgr.load_single(_TrackedSlowPlugin())
+
+        # Start a tool that runs longer than the unload timeout.
+        task = asyncio.create_task(
+            mgr.execute("tracked-slow.slow_op", {"delay": 5.0}, timeout=10.0)
+        )
+        await asyncio.sleep(0.01)  # let it register
+
+        # Unload with a tight timeout — task gets cancelled.
+        start = time.monotonic()
+        await mgr.unload("tracked-slow", timeout=0.05)
+        elapsed = time.monotonic() - start
+        # Drain + grace = ~0.05 + 1.0 max; never the 5 s of the slow op.
+        assert elapsed < 3.0, f"unload took {elapsed}s — expected <3s"
+
+        # Task was cancelled (or completed via the cancel grace window).
+        assert task.done()
+        # Plugin tore down + registry dropped despite the in-flight task.
+        assert not mgr.is_plugin_loaded("tracked-slow")
+        assert _TrackedSlowPlugin.teardown_called is True
+        # In-flight bucket cleared.
+        assert "tracked-slow" not in mgr._in_flight_tasks  # noqa: SLF001
+
+    @pytest.mark.anyio()
+    async def test_reload_waits_for_active_tasks(self, tmp_path: Path) -> None:
+        """Reload uses the same drain protocol as unload.
+
+        C2 contract: ``reload`` calls ``_drain_in_flight`` BEFORE
+        ``plugin.teardown()`` so a tool mid-execution doesn't observe
+        its globals get torn out from under it.
+        """
+        mgr = PluginManager(data_dir=tmp_path, discover_entry_points=False)
+        await mgr.load_single(_TrackedSlowPlugin())
+
+        # Start one long-running tool.
+        task = asyncio.create_task(
+            mgr.execute("tracked-slow.slow_op", {"delay": 0.1}, timeout=5.0)
+        )
+        await asyncio.sleep(0.01)
+        assert len(mgr._in_flight_tasks["tracked-slow"]) == 1  # noqa: SLF001
+
+        # Reload — should drain the in-flight task first.
+        await mgr.reload("tracked-slow", timeout=5.0)
+
+        # Tool completed naturally (not cancelled).
+        result = await task
+        assert result.success is True
+        # Plugin still loaded post-reload.
+        assert mgr.is_plugin_loaded("tracked-slow")
+
+    @pytest.mark.anyio()
+    async def test_unload_with_no_in_flight_tasks_is_fast(self, tmp_path: Path) -> None:
+        """Drain is a no-op when no tasks are in-flight."""
+        mgr = PluginManager(data_dir=tmp_path, discover_entry_points=False)
+        await mgr.load_single(FakeWeatherPlugin())
+
+        start = time.monotonic()
+        await mgr.unload("weather", timeout=10.0)
+        elapsed = time.monotonic() - start
+        # No tasks → no waiting; should be near-instant.
+        assert elapsed < 0.5
+        assert not mgr.is_plugin_loaded("weather")

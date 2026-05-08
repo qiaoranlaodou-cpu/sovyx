@@ -854,6 +854,12 @@ async def bootstrap(
             from sovyx.plugins.manager import PluginManager
 
             plugins_cfg = mind_config.plugins
+            # v0.32.0 Phase C M1 — wire engine-level supply-chain
+            # gate into the plugin manager. Default-deny third-party
+            # entry-point plugins; operator opts in via
+            # ``EngineConfig.plugins.allow_third_party_plugins`` +
+            # ``trusted_plugin_packages``.
+            engine_plugin_cfg = engine_config.plugins
             plugin_manager = PluginManager(
                 brain=brain_service,
                 event_bus=event_bus,
@@ -862,6 +868,8 @@ async def bootstrap(
                 disabled=plugins_cfg.get_effective_disabled(),
                 plugin_config=plugins_cfg.get_all_plugin_configs(),
                 granted_permissions=plugins_cfg.get_all_granted_permissions(),
+                allow_third_party_plugins=engine_plugin_cfg.allow_third_party_plugins,
+                trusted_plugin_packages=list(engine_plugin_cfg.trusted_plugin_packages),
             )
             loaded = await plugin_manager.load_all()
             if loaded:

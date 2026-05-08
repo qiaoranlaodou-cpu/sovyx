@@ -364,4 +364,97 @@ class TestImportGuard:
         assert guard.find_spec("mymod.safe") is None  # explicitly allowed
 
 
+# ── v0.32.0 Phase C C3 — sys.meta_path concurrency ─────────────────
+
+
+class TestImportGuardConcurrency:
+    """v0.32.0 Phase C C3 — concurrent install/uninstall is serialised.
+
+    The fix: ``ImportGuard.install`` / ``uninstall`` guard ``sys.meta_path``
+    mutation with a module-level threading.Lock so two plugins racing
+    on entry/exit can't corrupt the global list (the worst-case
+    pre-fix outcome was plugin A's guard being removed by plugin B's
+    exit, leaving plugin A executing without import enforcement).
+    """
+
+    def test_concurrent_import_guards_dont_race(self) -> None:
+        """Many threads cycling install/uninstall leave sys.meta_path consistent."""
+        import sys as _sys
+        import threading as _t
+
+        # Snapshot the initial meta_path so we can verify it's restored.
+        initial = list(_sys.meta_path)
+
+        iterations = 50
+        thread_count = 8
+        errors: list[BaseException] = []
+        guards = [ImportGuard(f"plugin-{i}") for i in range(thread_count)]
+
+        def worker(guard: ImportGuard) -> None:
+            try:
+                for _ in range(iterations):
+                    guard.install()
+                    # Yield to encourage interleaving.
+                    _t.Event().wait(0)
+                    guard.uninstall()
+            except BaseException as e:  # noqa: BLE001
+                errors.append(e)
+
+        threads = [_t.Thread(target=worker, args=(g,)) for g in guards]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=10.0)
+
+        # No exceptions raised under contention.
+        assert not errors, f"worker threads raised: {errors!r}"
+        # All guards uninstalled — meta_path back to its initial state
+        # (no leftover guard instances).
+        for g in guards:
+            assert g.is_installed is False
+        # No leaked ImportGuard instances on meta_path.
+        leaked = [m for m in _sys.meta_path if isinstance(m, ImportGuard)]
+        assert leaked == [], f"leaked guards on meta_path: {leaked}"
+        # And the meta_path is logically equivalent to the initial state
+        # (same set of objects, possibly reordered if other code mutated
+        # — but we only added/removed our own guards).
+        post = list(_sys.meta_path)
+        # Initial entries all still present.
+        for entry in initial:
+            assert entry in post
+
+    def test_install_idempotent_under_lock(self) -> None:
+        """Multiple install() calls don't insert duplicate entries.
+
+        The lock-protected idempotence check (``if not self._installed``)
+        means concurrent install attempts on the SAME guard instance
+        also can't double-insert.
+        """
+        import sys as _sys
+
+        guard = ImportGuard("idempotent-test")
+        try:
+            guard.install()
+            guard.install()
+            guard.install()
+            occurrences = sum(1 for m in _sys.meta_path if m is guard)
+            assert occurrences == 1
+        finally:
+            guard.uninstall()
+        assert guard not in _sys.meta_path
+
+    def test_uninstall_idempotent_under_lock(self) -> None:
+        """Multiple uninstall() calls are safe."""
+        import sys as _sys
+
+        guard = ImportGuard("idempotent-uninstall-test")
+        guard.install()
+        guard.uninstall()
+        # Calling again must not raise even though the entry's gone.
+        guard.uninstall()
+        guard.uninstall()
+        assert guard.is_installed is False
+        assert guard not in _sys.meta_path
+
+
 import sys

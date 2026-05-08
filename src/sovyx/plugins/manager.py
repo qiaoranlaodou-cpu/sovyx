@@ -8,12 +8,32 @@ Error boundary: every tool execution is wrapped in asyncio.wait_for
 with per-plugin failure tracking. Plugins that fail consecutively are
 auto-disabled to protect engine stability.
 
+Lifecycle safety (v0.32.0 Phase C C2): ``unload`` and ``reload`` wait
+for any in-flight tool tasks to complete (or force-cancel after a
+configurable timeout) BEFORE running ``teardown()`` and dropping the
+plugin from the registry. This prevents the race where a tool was
+mid-execution holding the plugin's HTTP client / sandbox enforcer /
+DB handle while teardown ripped those resources out from under it.
+The book-keeping is per-plugin via ``_in_flight_tasks`` (bounded by
+plugin count, typically <20) and registered/cleared on every
+``execute()`` invocation.
+
+Supply-chain safety (v0.32.0 Phase C M1): entry-point auto-discovery
+default-denies third-party pip packages. First-party plugins
+(``ep.dist.name == "sovyx"``) always load; third-party plugins must
+be explicitly opted in via ``EngineConfig.plugins.allow_third_party_plugins``
++ ``trusted_plugin_packages``. The skip is structured-logged for the
+audit trail. Without this gate, any pip install registering a
+``sovyx.plugins`` entry point would auto-execute its module body on
+the next daemon boot — BEFORE the AST scanner could even run.
+
 Spec: SPE-008 §6, IMMERSION-004 (dependency resolution), SPE-008-SANDBOX §2 §7
 """
 
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import time
 import typing
 
@@ -76,6 +96,29 @@ def _hash_manifest(manifest: PluginManifest | None) -> str | None:
 
 _DEFAULT_TOOL_TIMEOUT_S = 30.0
 _MAX_CONSECUTIVE_FAILURES = 5
+
+# v0.32.0 Phase C C2 — default unload-wait timeout. After this many
+# seconds the manager force-cancels in-flight tool tasks instead of
+# waiting indefinitely. 30 s mirrors the default tool execution
+# timeout so a unload/reload during a long-running tool gives the
+# tool ONE full chance to finish before getting cancelled.
+_DEFAULT_UNLOAD_TIMEOUT_S = 30.0
+
+# v0.32.0 Phase C C2 — grace window for force-cancelled tasks. After
+# `task.cancel()` we wait this many seconds for the cancellation to
+# propagate (CancelledError bubbling up + finally blocks running)
+# before declaring the task lost. Short on purpose: any tool that
+# blocks past this window is misbehaving + the manager must not stall
+# the daemon shutdown path.
+_FORCE_CANCEL_GRACE_S = 1.0
+
+# v0.32.0 Phase C M1 — first-party distribution name. Entry points
+# whose ``ep.dist.name`` matches this value are always loaded; all
+# others go through the operator allowlist gate. Sourced from
+# ``pyproject.toml`` ``[project]name`` — must stay in sync with that
+# value (single string literal; CI's package-build step would surface
+# a drift via pytest collection failures on this constant).
+_FIRST_PARTY_DIST_NAME = "sovyx"
 
 # Hard byte cap for plugin.args_preview / plugin.result_preview fields
 # emitted on every invoke. Content sanitization (PII masking) happens
@@ -140,6 +183,8 @@ class PluginManager:
         plugin_config: dict[str, dict[str, object]] | None = None,
         granted_permissions: dict[str, set[str]] | None = None,
         discover_entry_points: bool = True,
+        allow_third_party_plugins: bool = False,
+        trusted_plugin_packages: list[str] | None = None,
     ) -> None:
         """Initialize PluginManager.
 
@@ -152,6 +197,14 @@ class PluginManager:
             plugin_config: Per-plugin config dicts.
             granted_permissions: Per-plugin granted permission strings.
             discover_entry_points: If False, skip entry_points discovery in load_all().
+            allow_third_party_plugins: M1 supply-chain gate. When False
+                (default), third-party entry-point plugins are skipped
+                without ever calling ``ep.load()``. First-party (Sovyx
+                distribution) plugins always load.
+            trusted_plugin_packages: Allowlist of pip package names
+                (PEP 503 normalized). Only consulted when
+                ``allow_third_party_plugins=True``. Empty list with the
+                gate enabled still skips all third-party packages.
         """
         self._brain = brain
         self._event_bus = event_bus
@@ -162,11 +215,22 @@ class PluginManager:
         self._plugin_config = plugin_config or {}
         self._granted_perms = granted_permissions or {}
         self._discover_eps = discover_entry_points
+        self._allow_third_party = allow_third_party_plugins
+        self._trusted_packages: set[str] = set(trusted_plugin_packages or [])
         self._plugins: dict[str, LoadedPlugin] = {}
         self._registered: list[type[ISovyxPlugin]] = []
         self._scanner = PluginSecurityScanner()
         self._health: dict[str, _PluginHealth] = {}
         self._max_failures = _MAX_CONSECUTIVE_FAILURES
+        # v0.32.0 Phase C C2 — per-plugin in-flight task tracking.
+        # Bounded by plugin count (typically <20 plugins per Mind), so
+        # a plain dict is fine — anti-pattern #15 (LRULockDict) targets
+        # unbounded one-key-per-event growth, which doesn't apply here
+        # because keys are plugin names and entries are torn down on
+        # ``unload``. Each value is a set of currently-running asyncio
+        # Task objects, used by ``unload``/``reload`` to wait for clean
+        # completion before teardown.
+        self._in_flight_tasks: dict[str, set[asyncio.Task[object]]] = {}
 
     # ── Registration ────────────────────────────────────────────────
 
@@ -346,6 +410,10 @@ class PluginManager:
             guard=guard,
         )
         self._health[name] = _PluginHealth()
+        # v0.32.0 Phase C C2 — initialize in-flight task tracking
+        # bucket. ``execute()`` uses ``setdefault`` defensively, so
+        # this is just for explicit lifecycle clarity.
+        self._in_flight_tasks.setdefault(name, set())
 
         logger.info("plugin_loaded", name=name, tools=len(tools))
         _emit_lifecycle_loaded(
@@ -357,13 +425,56 @@ class PluginManager:
         self._emit_plugin_loaded(name, plugin.version, len(tools))
 
     def _discover_entry_points(self) -> list[type[ISovyxPlugin]]:
-        """Discover plugins from pip-installed entry_points."""
+        """Discover plugins from pip-installed entry_points.
+
+        v0.32.0 Phase C M1 supply-chain gate:
+
+        * **First-party** plugins (``ep.dist.name == "sovyx"``) always
+          load — these ship in the same wheel as the engine and are
+          covered by the same release-signing posture.
+        * **Third-party** plugins go through the operator opt-in
+          allowlist. With ``allow_third_party_plugins=False`` (default)
+          the entry point is skipped WITHOUT ever calling ``ep.load()``
+          — that's the supply-chain contract: arbitrary code in the
+          package's module body MUST NOT run unless the operator has
+          explicitly trusted the package. With the gate enabled, the
+          ``ep.dist.name`` (PEP 503 normalized) must additionally
+          appear in ``trusted_plugin_packages``.
+
+        Each skip emits a structured ``plugin.entry_point.skipped_third_party``
+        event with the package name and reason, giving operators an
+        audit trail for what a daemon could-have-loaded but didn't.
+        """
         plugins: list[type[ISovyxPlugin]] = []
         try:
             from importlib.metadata import entry_points
 
             eps = entry_points(group="sovyx.plugins")
             for ep in eps:
+                # M1 — resolve the source distribution name BEFORE
+                # ``ep.load()`` so we can default-deny third-party
+                # packages without executing their module body.
+                dist_name = self._resolve_ep_dist_name(ep)
+                is_first_party = dist_name == _FIRST_PARTY_DIST_NAME
+
+                if not is_first_party:
+                    if not self._allow_third_party:
+                        logger.warning(
+                            "plugin.entry_point.skipped_third_party",
+                            name=ep.name,
+                            package=dist_name,
+                            reason="default_deny",
+                        )
+                        continue
+                    if dist_name not in self._trusted_packages:
+                        logger.warning(
+                            "plugin.entry_point.skipped_third_party",
+                            name=ep.name,
+                            package=dist_name,
+                            reason="not_in_allowlist",
+                        )
+                        continue
+
                 try:
                     plugin_class = ep.load()
                     if isinstance(plugin_class, type) and issubclass(plugin_class, ISovyxPlugin):
@@ -377,6 +488,36 @@ class PluginManager:
         except Exception:  # noqa: BLE001  # nosec B110
             pass
         return plugins
+
+    @staticmethod
+    def _resolve_ep_dist_name(ep: object) -> str:
+        """Best-effort resolve the source distribution name for an entry point.
+
+        ``EntryPoint.dist`` is the modern accessor (Python 3.10+) and
+        returns a ``Distribution`` whose ``.name`` is the pip package
+        name. Defensive against:
+
+        * older importlib.metadata variants where ``dist`` is missing,
+        * test fixtures that use ``MagicMock`` and don't expose a
+          ``.dist.name`` attribute,
+        * pip packages that registered an entry point without a parent
+          ``RECORD`` (extremely rare, but observed in editable installs).
+
+        Returns an empty string when resolution fails — that string
+        will NEVER match ``_FIRST_PARTY_DIST_NAME`` and will NEVER be
+        in ``_trusted_packages``, so the supply-chain gate stays
+        fail-closed.
+        """
+        try:
+            dist = getattr(ep, "dist", None)
+            if dist is None:
+                return ""
+            name = getattr(dist, "name", None)
+            if not isinstance(name, str):
+                return ""
+            return name
+        except Exception:  # noqa: BLE001
+            return ""
 
     # ── Tool Execution ──────────────────────────────────────────────
 
@@ -457,6 +598,20 @@ class PluginManager:
             health = _PluginHealth()
             self._health[plugin_name] = health
         health.active_tasks += 1
+
+        # v0.32.0 Phase C C2 — register the current task in the
+        # per-plugin in-flight set so ``unload`` / ``reload`` can wait
+        # on it before tearing the plugin down. We use
+        # ``asyncio.current_task()`` so the registered handle is the
+        # task actually running this coroutine; the done_callback
+        # cleans the entry on completion (success / exception /
+        # cancellation), keeping the set bounded by truly-running
+        # tasks even under concurrent ``execute()`` calls.
+        in_flight = self._in_flight_tasks.setdefault(plugin_name, set())
+        current = asyncio.current_task()
+        if current is not None:
+            in_flight.add(current)
+            current.add_done_callback(in_flight.discard)
 
         start_ms = time.monotonic()
         error_msg = ""
@@ -758,13 +913,23 @@ class PluginManager:
 
     # ── Lifecycle ───────────────────────────────────────────────────
 
-    async def unload(self, name: str) -> None:
+    async def unload(self, name: str, *, timeout: float = _DEFAULT_UNLOAD_TIMEOUT_S) -> None:
         """Unload a single plugin.
 
-        Calls teardown, removes from registry.
+        v0.32.0 Phase C C2 — waits for in-flight tool executions on
+        this plugin to complete before running ``teardown()`` and
+        dropping the registry entry. After ``timeout`` seconds, any
+        still-pending tasks are force-cancelled with a short grace
+        window for ``CancelledError`` to propagate. This prevents the
+        race where a tool was mid-execution holding the plugin's HTTP
+        client / sandbox enforcer / DB handle while teardown ripped
+        those resources out from under it.
 
         Args:
             name: Plugin name.
+            timeout: How long to wait for in-flight tool tasks to
+                finish naturally before force-cancelling them. Default
+                30 s mirrors the default per-tool execution timeout.
 
         Raises:
             PluginError: Plugin not found.
@@ -775,6 +940,14 @@ class PluginManager:
 
         loaded = self._plugins[name]
         probe = _probe_now()
+
+        # v0.32.0 Phase C C2 — drain in-flight tool tasks BEFORE
+        # teardown. We snapshot the current set so concurrent registers
+        # (a new tool starting between snapshot and wait) are picked up
+        # by the second drain pass; the inner ``execute()`` coroutine
+        # holds a strong reference to its task via ``asyncio.current_task()``
+        # so the snapshot can't lose a task to garbage collection.
+        await self._drain_in_flight(name, timeout=timeout)
 
         # Cleanup events
         if loaded.context.event_bus:
@@ -787,9 +960,89 @@ class PluginManager:
 
         del self._plugins[name]
         self._health.pop(name, None)
+        # Drop the in-flight set last — by this point it should be
+        # empty (drain forced cancellation if needed) but the explicit
+        # pop avoids leaking the bucket between unload/reload cycles.
+        self._in_flight_tasks.pop(name, None)
         logger.info("plugin_unloaded", name=name)
         _emit_lifecycle_unloaded(name, probe, reason="explicit")
         self._emit_plugin_unloaded(name, reason="explicit")
+
+    async def _drain_in_flight(self, name: str, *, timeout: float) -> None:
+        """Wait for in-flight tool tasks for *name* to complete.
+
+        v0.32.0 Phase C C2 — two-phase drain:
+
+        1. Snapshot the current in-flight set + ``asyncio.wait`` it
+           with the operator-provided ``timeout``. Tasks that complete
+           naturally are removed via the done_callback wired in
+           ``execute()``.
+        2. Any tasks still pending after ``timeout`` are force-cancelled
+           via ``task.cancel()`` and waited on with a short grace
+           window (``_FORCE_CANCEL_GRACE_S``) so the ``CancelledError``
+           can propagate through ``asyncio.wait_for`` and the tool's
+           ``finally`` blocks.
+
+        This method does NOT raise on cancellation — best-effort drain
+        is the contract. The structured events surface the count + the
+        timeout so operators can spot a misbehaving plugin from the
+        audit trail.
+        """
+        tasks = self._in_flight_tasks.get(name, set())
+        if not tasks:
+            return
+
+        # Phase 1: cooperative wait with the operator timeout.
+        snapshot = {t for t in tasks if not t.done()}
+        if not snapshot:
+            return
+
+        logger.info(
+            "plugin.unload.waiting_for_tasks",
+            plugin=name,
+            count=len(snapshot),
+            timeout_s=timeout,
+        )
+        # Exclude the current task from the wait set — if ``unload``
+        # is being called from within an ``execute()`` coroutine on
+        # the same plugin (extremely rare but possible via a nested
+        # tool helper), waiting on ourselves would deadlock.
+        current = asyncio.current_task()
+        wait_set = {t for t in snapshot if t is not current}
+        if wait_set:
+            await asyncio.wait(wait_set, timeout=timeout)
+
+        # Phase 2: force-cancel anything still pending.
+        pending = {t for t in snapshot if not t.done() and t is not current}
+        if pending:
+            logger.warning(
+                "plugin.unload.forced_cancel",
+                plugin=name,
+                count=len(pending),
+            )
+            for task in pending:
+                task.cancel()
+            # Grace window for cancellation to propagate. We use
+            # ``return_exceptions=True`` so a task whose ``finally``
+            # block raises doesn't bubble up here — drain semantics
+            # are best-effort, not transactional.
+            await asyncio.gather(
+                *(self._await_with_grace(t) for t in pending),
+                return_exceptions=True,
+            )
+
+    @staticmethod
+    async def _await_with_grace(task: asyncio.Task[object]) -> None:
+        """Await *task* with a short grace window after cancel.
+
+        Used by the force-cancel branch of ``_drain_in_flight``. We
+        wrap the await in ``asyncio.wait_for`` with a strict deadline
+        so a task that swallows ``CancelledError`` (anti-pattern) can't
+        stall the unload path forever. ``TimeoutError`` is suppressed
+        because the drain is best-effort.
+        """
+        with contextlib.suppress(asyncio.TimeoutError, asyncio.CancelledError, Exception):
+            await asyncio.wait_for(task, timeout=_FORCE_CANCEL_GRACE_S)
 
     async def shutdown(self) -> None:
         """Shutdown all plugins in reverse load order."""
@@ -800,11 +1053,22 @@ class PluginManager:
             except Exception as e:  # noqa: BLE001
                 logger.error("plugin_shutdown_failed", plugin=name, error=str(e))
 
-    async def reload(self, name: str) -> None:
+    async def reload(self, name: str, *, timeout: float = _DEFAULT_UNLOAD_TIMEOUT_S) -> None:
         """Reload a plugin (teardown + setup).
+
+        v0.32.0 Phase C C2 — drains in-flight tool tasks BEFORE
+        teardown using the same protocol as ``unload``. A reload while
+        a long-running tool was mid-execution would otherwise observe
+        the tool's globals get orphaned (when ``hot_reload._clear_module_cache``
+        strips ``sys.modules`` entries) or the plugin's HTTP client get
+        closed mid-request. The drain gives in-flight calls a clean
+        chance to finish; the force-cancel grace window guarantees the
+        reload won't stall on a misbehaving tool.
 
         Args:
             name: Plugin name.
+            timeout: How long to wait for in-flight tool tasks to
+                finish naturally before force-cancelling them.
 
         Raises:
             PluginError: Plugin not found.
@@ -816,6 +1080,9 @@ class PluginManager:
         loaded = self._plugins[name]
         plugin = loaded.plugin
         ctx = loaded.context
+
+        # v0.32.0 Phase C C2 — drain BEFORE teardown.
+        await self._drain_in_flight(name, timeout=timeout)
 
         # Teardown
         if ctx.event_bus:
@@ -832,7 +1099,13 @@ class PluginManager:
 
         logger.info("plugin_reloaded", name=name)
 
-    async def reconfigure(self, name: str, new_config: dict[str, object]) -> None:
+    async def reconfigure(
+        self,
+        name: str,
+        new_config: dict[str, object],
+        *,
+        timeout: float = _DEFAULT_UNLOAD_TIMEOUT_S,
+    ) -> None:
         """Update a plugin's config and re-initialize it.
 
         Tears down the current instance, rebuilds PluginContext with
@@ -840,9 +1113,15 @@ class PluginManager:
         The plugin_config cache is updated so subsequent reloads
         preserve the new config.
 
+        v0.32.0 Phase C C2 — same drain-before-teardown protocol as
+        ``reload``: in-flight tool tasks get a chance to complete
+        before the plugin's resources are torn down.
+
         Args:
             name: Plugin name.
             new_config: New configuration dict to apply.
+            timeout: How long to wait for in-flight tool tasks before
+                force-cancellation.
 
         Raises:
             PluginError: Plugin not found.
@@ -857,6 +1136,9 @@ class PluginManager:
         loaded = self._plugins[name]
         plugin = loaded.plugin
         old_ctx = loaded.context
+
+        # v0.32.0 Phase C C2 — drain BEFORE teardown.
+        await self._drain_in_flight(name, timeout=timeout)
 
         # Teardown
         if old_ctx.event_bus:

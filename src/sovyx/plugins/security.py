@@ -16,6 +16,7 @@ import ast
 import contextlib
 import dataclasses
 import sys
+import threading
 import typing
 from importlib.abc import MetaPathFinder
 
@@ -26,6 +27,27 @@ if typing.TYPE_CHECKING:  # pragma: no cover
     from pathlib import Path
 
 logger = get_logger(__name__)
+
+
+# ── Module-level lock for sys.meta_path mutation ────────────────────
+#
+# v0.32.0 Phase C C3 fix: ``sys.meta_path`` is a process-global mutable
+# list. Two plugins running concurrently would both mutate it without
+# coordination — and since ``list.insert`` and ``list.remove`` are NOT
+# atomic across threads (they acquire the GIL only between bytecode
+# instructions, not over the entire op), one plugin's uninstall could
+# remove another plugin's guard entry, leaving the second plugin
+# executing WITHOUT import enforcement.
+#
+# This lock serialises ALL mutations of ``sys.meta_path`` performed by
+# ``ImportGuard.install`` / ``uninstall``. Per-instance state remains
+# per-plugin; only the global list mutation is locked. The lock is a
+# threading.Lock (not asyncio.Lock) because import hooks may be
+# triggered from sync contexts (module-import inside a tool's body
+# crossing into a thread executor) — threading.Lock works in both
+# sync and async callers, while asyncio.Lock would deadlock the
+# former.
+_META_PATH_LOCK = threading.Lock()
 
 
 # ── Security Finding ────────────────────────────────────────────────
@@ -374,17 +396,33 @@ class ImportGuard(MetaPathFinder):
         return None  # Allow normal import
 
     def install(self) -> None:
-        """Install on sys.meta_path (prepend for priority)."""
-        if not self._installed:
-            sys.meta_path.insert(0, self)
-            self._installed = True
+        """Install on sys.meta_path (prepend for priority).
+
+        Thread-safety: the ``sys.meta_path`` mutation is serialised via
+        the module-level ``_META_PATH_LOCK`` so concurrent plugin tool
+        executions don't race on the shared list (v0.32.0 Phase C C3).
+        Per-instance state (``self._installed``) remains per-plugin and
+        is also covered by the lock so the install/uninstall pair is
+        consistent across threads.
+        """
+        with _META_PATH_LOCK:
+            if not self._installed:
+                sys.meta_path.insert(0, self)
+                self._installed = True
 
     def uninstall(self) -> None:
-        """Remove from sys.meta_path."""
-        if self._installed:
-            with contextlib.suppress(ValueError):
-                sys.meta_path.remove(self)
-            self._installed = False
+        """Remove from sys.meta_path.
+
+        Thread-safety: same lock as ``install`` — see that docstring.
+        ``contextlib.suppress(ValueError)`` covers the case where the
+        guard has already been removed by an external party (defensive;
+        should not happen under normal lifecycle).
+        """
+        with _META_PATH_LOCK:
+            if self._installed:
+                with contextlib.suppress(ValueError):
+                    sys.meta_path.remove(self)
+                self._installed = False
 
     @property
     def denial_count(self) -> int:
