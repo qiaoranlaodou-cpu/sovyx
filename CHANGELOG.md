@@ -6,7 +6,135 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ## [Unreleased]
 
-(none — every shipped delta is in v0.31.6 below)
+(none — every shipped delta is in v0.31.7 below)
+
+## [0.31.7] — 2026-05-08
+
+Paranoid-audit round 2 closure. After v0.31.6 shipped, a second
+4-agent paranoid audit at HEAD `fd3fc77` returned NO-GO with
+3 CRITICAL + 5 MEDIUM findings. Round 1 caught onboarding bugs
+(closed in v0.31.4-v0.31.6). Round 2 caught conversation runtime
+bugs — same code that already ran in production but never audited
+at this depth. Worse operator impact, since they hit AFTER setup.
+
+Mission spec: ``docs-internal/missions/MISSION-voice-v0_31_7-runtime-conversation-closure-2026-05-08.md``.
+
+### Fixed (Phase 1 — CRITICAL conversation runtime)
+
+- **CR1 (T1.1) — LLM cancel-hook race between turns.** The cogloop's
+  ``finally`` at ``cognitive_bridge.py:177`` unconditionally nulled
+  ``pipeline._llm_cancel_hook``, racing with turn N+1's hook
+  registration. Barge-in on turn N+1 saw ``llm_cancel="no_hook_
+  registered"`` while LLM kept producing tokens that bled into the
+  next response. Fix: identity check (``is`` not ``==``) before
+  nulling — only null the hook if it's still the local one this
+  turn registered. Companion: ``_on_perception`` now ``await
+  asyncio.wait_for(previous_task, timeout=1.0)`` after cancel,
+  with structured logging on TimeoutError/CancelledError/Exception.
+
+- **CR2 (T1.2) — `play_immediate` is structurally non-interruptible.**
+  ``sd.OutputStream.write(buffer)`` blocks until full buffer plays;
+  the ``interrupt()`` flag was set but never checked because there
+  was no inner loop. Operator barge-in on streaming=False mind →
+  TTS continued for full chunk (up to 5s). Fix: chunked playback in
+  50ms slices via new ``_PLAYBACK_SLICE_MS`` constant; between
+  slices ``_is_interrupted()`` polls the queue's flag (via
+  ContextVar so existing test patches work without signature
+  change). Headless simulation branch mirrors slice cadence.
+
+- **CR3 (T1.3) — Heartbeat dies during STT/perception/TTS.**
+  Pre-fix ``voice_pipeline_heartbeat`` was emitted from
+  ``feed_frame``, which was awaited serially by ``_consume_loop``.
+  When STT/LLM/TTS parked (200ms-30s), heartbeat stopped emitting,
+  training operators to triage healthy pipelines as wedged. Fix:
+  timer-driven ``_heartbeat_loop`` task spawned from ``start()``,
+  cancelled+drained in ``stop()``. Per-frame tracking now ONLY
+  updates snapshot fields (``_last_vad_probability_snapshot`` +
+  ``_at``); the timer reads + emits regardless of consumer-loop
+  progress. Pre-CR3 emission shape preserved.
+
+### Fixed (Phase 2 — MEDIUM)
+
+- **M1 (T2.1) — Auto-resume registered only 2 of 7 components.**
+  Pre-fix ``_auto_resume_voice_pipeline`` registered VoicePipeline
+  + AudioCaptureTask only; the HTTP enable path also registered
+  SileroVAD, STTEngine, TTSEngine, WakeWordDetector,
+  VoiceCognitiveBridge, plus BootPreflightWarningsStore. Auto-
+  resumed daemon reported ``pipeline.running=true`` but
+  ``/api/voice/status`` showed "No engine configured" for STT/TTS/
+  VAD. Fix: mirror the EXACT 7-type registration set + ordering
+  AFTER ``start()`` succeeds (preserves T1.2/v0.31.6 atomicity).
+
+- **M2 (T2.2) — Anti-pattern #35 5th occurrence.**
+  ``recalibrate-button.tsx:24`` had ``mindId = "default"`` default
+  param; mounted at ``settings.tsx:854`` with no real value. Fix:
+  removed default → required prop; ``settings.tsx`` fetches
+  ``/api/onboarding/state`` (zod-validated via
+  OnboardingStateSchema from v0.31.6 T1.1) and threads the resolved
+  value. Sibling consumers (``rollback-button.tsx`` +
+  ``calibration-wizard-card.tsx``) verified clean — neither takes
+  a ``mindId`` prop, both rely on backend resolver. Post-fix grep
+  for ``mindId.*=.*"default"`` across ``dashboard/src/`` returns
+  ZERO production-code default-param sites.
+
+- **M3 (T2.3) — Recursive PII redaction + 16 sibling keys.**
+  v0.31.6 T3.6 added ``_HASH_REDACT_KEYS`` for 4 keys but
+  ``PIIRedactor.__call__`` early-returned on non-string values,
+  so dict/list payloads bypassed ALL processing including the
+  regex sweep. ``audio.apo.scan`` event with ``voice.endpoints=
+  [{endpoint_name: "Razer..."}]`` shipped fully unredacted. Fix:
+  recursive ``_redact_value`` walker with triple guard (depth cap
+  ``_MAX_RECURSION_DEPTH=8``, ``id()``-based seen-set for cycles,
+  ``contextlib.suppress`` defensive); two distinct cycle sentinels
+  (``[redacted-depth-exceeded]`` vs ``[redacted-cycle]``).
+  ``_HASH_REDACT_KEYS`` extended with 16 new keys covering
+  endpoint_name, voice.active_endpoint_name,
+  voice.endpoints[].*, device_interface_name, friendly_name, etc.
+
+### Fixed (Phase 3 — M4+M5+LOWs)
+
+- **M4 — `start_thinking` cancels previous `_filler_task`** before
+  creating new (single-line preventive fix; old filler audio could
+  play during next turn).
+- **M5 — `cancel_speech_chain` step 2.5 cancels cogloop tasks.**
+  New ``register_cogloop_task`` API + ``_in_flight_cogloop_tasks``
+  set; ``_on_perception`` registers each new task. Belt-and-
+  suspenders against any future hook race (CR1 cousin).
+- **LOW.1 — `LRULockDict.setdefault` skip locked-eviction targets.**
+  Walks LRU-to-MRU skipping held locks; logs WARN + accepts
+  oldest-held drop when all N locked (rather than raising).
+- **LOW.3 — STT Moonshine sync calls in `to_thread`.**
+  ``stream.start/add_audio/stop/close`` now wrapped (anti-pattern
+  #14).
+- **LOW.4 — `_consecutive_tts_segment_failures` lock.**
+  New ``_tts_segment_failure_lock`` guards mutations.
+- **LOW.5 — `BridgeManager._pending_confirmations` bounded.**
+  New ``_BoundedConfirmationsDict(maxsize=500)`` mirrors
+  existing ``_LRULockDict`` pattern in same file.
+- **LOW.7 — CORS validator** rejects ``cors_origins`` containing
+  ``"*"`` when ``allow_credentials=True`` (operator footgun
+  guard).
+- **LOW.8 — `_ProfileReview` exhaustive switch** via ``assertNever``
+  helper (compile-time check on future verdict variants).
+- **LOW.6 — host_api label** documented in ``docs/security.md``
+  (no code change; low-cardinality label, intentional verbatim).
+
+### Notes
+
+- 7 commits + bump. Pytest 14683 passed. Vitest 1283 passed.
+  Ruff/mypy strict (513 files)/bandit/tsc clean.
+- This release closes 3 CRITICAL bugs in code that pre-dated all
+  v0.31.x missions — round 1 paranoid audit had a structural
+  blindspot on the conversation runtime path. Round 2 caught it.
+- Operator validation gate (canonical Sony VAIO + Mint + Razer):
+  speak 2-turn conversation with barge-in mid-2nd; verify (a)
+  audio cuts within ~200ms even on streaming=False mind, (b) no
+  token leakage from interrupted LLM into next response, (c)
+  dashboard heartbeat continues during long LLM turns, (d) post-
+  restart ``/api/voice/status`` shows ALL 7 components registered,
+  (e) Recalibrate from settings logs resolved real mind_id NOT
+  ``"default"`` sentinel, (f) ``audio.apo.scan`` event in logs has
+  hashed endpoint names.
 
 ## [0.31.6] — 2026-05-08
 
