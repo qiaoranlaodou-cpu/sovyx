@@ -56,6 +56,7 @@ from sovyx.voice.health import (
 )
 from sovyx.voice.health import _mixer_sanity as mod
 from sovyx.voice.health import _mixer_sanity_factory as mod_factory
+from sovyx.voice.health import _mixer_sanity_orchestrator as mod_orchestrator
 from sovyx.voice.health import _mixer_sanity_persist as mod_persist
 from sovyx.voice.health.contract import CandidateEndpoint
 
@@ -1281,7 +1282,10 @@ class TestValidationMetricsLogExplicitFields:
 
         with patch.object(mod, "sys") as sys_mock:
             sys_mock.platform = "linux"
-            with patch.object(mod.logger, "info", side_effect=fake_info):
+            # Phase 5.F.14 — orchestrator's logger lives on the new
+            # _mixer_sanity_orchestrator module since the class moved
+            # there. Patch the source-module logger.
+            with patch.object(mod_orchestrator.logger, "info", side_effect=fake_info):
                 await check_and_maybe_heal(
                     _endpoint(),
                     _hw(),
