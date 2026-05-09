@@ -48,6 +48,8 @@ class CostBreakdown:
     Attributes:
         total_cost: Total USD spent.
         total_tokens: Total tokens consumed (input + output).
+        cache_read_tokens: Total cached-read tokens (issue #44).
+        cache_creation_tokens: Total cache-creation tokens (issue #44).
         by_provider: Cost per provider (e.g. ``{"anthropic": 1.5}``).
         by_mind: Cost per mind ID (e.g. ``{"default": 0.8}``).
         by_model: Cost per model (e.g. ``{"claude-3-opus": 1.2}``).
@@ -57,6 +59,8 @@ class CostBreakdown:
 
     total_cost: float = 0.0
     total_tokens: int = 0
+    cache_read_tokens: int = 0
+    cache_creation_tokens: int = 0
     by_provider: dict[str, float] = field(default_factory=dict)
     by_mind: dict[str, float] = field(default_factory=dict)
     by_model: dict[str, float] = field(default_factory=dict)
@@ -102,6 +106,11 @@ class CostGuard:
         self._provider_tokens: dict[str, int] = defaultdict(int)
         self._mind_tokens: dict[str, int] = defaultdict(int)
         self._total_tokens: int = 0
+        # Cache-token totals (issue #44) — observability surface for the
+        # economic value of prompt caching. Aggregate-only; per-provider
+        # breakdowns can be added if a chart needs them.
+        self._cache_read_tokens: int = 0
+        self._cache_creation_tokens: int = 0
         # Ring buffer: (unix_ms, cost_usd, model, cumulative_usd)
         self._cost_log: deque[tuple[int, float, str, float]] = deque(maxlen=_MAX_COST_LOG)
 
@@ -153,6 +162,8 @@ class CostGuard:
                     {k: int(v) for k, v in state.get("mind_tokens", {}).items()},
                 )
                 self._total_tokens = int(state.get("total_tokens", 0))
+                self._cache_read_tokens = int(state.get("cache_read_tokens", 0))
+                self._cache_creation_tokens = int(state.get("cache_creation_tokens", 0))
                 # Restore cost log ring buffer
                 raw_log = state.get("cost_log", [])
                 self._cost_log = deque(
@@ -229,6 +240,8 @@ class CostGuard:
                 "provider_tokens": dict(self._provider_tokens),
                 "mind_tokens": dict(self._mind_tokens),
                 "total_tokens": self._total_tokens,
+                "cache_read_tokens": self._cache_read_tokens,
+                "cache_creation_tokens": self._cache_creation_tokens,
                 "cost_log": list(self._cost_log),
             }
         )
@@ -286,6 +299,8 @@ class CostGuard:
             self._provider_tokens.clear()
             self._mind_tokens.clear()
             self._total_tokens = 0
+            self._cache_read_tokens = 0
+            self._cache_creation_tokens = 0
             self._cost_log.clear()
             self._last_reset = today
             self._dirty = True
@@ -385,6 +400,8 @@ class CostGuard:
         provider: str = "",
         mind_id: str = "",
         tokens: int = 0,
+        cache_read_tokens: int = 0,
+        cache_creation_tokens: int = 0,
     ) -> None:
         """Record a spend and persist to SQLite.
 
@@ -395,6 +412,8 @@ class CostGuard:
             provider: LLM provider name (e.g. ``"anthropic"``, ``"openai"``).
             mind_id: Mind instance ID for multi-mind tracking.
             tokens: Total tokens consumed (input + output).
+            cache_read_tokens: Tokens served from prompt cache (issue #44).
+            cache_creation_tokens: Tokens that wrote a new cache entry.
         """
         self._maybe_reset()
         self._daily_spend += cost
@@ -412,6 +431,8 @@ class CostGuard:
         if model:
             self._model_spend[model] += cost
         self._total_tokens += tokens
+        self._cache_read_tokens += cache_read_tokens
+        self._cache_creation_tokens += cache_creation_tokens
         # Append to cost log ring buffer for dashboard charts
         ts_ms = int(datetime.now(tz=UTC).timestamp() * 1000)
         self._cost_log.append((ts_ms, cost, model, self._daily_spend))
@@ -423,6 +444,8 @@ class CostGuard:
             provider=provider or "unknown",
             mind_id=mind_id or "default",
             tokens=tokens,
+            cache_read=cache_read_tokens,
+            cache_create=cache_creation_tokens,
             daily_total=round(self._daily_spend, 4),
         )
         await self.persist()
@@ -502,6 +525,8 @@ class CostGuard:
         return CostBreakdown(
             total_cost=self._daily_spend,
             total_tokens=self._total_tokens,
+            cache_read_tokens=self._cache_read_tokens,
+            cache_creation_tokens=self._cache_creation_tokens,
             by_provider=dict(self._provider_spend),
             by_mind=dict(self._mind_spend),
             by_model=dict(self._model_spend),

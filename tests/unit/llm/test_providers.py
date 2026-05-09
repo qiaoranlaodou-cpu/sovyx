@@ -128,6 +128,70 @@ class TestAnthropicProvider:
             await p.generate([{"role": "user", "content": "Hi"}])
         await p.close()
 
+    async def test_generate_extracts_cache_tokens(self) -> None:
+        # Issue #44 — Anthropic returns cache_read_input_tokens
+        # and cache_creation_input_tokens in usage; provider must
+        # extract both and apply the discounted pricing.
+        p = AnthropicProvider("sk-test")
+        mock_resp = httpx.Response(
+            200,
+            json={
+                "content": [{"type": "text", "text": "Cached!"}],
+                "model": "claude-sonnet-4-20250514",
+                "usage": {
+                    "input_tokens": 10,
+                    "output_tokens": 5,
+                    "cache_read_input_tokens": 9_000,
+                    "cache_creation_input_tokens": 100,
+                },
+                "stop_reason": "end_turn",
+            },
+        )
+        p._client.post = AsyncMock(return_value=mock_resp)  # type: ignore[method-assign]
+
+        result = await p.generate(
+            [{"role": "user", "content": "Hi"}],
+            model="claude-sonnet-4-20250514",
+        )
+        assert result.tokens_in == 10
+        assert result.cache_read_tokens == 9_000
+        assert result.cache_creation_tokens == 100
+
+        # Cost MUST reflect the cache discount, not naive (10 + 9100 + 5).
+        from sovyx.llm.pricing import compute_cost, compute_cost_with_cache
+
+        naive_cost = compute_cost("claude-sonnet-4-20250514", 10 + 9_000 + 100, 5)
+        discounted = compute_cost_with_cache(
+            "claude-sonnet-4-20250514",
+            10,
+            5,
+            cache_read_tokens=9_000,
+            cache_creation_tokens=100,
+        )
+        assert result.cost_usd == pytest.approx(discounted)
+        assert result.cost_usd < naive_cost  # discount actually applied
+        await p.close()
+
+    async def test_generate_no_cache_fields_defaults_zero(self) -> None:
+        # Backward-compat: providers without cache extraction (or
+        # responses with no cache headers) report 0 cache tokens.
+        p = AnthropicProvider("sk-test")
+        mock_resp = httpx.Response(
+            200,
+            json={
+                "content": [{"type": "text", "text": "No cache"}],
+                "model": "claude-sonnet-4-20250514",
+                "usage": {"input_tokens": 10, "output_tokens": 5},
+                "stop_reason": "end_turn",
+            },
+        )
+        p._client.post = AsyncMock(return_value=mock_resp)  # type: ignore[method-assign]
+
+        result = await p.generate([{"role": "user", "content": "Hi"}])
+        assert result.cache_read_tokens == 0
+        assert result.cache_creation_tokens == 0
+        await p.close()
+
 
 # ── OpenAI ──
 

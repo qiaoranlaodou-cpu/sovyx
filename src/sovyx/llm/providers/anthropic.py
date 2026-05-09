@@ -10,7 +10,7 @@ import httpx
 
 from sovyx.engine.errors import LLMError, ProviderUnavailableError
 from sovyx.llm.models import LLMResponse, LLMStreamChunk, ToolCall, ToolCallDelta
-from sovyx.llm.pricing import PROVIDER_DEFAULT_PRICING, compute_cost
+from sovyx.llm.pricing import PROVIDER_DEFAULT_PRICING, compute_cost_with_cache
 from sovyx.llm.providers._shared import (
     _unsanitize_tool_name,
     format_tools_anthropic,
@@ -168,14 +168,25 @@ class AnthropicProvider:
                 usage = data.get("usage", {})
                 tokens_in = usage.get("input_tokens", 0)
                 tokens_out = usage.get("output_tokens", 0)
+                cache_read_tokens = int(usage.get("cache_read_input_tokens", 0) or 0)
+                cache_creation_tokens = int(usage.get("cache_creation_input_tokens", 0) or 0)
 
-                cost = compute_cost(model, tokens_in, tokens_out, fallback=_FALLBACK_PRICING)
+                cost = compute_cost_with_cache(
+                    model,
+                    tokens_in,
+                    tokens_out,
+                    cache_read_tokens=cache_read_tokens,
+                    cache_creation_tokens=cache_creation_tokens,
+                    fallback=_FALLBACK_PRICING,
+                )
 
                 logger.debug(
                     "anthropic_response",
                     model=model,
                     tokens_in=tokens_in,
                     tokens_out=tokens_out,
+                    cache_read=cache_read_tokens,
+                    cache_create=cache_creation_tokens,
                     latency_ms=latency,
                     cost_usd=round(cost, 6),
                     tool_calls=len(parsed_tc),
@@ -191,6 +202,8 @@ class AnthropicProvider:
                     finish_reason=finish_reason,
                     provider="anthropic",
                     tool_calls=tool_calls_out,
+                    cache_read_tokens=cache_read_tokens,
+                    cache_creation_tokens=cache_creation_tokens,
                 )
 
             except httpx.TimeoutException as e:
@@ -275,6 +288,8 @@ class AnthropicProvider:
 
         tokens_in = 0
         tokens_out = 0
+        cache_read_tokens = 0
+        cache_creation_tokens = 0
         finish_reason = "stop"
 
         try:
@@ -293,6 +308,10 @@ class AnthropicProvider:
                     if event_type == "message_start":
                         usage = data.get("message", {}).get("usage", {})
                         tokens_in = usage.get("input_tokens", 0)
+                        cache_read_tokens = int(usage.get("cache_read_input_tokens", 0) or 0)
+                        cache_creation_tokens = int(
+                            usage.get("cache_creation_input_tokens", 0) or 0
+                        )
                         continue
 
                     if event_type == "content_block_start":
@@ -367,6 +386,8 @@ class AnthropicProvider:
             finish_reason=finish_reason,
             tokens_in=tokens_in,
             tokens_out=tokens_out,
+            cache_read_tokens=cache_read_tokens,
+            cache_creation_tokens=cache_creation_tokens,
             model=model,
             provider="anthropic",
         )

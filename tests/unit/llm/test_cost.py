@@ -780,3 +780,67 @@ class TestCostGuardDaySnapshot:
         assert row[0] == 0
 
         await pool.close()
+
+
+class TestCacheTokenTracking:
+    """Issue #44 — CostGuard separately tracks cache tokens."""
+
+    async def test_record_accepts_cache_kwargs(self) -> None:
+        g = CostGuard(daily_budget=10.0, per_conversation_budget=2.0)
+        await g.record(
+            0.5,
+            "claude-sonnet-4-20250514",
+            "conv1",
+            tokens=1000,
+            cache_read_tokens=900,
+            cache_creation_tokens=200,
+        )
+        assert g._cache_read_tokens == 900
+        assert g._cache_creation_tokens == 200
+
+    async def test_breakdown_exposes_cache_totals(self) -> None:
+        g = CostGuard(daily_budget=10.0, per_conversation_budget=2.0)
+        await g.record(
+            0.5,
+            "claude-sonnet-4-20250514",
+            "conv1",
+            cache_read_tokens=500,
+            cache_creation_tokens=100,
+        )
+        await g.record(
+            0.3,
+            "claude-sonnet-4-20250514",
+            "conv1",
+            cache_read_tokens=200,
+        )
+
+        breakdown = g.get_breakdown("day")
+        assert breakdown.cache_read_tokens == 700
+        assert breakdown.cache_creation_tokens == 100
+
+    async def test_default_cache_kwargs_are_zero(self) -> None:
+        # Pre-issue-#44 callers (router stream/generate without cache
+        # extraction yet) record with no cache kwargs — counters stay 0.
+        g = CostGuard(daily_budget=10.0, per_conversation_budget=2.0)
+        await g.record(0.5, "model", "conv1", tokens=100)
+        assert g._cache_read_tokens == 0
+        assert g._cache_creation_tokens == 0
+
+    async def test_maybe_reset_clears_cache_totals(self) -> None:
+        g = CostGuard(daily_budget=10.0, per_conversation_budget=2.0)
+        await g.record(
+            0.5,
+            "claude-sonnet-4-20250514",
+            "conv1",
+            cache_read_tokens=500,
+            cache_creation_tokens=100,
+        )
+        # Force a date rollover.
+        from datetime import timedelta
+
+        g._last_reset = datetime.now(tz=UTC).date() - timedelta(days=1)
+        g._maybe_reset()
+
+        assert g._cache_read_tokens == 0
+        assert g._cache_creation_tokens == 0
+        assert g.get_breakdown("day").cache_read_tokens == 0

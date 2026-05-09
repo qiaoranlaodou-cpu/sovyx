@@ -105,6 +105,48 @@ PRICING: dict[str, tuple[float, float]] = {
     "mixtral-8x7b-32768": (0.24, 0.24),
 }
 
+# ── Per-model cache pricing (USD per 1M tokens) ───────────────────────
+#
+# Anthropic prompt-caching: cache reads cost 10% of input rate; the
+# default 5-min cache write costs 125% of input rate (1h cache write
+# costs 200% of input but isn't currently used by Sovyx). OpenAI's
+# automatic prompt caching (gpt-4o family + o1/o3) reports
+# ``prompt_tokens_details.cached_tokens`` which costs 50% of input
+# (or 25% on some o-series models — verify against the table).
+# Pair shape: ``(cache_read_per_1m, cache_creation_per_1m)``.
+# Models absent from this table fall back to the input rate (no
+# discount applied) — ``compute_cost_with_cache`` enforces this default.
+#
+# Last validated 2026-04-16 against the same provider docs as PRICING.
+
+CACHE_PRICING: dict[str, tuple[float, float]] = {
+    # ── Anthropic (cache_read = 0.1x input, cache_write_5m = 1.25x input) ──
+    "claude-opus-4-20250514": (1.50, 18.75),
+    "claude-sonnet-4-20250514": (0.30, 3.75),
+    "claude-haiku-4-5-20251001": (0.10, 1.25),
+    "claude-sonnet-4-5-20250514": (0.30, 3.75),
+    "claude-sonnet-4-6-20250827": (0.30, 3.75),
+    "claude-opus-4-5-20250918": (0.50, 6.25),
+    "claude-opus-4-6-20250918": (0.50, 6.25),
+    "claude-opus-4-7-20260401": (0.50, 6.25),
+    "claude-3-5-haiku-20241022": (0.08, 1.00),
+    # ── OpenAI (cache_read on prompt_tokens_details.cached_tokens) ──
+    # OpenAI doesn't separately bill cache writes — the discount only
+    # applies on reads. We map cache_read = 0.5x input for gpt-4o /
+    # gpt-4.1 families, and 0.25x for o-series. cache_creation = input
+    # rate (no surcharge — fresh prompts cost normal input).
+    "gpt-4o": (1.25, 2.5),
+    "gpt-4o-mini": (0.075, 0.15),
+    "gpt-4.1": (0.50, 2.0),
+    "gpt-4.1-mini": (0.10, 0.40),
+    "gpt-4.1-nano": (0.025, 0.10),
+    "o1": (7.50, 15.0),
+    "o3": (0.50, 2.0),
+    "o3-mini": (0.55, 1.1),
+    "o4-mini": (0.275, 1.1),
+}
+
+
 # Conservative fallback (Sonnet-class) when the model is unknown and the
 # caller hasn't supplied a provider-specific default.
 DEFAULT_PRICING: tuple[float, float] = (3.0, 15.0)
@@ -200,6 +242,12 @@ def compute_cost(
 ) -> float:
     """Estimate the USD cost of a single call given its token counts.
 
+    Treats every input token at the model's full input rate. Use
+    :func:`compute_cost_with_cache` instead when the provider reports
+    cached vs. fresh input separately — the cache discount is
+    significant (90% off for Anthropic, 50% off for OpenAI) and
+    swallowing it inflates billing reports.
+
     Args:
         model: Model identifier, or ``None`` if unknown.
         tokens_in: Input tokens consumed.
@@ -211,3 +259,52 @@ def compute_cost(
     """
     price_in, price_out = get_pricing(model, fallback=fallback)
     return (tokens_in * price_in + tokens_out * price_out) / 1_000_000
+
+
+def compute_cost_with_cache(
+    model: str | None,
+    tokens_in: int,
+    tokens_out: int,
+    *,
+    cache_read_tokens: int = 0,
+    cache_creation_tokens: int = 0,
+    fallback: tuple[float, float] | None = None,
+) -> float:
+    """Estimate the USD cost of a single call accounting for cache discounts.
+
+    *tokens_in* should be the count of FRESH input tokens — cached reads
+    and cache creation should be passed via *cache_read_tokens* and
+    *cache_creation_tokens* respectively. (Anthropic returns these on
+    ``usage.cache_read_input_tokens`` / ``usage.cache_creation_input_tokens``;
+    OpenAI returns the read count via ``usage.prompt_tokens_details.cached_tokens``.)
+
+    Models absent from :data:`CACHE_PRICING` fall back to the regular
+    input rate for both cache classes — the discount is silently lost
+    rather than being mis-estimated.
+
+    Args:
+        model: Model identifier, or ``None`` if unknown.
+        tokens_in: Fresh input tokens (NOT including cached reads).
+        tokens_out: Output tokens produced.
+        cache_read_tokens: Tokens served from a previous cache write.
+        cache_creation_tokens: Tokens that wrote a new cache entry.
+        fallback: See :func:`get_pricing`.
+
+    Returns:
+        Estimated cost in USD.
+    """
+    price_in, price_out = get_pricing(model, fallback=fallback)
+    base = (tokens_in * price_in + tokens_out * price_out) / 1_000_000
+    if cache_read_tokens == 0 and cache_creation_tokens == 0:
+        return base
+
+    if model is not None and model in CACHE_PRICING:
+        price_cache_read, price_cache_create = CACHE_PRICING[model]
+    else:
+        price_cache_read = price_in
+        price_cache_create = price_in
+
+    cache = (
+        cache_read_tokens * price_cache_read + cache_creation_tokens * price_cache_create
+    ) / 1_000_000
+    return base + cache

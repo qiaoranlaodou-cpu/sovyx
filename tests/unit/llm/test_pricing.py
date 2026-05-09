@@ -10,11 +10,13 @@ from __future__ import annotations
 import pytest
 
 from sovyx.llm.pricing import (
+    CACHE_PRICING,
     DEFAULT_PRICING,
     PRICING,
     PROVIDER_DEFAULT_PRICING,
     PricingSource,
     compute_cost,
+    compute_cost_with_cache,
     get_pricing,
     get_pricing_with_source,
     resolve_pricing_source,
@@ -203,3 +205,96 @@ class TestGetPricingWithSource:
         assert PricingSource.EXACT.value == "exact"
         assert PricingSource.PROVIDER_DEFAULT.value == "provider_default"
         assert PricingSource.GLOBAL_DEFAULT.value == "global_default"
+
+
+class TestCachePricingTable:
+    """Issue #44 — cache_read / cache_creation rates per model."""
+
+    def test_every_cache_entry_is_a_pair(self) -> None:
+        for model, pair in CACHE_PRICING.items():
+            assert len(pair) == 2, model
+            assert all(v >= 0 for v in pair), model
+
+    def test_anthropic_cache_read_is_10pct_of_input(self) -> None:
+        # Anthropic publishes cache reads at 0.1x input. Pin a few to
+        # catch accidental regression of the rate table.
+        for model in (
+            "claude-sonnet-4-20250514",
+            "claude-haiku-4-5-20251001",
+            "claude-opus-4-7-20260401",
+        ):
+            input_rate = PRICING[model][0]
+            cache_read = CACHE_PRICING[model][0]
+            assert cache_read == pytest.approx(input_rate * 0.1), (
+                f"{model}: cache_read={cache_read} expected {input_rate * 0.1}"
+            )
+
+    def test_anthropic_cache_write_is_125pct_of_input(self) -> None:
+        for model in (
+            "claude-sonnet-4-20250514",
+            "claude-haiku-4-5-20251001",
+            "claude-opus-4-7-20260401",
+        ):
+            input_rate = PRICING[model][0]
+            cache_write = CACHE_PRICING[model][1]
+            assert cache_write == pytest.approx(input_rate * 1.25), (
+                f"{model}: cache_write={cache_write} expected {input_rate * 1.25}"
+            )
+
+    def test_openai_gpt4o_cache_read_is_50pct(self) -> None:
+        # gpt-4o family bills cached reads at 50% of input.
+        input_rate = PRICING["gpt-4o"][0]
+        cache_read = CACHE_PRICING["gpt-4o"][0]
+        assert cache_read == pytest.approx(input_rate * 0.5)
+
+
+class TestComputeCostWithCache:
+    """Issue #44 — discounted cost path."""
+
+    def test_no_cache_tokens_matches_compute_cost(self) -> None:
+        # Without any cache fields, the new function must agree with the
+        # original compute_cost — backward-compat guarantee.
+        for model in ("gpt-4o", "claude-sonnet-4-20250514"):
+            assert compute_cost_with_cache(model, 1000, 500) == compute_cost(model, 1000, 500)
+
+    def test_cache_read_uses_discounted_rate(self) -> None:
+        # 10k cached tokens at the 0.1x rate cost 10x less than at full.
+        model = "claude-sonnet-4-20250514"
+        with_cache = compute_cost_with_cache(model, 0, 0, cache_read_tokens=10_000)
+        as_full_input = compute_cost(model, 10_000, 0)
+        assert with_cache == pytest.approx(as_full_input * 0.1)
+
+    def test_cache_creation_uses_premium_rate(self) -> None:
+        # Cache creation at 1.25x input is more expensive than fresh input.
+        model = "claude-sonnet-4-20250514"
+        creation = compute_cost_with_cache(model, 0, 0, cache_creation_tokens=10_000)
+        as_full_input = compute_cost(model, 10_000, 0)
+        assert creation == pytest.approx(as_full_input * 1.25)
+
+    def test_unknown_model_falls_back_to_input_rate(self) -> None:
+        # When the model isn't in CACHE_PRICING, both cache classes use
+        # the input rate (no discount AND no surcharge applied).
+        unknown = "vaporware-9000"
+        cached = compute_cost_with_cache(
+            unknown, 0, 0, cache_read_tokens=10_000, cache_creation_tokens=5_000
+        )
+        # Total = (10_000 + 5_000) at DEFAULT_PRICING input.
+        expected = (15_000 * DEFAULT_PRICING[0]) / 1_000_000
+        assert cached == pytest.approx(expected)
+
+    def test_combined_fresh_plus_cache(self) -> None:
+        model = "claude-sonnet-4-20250514"
+        fresh_only = compute_cost_with_cache(model, 1_000, 500)
+        with_cache = compute_cost_with_cache(model, 1_000, 500, cache_read_tokens=10_000)
+        cache_in, _ = CACHE_PRICING[model]
+        assert with_cache == pytest.approx(fresh_only + (10_000 * cache_in) / 1_000_000)
+
+    def test_savings_from_cache_read(self) -> None:
+        # Real-world scenario: 100k context with 90k cached, 10k fresh.
+        # Cost should be ~19% of treating the whole 100k as fresh input.
+        model = "claude-sonnet-4-20250514"
+        cached = compute_cost_with_cache(model, 10_000, 0, cache_read_tokens=90_000)
+        full_price = compute_cost(model, 100_000, 0)
+        savings = 1 - (cached / full_price)
+        # 90k @ 10% + 10k @ 100% = 19k effective tokens vs 100k naive.
+        assert 0.79 < savings < 0.83, f"Cache savings = {savings:.2%}"

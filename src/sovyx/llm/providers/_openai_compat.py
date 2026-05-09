@@ -20,7 +20,7 @@ import httpx
 
 from sovyx.engine.errors import LLMError, ProviderUnavailableError
 from sovyx.llm.models import LLMResponse, LLMStreamChunk, ToolCall, ToolCallDelta
-from sovyx.llm.pricing import PROVIDER_DEFAULT_PRICING, compute_cost
+from sovyx.llm.pricing import PROVIDER_DEFAULT_PRICING, compute_cost_with_cache
 from sovyx.llm.providers._shared import (
     _unsanitize_tool_name,
     format_tools_openai,
@@ -173,13 +173,21 @@ class OpenAICompatibleProvider:
                     raise LLMError(error_msg)
 
                 usage = data.get("usage", {})
-                tokens_in = usage.get("prompt_tokens", 0)
-                tokens_out = usage.get("completion_tokens", 0)
+                raw_prompt_tokens = int(usage.get("prompt_tokens", 0) or 0)
+                tokens_out = int(usage.get("completion_tokens", 0) or 0)
+                prompt_details = usage.get("prompt_tokens_details") or {}
+                cache_read_tokens = int(prompt_details.get("cached_tokens", 0) or 0)
+                # OpenAI's ``prompt_tokens`` already INCLUDES cached tokens —
+                # subtract so ``tokens_in`` reflects only fresh input
+                # (matches the cache-aware pricing contract).
+                tokens_in = max(0, raw_prompt_tokens - cache_read_tokens)
+                # OpenAI doesn't bill cache writes — cache_creation = 0.
 
-                cost = compute_cost(
+                cost = compute_cost_with_cache(
                     use_model,
                     tokens_in,
                     tokens_out,
+                    cache_read_tokens=cache_read_tokens,
                     fallback=self._fallback_pricing(),
                 )
 
@@ -189,6 +197,7 @@ class OpenAICompatibleProvider:
                     model=use_model,
                     tokens_in=tokens_in,
                     tokens_out=tokens_out,
+                    cache_read=cache_read_tokens,
                     latency_ms=latency,
                     cost_usd=round(cost, 6),
                     tool_calls=len(tool_calls_out) if tool_calls_out else 0,
@@ -204,6 +213,7 @@ class OpenAICompatibleProvider:
                     finish_reason=finish_reason,
                     provider=self._config.name,
                     tool_calls=tool_calls_out,
+                    cache_read_tokens=cache_read_tokens,
                 )
 
             except httpx.TimeoutException as e:
@@ -255,6 +265,7 @@ class OpenAICompatibleProvider:
         headers = self._headers()
         tokens_in = 0
         tokens_out = 0
+        cache_read_tokens = 0
         finish_reason: str | None = None
 
         try:
@@ -275,8 +286,17 @@ class OpenAICompatibleProvider:
 
                     usage = data.get("usage")
                     if usage:
-                        tokens_in = usage.get("prompt_tokens", tokens_in)
-                        tokens_out = usage.get("completion_tokens", tokens_out)
+                        raw_prompt_tokens = int(
+                            usage.get("prompt_tokens", tokens_in + cache_read_tokens) or 0
+                        )
+                        tokens_out = int(usage.get("completion_tokens", tokens_out) or 0)
+                        prompt_details = usage.get("prompt_tokens_details") or {}
+                        cache_read_tokens = int(
+                            prompt_details.get("cached_tokens", cache_read_tokens) or 0
+                        )
+                        # OpenAI's prompt_tokens INCLUDES cached — subtract
+                        # so tokens_in reflects fresh input only.
+                        tokens_in = max(0, raw_prompt_tokens - cache_read_tokens)
 
                     choices = data.get("choices") or []
                     if not choices:
@@ -329,6 +349,7 @@ class OpenAICompatibleProvider:
             finish_reason=finish_reason or "stop",
             tokens_in=tokens_in,
             tokens_out=tokens_out,
+            cache_read_tokens=cache_read_tokens,
             model=use_model,
             provider=self._config.name,
         )

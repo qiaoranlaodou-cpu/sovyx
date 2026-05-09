@@ -26,7 +26,15 @@ class ToolResult:
 
 @dataclasses.dataclass
 class LLMResponse:
-    """Unified LLM response across all providers."""
+    """Unified LLM response across all providers.
+
+    ``tokens_in`` is the count of FRESH input tokens (not served from
+    cache); ``cache_read_tokens`` and ``cache_creation_tokens`` are
+    populated when the provider reports prompt-cache usage separately
+    (Anthropic: ``cache_read_input_tokens`` / ``cache_creation_input_tokens``;
+    OpenAI: ``prompt_tokens_details.cached_tokens``). Default ``0`` for
+    providers that don't expose cache metadata.
+    """
 
     content: str
     model: str
@@ -37,6 +45,8 @@ class LLMResponse:
     finish_reason: str  # "stop", "max_tokens", "tool_use", "error"
     provider: str
     tool_calls: list[ToolCall] | None = None
+    cache_read_tokens: int = 0
+    cache_creation_tokens: int = 0
 
 
 @dataclasses.dataclass
@@ -67,7 +77,8 @@ class LLMStreamChunk:
     The ``is_final`` chunk carries no new ``delta_text`` but signals
     end-of-stream and provides the final usage/finish_reason. Cost
     accounting waits for this chunk because cloud providers only emit
-    usage at the end of the SSE stream.
+    usage at the end of the SSE stream — including the prompt-cache
+    fields ``cache_read_tokens`` and ``cache_creation_tokens``.
     """
 
     delta_text: str = ""
@@ -78,3 +89,5 @@ class LLMStreamChunk:
     tokens_out: int = 0
     model: str = ""
     provider: str = ""
+    cache_read_tokens: int = 0
+    cache_creation_tokens: int = 0

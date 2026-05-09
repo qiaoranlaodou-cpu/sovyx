@@ -122,6 +122,47 @@ class TestGenerate:
             )
         assert type(exc_info.value).__name__ == "ProviderUnavailableError"
 
+    @pytest.mark.asyncio()
+    async def test_extracts_cached_tokens(self) -> None:
+        # Issue #44 — OpenAI returns cached_tokens via
+        # prompt_tokens_details. Provider must subtract them from
+        # tokens_in (which represents fresh input only) and surface
+        # them via cache_read_tokens.
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.headers = {"content-type": "application/json"}
+        mock_resp.text = json.dumps(
+            {
+                "choices": [
+                    {
+                        "message": {"content": "Hello!", "role": "assistant"},
+                        "finish_reason": "stop",
+                    }
+                ],
+                "usage": {
+                    "prompt_tokens": 10_000,
+                    "completion_tokens": 100,
+                    "prompt_tokens_details": {"cached_tokens": 9_500},
+                },
+                "model": "gpt-4o",
+            }
+        )
+
+        provider = OpenAICompatibleProvider(_make_config(), "key")
+
+        with patch.object(provider._client, "post", new_callable=AsyncMock) as mock_post:
+            mock_post.return_value = mock_resp
+            result = await provider.generate(
+                messages=[{"role": "user", "content": "hi"}],
+                model="gpt-4o",
+            )
+
+        # tokens_in is FRESH only; cache_read separates the cached portion.
+        assert result.tokens_in == 500
+        assert result.cache_read_tokens == 9_500
+        # OpenAI doesn't bill cache writes — cache_creation stays 0.
+        assert result.cache_creation_tokens == 0
+
 
 class TestStream:
     """OpenAICompatibleProvider.stream() with mocked SSE."""

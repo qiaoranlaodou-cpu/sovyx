@@ -21,6 +21,7 @@ from sovyx.llm.models import LLMResponse, LLMStreamChunk
 from sovyx.llm.pricing import (
     PricingSource,
     compute_cost,
+    compute_cost_with_cache,
     get_pricing,
     resolve_pricing_source,
 )
@@ -502,7 +503,13 @@ class LLMRouter:
                     # Record cost
                     self._warn_pricing_fallback_once(response.model, provider.name)
                     await self._cost_guard.record(
-                        response.cost_usd, response.model, conversation_id
+                        response.cost_usd,
+                        response.model,
+                        conversation_id,
+                        provider=provider.name,
+                        tokens=response.tokens_in + response.tokens_out,
+                        cache_read_tokens=response.cache_read_tokens,
+                        cache_creation_tokens=response.cache_creation_tokens,
                     )
 
                     # Update dashboard counters (non-OTel, queryable)
@@ -770,17 +777,25 @@ class LLMRouter:
 
         if final_chunk:
             latency = int((_time.monotonic() - start) * 1000)
-            cost = compute_cost(
+            cost = compute_cost_with_cache(
                 final_chunk.model or chosen_model,
                 final_chunk.tokens_in,
                 final_chunk.tokens_out,
+                cache_read_tokens=final_chunk.cache_read_tokens,
+                cache_creation_tokens=final_chunk.cache_creation_tokens,
             )
             self._warn_pricing_fallback_once(
                 final_chunk.model or chosen_model or "",
                 chosen_provider.name,
             )
             await self._cost_guard.record(
-                cost, final_chunk.model or chosen_model or "", conversation_id
+                cost,
+                final_chunk.model or chosen_model or "",
+                conversation_id,
+                provider=chosen_provider.name,
+                tokens=final_chunk.tokens_in + final_chunk.tokens_out,
+                cache_read_tokens=final_chunk.cache_read_tokens,
+                cache_creation_tokens=final_chunk.cache_creation_tokens,
             )
 
             from sovyx.dashboard.status import get_counters
