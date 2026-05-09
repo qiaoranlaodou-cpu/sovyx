@@ -26,14 +26,13 @@ from __future__ import annotations
 
 import asyncio
 import time
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING
 
 from sovyx.engine.config import VoiceTuningConfig as _VoiceTuning
 from sovyx.observability.logging import get_logger
 from sovyx.voice.health._metrics import (
     record_cascade_attempt,
     record_combo_store_hit,
-    record_probe_result,
 )
 from sovyx.voice.health._quarantine import (
     EndpointQuarantine,
@@ -56,20 +55,14 @@ from sovyx.voice.health.cascade._budget import (
     _record_winner,
 )
 from sovyx.voice.health.cascade._planner import (
-    LINUX_CASCADE,
     _platform_cascade,
-    build_linux_cascade_for_device,
 )
 from sovyx.voice.health.contract import (
-    CandidateEndpoint,
     CascadeResult,
     Combo,
     Diagnosis,
     ProbeMode,
     ProbeResult,
-)
-from sovyx.voice.health.probe import (
-    _classify_open_error,
 )
 from sovyx.voice.health.probe import (
     probe as _default_probe,
@@ -94,66 +87,17 @@ __all__ = [
 ]
 
 
-# T6.9 — diagnoses that share the "physical cure required" semantic
-# with KERNEL_INVALIDATED. The cascade short-circuits on these
-# (quarantine + return) instead of trying remaining combos because
-# the failure is below the host-API layer — every alternative combo
-# will fail identically until the user replugs / reboots.
-#
-# - KERNEL_INVALIDATED: IAudioClient::Initialize stuck, surfaces as
-#   paInvalidDevice / AUDCLNT_E_DEVICE_INVALIDATED (Windows-canonical).
-# - STREAM_OPEN_TIMEOUT (T6.2): driver accepted open + start but
-#   never delivered audio in ≥ 5 s. Same root-cause family observed
-#   via the callback-not-fired surface.
-_PHYSICAL_CURE_DIAGNOSES: frozenset[Diagnosis] = frozenset(
-    {
-        Diagnosis.KERNEL_INVALIDATED,
-        Diagnosis.STREAM_OPEN_TIMEOUT,
-    },
+# Phase 5.F.16 god-file split: probe-invocation surface (ProbeCallable
+# Protocol + _call_probe + _try_combo + _PHYSICAL_CURE_DIAGNOSES, ~135 LOC)
+# extracted to _executor_probe.py. Re-exported here so the public consumer
+# at cascade/__init__.py + the in-parent call sites continue to resolve
+# via standard module-namespace lookup. Anti-pattern #16 + #20.
+from sovyx.voice.health.cascade._executor_probe import (  # noqa: E402  F401
+    _PHYSICAL_CURE_DIAGNOSES,
+    ProbeCallable,
+    _call_probe,
+    _try_combo,
 )
-
-
-# ── Probe callable typing ────────────────────────────────────────────────
-
-
-class ProbeCallable(Protocol):
-    """Structural type for the probe function used by the cascade.
-
-    Tests inject a fake matching this shape; production calls
-    :func:`sovyx.voice.health.probe.probe`.
-    """
-
-    async def __call__(
-        self,
-        *,
-        combo: Combo,
-        mode: ProbeMode,
-        device_index: int,
-        hard_timeout_s: float,
-    ) -> ProbeResult: ...
-
-
-async def _call_probe(
-    probe_fn: ProbeCallable,
-    *,
-    combo: Combo,
-    mode: ProbeMode,
-    device_index: int,
-    hard_timeout_s: float,
-) -> ProbeResult:
-    """Invoke the probe with just the cascade's required kwargs.
-
-    Trims the interface so tests don't have to mock every optional
-    keyword of :func:`sovyx.voice.health.probe.probe` — only the four
-    that the cascade explicitly drives are forwarded.
-    """
-    return await probe_fn(
-        combo=combo,
-        mode=mode,
-        device_index=device_index,
-        hard_timeout_s=hard_timeout_s,
-    )
-
 
 # ── Entry point ─────────────────────────────────────────────────────────
 
@@ -846,356 +790,14 @@ async def _run_cascade_locked(
     )
 
 
-# ── helpers ─────────────────────────────────────────────────────────────
-
-
-async def run_cascade_for_candidates(
-    *,
-    candidates: Sequence[CandidateEndpoint],
-    mode: ProbeMode,
-    platform_key: str,
-    combo_store: ComboStore | None = None,
-    capture_overrides: CaptureOverrides | None = None,
-    probe_fn: ProbeCallable | None = None,
-    lifecycle_locks: LRULockDict[str] | None = None,
-    total_budget_s: float = _DEFAULT_TOTAL_BUDGET_S,
-    attempt_budget_s: float = _DEFAULT_ATTEMPT_BUDGET_S,
-    voice_clarity_autofix: bool = True,
-    clock: Callable[[], float] = time.monotonic,
-    quarantine: EndpointQuarantine | None = None,
-    kernel_invalidated_failover_enabled: bool | None = None,
-    mixer_sanity: MixerSanitySetup | None = None,
-    tuning: _VoiceTuning | None = None,
-) -> CascadeResult:
-    """Run the cascade against an ordered set of capture candidates.
-
-    This is the candidate-set entry point introduced by the
-    ``voice-linux-cascade-root-fix`` mission (VLX-002). It iterates the
-    caller-supplied :class:`~sovyx.voice.health.contract.CandidateEndpoint`
-    list in order, delegating each to :func:`run_cascade` with the
-    candidate's per-endpoint identity. The first healthy winner wins.
-
-    Division of labour vs. :func:`run_cascade`:
-
-    * :func:`run_cascade` — cross-combo, single endpoint. Pinned →
-      ComboStore fast-path → platform cascade table walk.
-    * :func:`run_cascade_for_candidates` — cross-endpoint, delegates to
-      :func:`run_cascade` per candidate. Source of truth for the
-      session-manager-escape path at boot time on Linux (VLX-002).
-
-    The total wall-clock ``total_budget_s`` is shared across all
-    candidates. Each :func:`run_cascade` call gets the remaining budget,
-    so the last candidate may get a shorter window than the first. This
-    matches the pre-refactor behaviour (one endpoint, one budget) when
-    called with ``len(candidates) == 1``.
-
-    Args:
-        candidates: Ordered list from
-            :func:`~sovyx.voice.health._candidate_builder.build_capture_candidates`.
-            Must be non-empty; the first candidate is the user-preferred
-            one (``CandidateSource.USER_PREFERRED``).
-        mode: :attr:`ProbeMode.COLD` at boot, :attr:`ProbeMode.WARM`
-            during the wizard.
-        platform_key: ``"win32"`` / ``"linux"`` / ``"darwin"``.
-        combo_store: Persistent fast-path store — forwarded verbatim to
-            each :func:`run_cascade` invocation. Each candidate hits the
-            store under its own ``endpoint_guid``, so a stored combo for
-            ``pipewire`` is still consulted when the user-preferred
-            hardware candidate's own fast-path is stale.
-        capture_overrides: User-pinned combos — forwarded verbatim.
-        probe_fn: Probe entry point. Defaults to
-            :func:`~sovyx.voice.health.probe.probe`.
-        lifecycle_locks: Per-endpoint lock dict. Each candidate gets its
-            own lock; parallel invocations of this function against
-            disjoint candidate sets do not serialize.
-        total_budget_s: Shared wall-clock budget across all candidates.
-            On exhaustion the function returns ``budget_exhausted=True``
-            with attempts from candidates tried so far.
-        attempt_budget_s: Per-probe hard timeout.
-        voice_clarity_autofix: Forwarded to each :func:`run_cascade` call.
-        clock: Monotonic clock. Swappable for deterministic tests.
-        quarantine: Shared quarantine store. All candidates check the
-            same instance — a quarantined ``pipewire`` endpoint does
-            not re-probe even if ``hw:1,0`` just finished quarantining.
-        kernel_invalidated_failover_enabled: Master toggle for the
-            §4.4.7 quarantine behaviour.
-        mixer_sanity: Optional L2.5 dependency bundle. When set AND
-            ``platform_key == "linux"``, L2.5 runs ONCE for the
-            whole candidate-set pass (using the first candidate's
-            identity) before the per-candidate cascade loop. The
-            inner :func:`run_cascade` invocations receive
-            ``mixer_sanity=None`` so healing is not re-attempted
-            for every candidate. Default ``None`` preserves pre-L2.5
-            behaviour.
-
-    Returns:
-        :class:`CascadeResult` with:
-
-        * ``winning_candidate`` populated when any candidate produced a
-          healthy combo.
-        * ``endpoint_guid`` set to the winning candidate's guid, or the
-          first candidate's guid on exhaustion (log correlation).
-        * ``attempts`` containing the concatenation of every attempt
-          across all tried candidates, in iteration order.
-
-    Raises:
-        ValueError: ``candidates`` is empty.
-    """
-    if not candidates:
-        msg = "candidates must be non-empty (build_capture_candidates contract)"
-        raise ValueError(msg)
-
-    deadline = clock() + total_budget_s
-    aggregated_attempts: list[ProbeResult] = []
-    total_attempts_count = 0
-    last_result: CascadeResult | None = None
-
-    logger.info(
-        "voice_cascade_candidate_set_started",
-        platform=platform_key,
-        candidate_count=len(candidates),
-        candidate_kinds=[str(c.kind) for c in candidates],
-        candidate_sources=[str(c.source) for c in candidates],
-    )
-
-    # 2.5 — L2.5 mixer sanity runs ONCE per candidate-set pass (the ALSA
-    # mixer is system-wide state; healing per-candidate would repeat work).
-    # Uses the first candidate's identity for telemetry / endpoint_guid
-    # (by candidate-builder contract that's the user-preferred one). We
-    # pass mixer_sanity=None to the inner run_cascade calls so L2.5 does
-    # NOT fire again under each per-endpoint lock — the healing already
-    # happened (or was skipped) at this layer.
-    if mixer_sanity is not None and platform_key == "linux":
-        try:
-            await _run_mixer_sanity(
-                mixer_sanity=mixer_sanity,
-                endpoint_guid=candidates[0].endpoint_guid,
-                device_index=candidates[0].device_index,
-                device_friendly_name=candidates[0].friendly_name,
-                combo_store=combo_store,
-                capture_overrides=capture_overrides,
-                tuning=tuning,
-            )
-        except asyncio.CancelledError:
-            # Paranoid-QA CRITICAL #1: cancel propagates.
-            raise
-        except Exception as exc:  # noqa: BLE001 — cascade must continue
-            logger.warning(
-                "voice_cascade_candidate_set_mixer_sanity_raised",
-                error_type=type(exc).__name__,
-                detail=str(exc)[:200],
-            )
-
-    # T4 — defensive invariant: dedup by (device_index, host_api_name)
-    # must already hold (build_capture_candidates guarantees this), but
-    # an ill-behaved injected builder in tests or a future refactor could
-    # re-introduce collisions. Log-warn + continue rather than raise; the
-    # cascade loop is already O(n×m) and probe idempotency absorbs dupes.
-    seen_candidate_keys: set[tuple[int, str]] = set()
-
-    for candidate_idx, candidate in enumerate(candidates):
-        remaining = max(0.0, deadline - clock())
-        if remaining <= 0.0:
-            logger.warning(
-                "voice_cascade_candidate_set_budget_exhausted",
-                tried=candidate_idx,
-                remaining_candidates=len(candidates) - candidate_idx,
-            )
-            break
-
-        dedup_key = (candidate.device_index, candidate.host_api_name)
-        if dedup_key in seen_candidate_keys:
-            logger.warning(
-                "voice_cascade_candidate_duplicate",
-                candidate_rank=candidate.preference_rank,
-                device_index=candidate.device_index,
-                host_api=candidate.host_api_name,
-            )
-        seen_candidate_keys.add(dedup_key)
-
-        logger.info(
-            "voice_cascade_candidate_started",
-            candidate_rank=candidate.preference_rank,
-            candidate_source=str(candidate.source),
-            candidate_kind=str(candidate.kind),
-            device_index=candidate.device_index,
-            host_api=candidate.host_api_name,
-            friendly_name=candidate.friendly_name,
-            endpoint_guid=candidate.endpoint_guid,
-            remaining_budget_s=remaining,
-        )
-
-        # T5 — per-candidate native-rate cascade. Only prepends when
-        # the candidate is HARDWARE and reports a non-canonical rate
-        # that the default Linux cascade would waste attempts on.
-        per_candidate_cascade: Sequence[Combo] | None = None
-        if platform_key == "linux":
-            tailored = build_linux_cascade_for_device(
-                candidate.default_samplerate,
-                str(candidate.kind),
-            )
-            if tailored is not LINUX_CASCADE:
-                per_candidate_cascade = tailored
-                logger.info(
-                    "voice_cascade_native_rate_prepended",
-                    candidate_rank=candidate.preference_rank,
-                    device_index=candidate.device_index,
-                    native_rate=candidate.default_samplerate,
-                )
-
-        per_candidate_result = await run_cascade(
-            endpoint_guid=candidate.endpoint_guid,
-            device_index=candidate.device_index,
-            mode=mode,
-            platform_key=platform_key,
-            device_friendly_name=candidate.friendly_name,
-            device_interface_name=candidate.canonical_name,
-            physical_device_id=candidate.canonical_name,
-            combo_store=combo_store,
-            capture_overrides=capture_overrides,
-            probe_fn=probe_fn,
-            lifecycle_locks=lifecycle_locks,
-            total_budget_s=remaining,
-            attempt_budget_s=attempt_budget_s,
-            voice_clarity_autofix=voice_clarity_autofix,
-            cascade_override=per_candidate_cascade,
-            clock=clock,
-            quarantine=quarantine,
-            kernel_invalidated_failover_enabled=kernel_invalidated_failover_enabled,
-        )
-        aggregated_attempts.extend(per_candidate_result.attempts)
-        total_attempts_count += per_candidate_result.attempts_count
-        last_result = per_candidate_result
-
-        if per_candidate_result.winning_combo is not None:
-            logger.info(
-                "voice_cascade_candidate_set_resolved",
-                winning_rank=candidate.preference_rank,
-                winning_source=str(candidate.source),
-                winning_kind=str(candidate.kind),
-                device_index=candidate.device_index,
-                host_api=candidate.host_api_name,
-                endpoint_guid=candidate.endpoint_guid,
-                tried=candidate_idx + 1,
-                total=len(candidates),
-            )
-            return CascadeResult(
-                endpoint_guid=candidate.endpoint_guid,
-                winning_combo=per_candidate_result.winning_combo,
-                winning_probe=per_candidate_result.winning_probe,
-                attempts=tuple(aggregated_attempts),
-                attempts_count=total_attempts_count,
-                budget_exhausted=False,
-                source=per_candidate_result.source,
-                winning_candidate=candidate,
-            )
-
-        # Non-healthy candidate — advance to the next one unless budget
-        # is already exhausted (we'll break on the next iteration's
-        # ``remaining <= 0`` guard).
-        logger.info(
-            "voice_cascade_candidate_failed",
-            candidate_rank=candidate.preference_rank,
-            candidate_source=str(candidate.source),
-            device_index=candidate.device_index,
-            source_label=per_candidate_result.source,
-            budget_exhausted=per_candidate_result.budget_exhausted,
-        )
-
-    # Exhausted — return aggregated result keyed on the first candidate
-    # so log correlation is stable.
-    logger.error(
-        "voice_cascade_candidate_set_exhausted",
-        candidate_count=len(candidates),
-        attempts_total=total_attempts_count,
-    )
-    first = candidates[0]
-    return CascadeResult(
-        endpoint_guid=first.endpoint_guid,
-        winning_combo=None,
-        winning_probe=None,
-        attempts=tuple(aggregated_attempts),
-        attempts_count=total_attempts_count,
-        budget_exhausted=last_result.budget_exhausted if last_result else False,
-        source="none",
-        winning_candidate=None,
-    )
-
-
-async def _try_combo(
-    *,
-    probe_fn: ProbeCallable,
-    combo: Combo,
-    mode: ProbeMode,
-    device_index: int,
-    attempt_budget_s: float,
-) -> ProbeResult:
-    """Invoke the probe and convert unexpected exceptions into DRIVER_ERROR results.
-
-    The probe already classifies all known PortAudio failures into the
-    :class:`Diagnosis` enum. This wrapper guards against a probe-side
-    bug / test misconfiguration turning into a cascade abort — any
-    exception becomes a synthetic DRIVER_ERROR so the cascade can
-    still fall through.
-    """
-    try:
-        return await _call_probe(
-            probe_fn,
-            combo=combo,
-            mode=mode,
-            device_index=device_index,
-            hard_timeout_s=attempt_budget_s,
-        )
-    except asyncio.CancelledError:
-        raise
-    except Exception as exc:
-        # Belt-and-braces: after v0.20.2 Phase 1, the probe classifies
-        # stream.start() failures internally, so this path should only
-        # fire for genuine probe-side bugs (numpy errors in analysis,
-        # test misconfiguration). Still, running the classifier on the
-        # raised exception recovers the correct Diagnosis when a future
-        # probe-side bug re-introduces a leak (e.g. a kernel-invalidated
-        # error escaping a new analysis phase), rather than silently
-        # coarsening into DRIVER_ERROR.
-        #
-        # Gate the classifier on OSError (PortAudio surfaces failures as
-        # ``sd.PortAudioError(OSError)``) so an unrelated coding-bug
-        # ``TypeError("... format ...")`` or ``AttributeError`` whose
-        # message accidentally contains a keyword like "format" / "in use"
-        # / "access" cannot be misclassified as a structured Diagnosis.
-        # Non-OSError stays DRIVER_ERROR — the original cascade contract.
-        if isinstance(exc, OSError):
-            # T6.5 — pass combo so a rate-only error with
-            # auto_convert=False routes to the
-            # INVALID_SAMPLE_RATE_NO_AUTO_CONVERT diagnosis instead
-            # of FORMAT_MISMATCH.
-            diagnosis = _classify_open_error(exc, combo=combo)
-        else:
-            diagnosis = Diagnosis.DRIVER_ERROR
-        logger.error(
-            "voice_cascade_probe_raised",
-            host_api=combo.host_api,
-            combo=_combo_tag(combo),
-            diagnosis=str(diagnosis),
-            error=repr(exc),
-            exc_info=True,
-        )
-        synthetic = ProbeResult(
-            diagnosis=diagnosis,
-            mode=mode,
-            combo=combo,
-            vad_max_prob=None,
-            vad_mean_prob=None,
-            rms_db=float("-inf"),
-            callbacks_fired=0,
-            duration_ms=0,
-            error=f"probe raised: {exc!r}",
-        )
-        # Also emit the probe-result telemetry so synthetic results
-        # appear in the same dashboards as first-class probe outcomes.
-        record_probe_result(synthetic)
-        return synthetic
-
+# Phase 5.F.17 god-file split: run_cascade_for_candidates (~272 LOC)
+# extracted to _executor_candidates.py. Re-exported here so the public
+# consumer at cascade/__init__.py + the wire-up call site at
+# voice/health/_factory_integration.py continue to resolve via standard
+# module-namespace lookup. Anti-pattern #16 + #20.
+from sovyx.voice.health.cascade._executor_candidates import (  # noqa: E402  F401
+    run_cascade_for_candidates,
+)
 
 # Phase 5.F.7 god-file split: 6 internal helpers + _LOG_DETAIL_MAX_CHARS
 # constant extracted to :mod:cascade._executor_helpers. Re-exported
