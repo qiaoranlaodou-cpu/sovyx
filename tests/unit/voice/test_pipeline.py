@@ -1349,6 +1349,7 @@ class TestPipelineStateMachine:
         caplog.set_level(logging.WARNING, logger=_ORCH_LOGGER)
         caplog.set_level(logging.WARNING, logger=_HEARTBEAT_LOGGER)
         caplog.set_level(logging.WARNING, logger=_BYPASS_LOGGER)
+        caplog.set_level(logging.WARNING, logger=_TTS_CANCEL_LOGGER)
         await pipeline.start()
 
         with patch.object(_pipeline_mod, "_play_audio", new_callable=AsyncMock):
@@ -2973,6 +2974,13 @@ _HEARTBEAT_LOGGER = "sovyx.voice.pipeline._heartbeat_mixin"
 # ``voice.coordinator.pending_flag_timeout_reset``) now emit from that
 # module's logger.
 _BYPASS_LOGGER = "sovyx.voice.pipeline._bypass_coordinator_mixin"
+# Phase 5.F.26 — TTS task tracking + cancellation chain extracted to
+# ``_tts_cancel_chain_mixin``; the chain-family events
+# (``voice.tts.cancellation_chain`` / ``voice.tts.cancellation_step_failed`` /
+# ``voice.tts.cancellation_task_unexpected_exception`` /
+# ``voice.tts.cancellation_cogloop_unexpected_exception`` /
+# ``voice.tts.speaker_drift_detected``) now emit from that module's logger.
+_TTS_CANCEL_LOGGER = "sovyx.voice.pipeline._tts_cancel_chain_mixin"
 
 
 def _events_of(caplog: pytest.LogCaptureFixture, event: str) -> list[dict[str, Any]]:
@@ -2994,7 +3002,7 @@ def _events_of(caplog: pytest.LogCaptureFixture, event: str) -> list[dict[str, A
     return [
         r.msg
         for r in caplog.records
-        if r.name in (_ORCH_LOGGER, _HEARTBEAT_LOGGER, _BYPASS_LOGGER)
+        if r.name in (_ORCH_LOGGER, _HEARTBEAT_LOGGER, _BYPASS_LOGGER, _TTS_CANCEL_LOGGER)
         and isinstance(r.msg, dict)
         and r.msg.get("event") == event
     ]
@@ -3051,6 +3059,7 @@ class TestPipelineHeartbeat:
         caplog.set_level(logging.INFO, logger=_ORCH_LOGGER)
         caplog.set_level(logging.INFO, logger=_HEARTBEAT_LOGGER)
         caplog.set_level(logging.INFO, logger=_BYPASS_LOGGER)
+        caplog.set_level(logging.INFO, logger=_TTS_CANCEL_LOGGER)
         pipeline, refs = _make_pipeline(wake_word_enabled=False, vad_speech=False)
         await pipeline.start()
         await _disable_heartbeat_timer(pipeline)
@@ -3081,6 +3090,7 @@ class TestPipelineHeartbeat:
         caplog.set_level(logging.INFO, logger=_ORCH_LOGGER)
         caplog.set_level(logging.INFO, logger=_HEARTBEAT_LOGGER)
         caplog.set_level(logging.INFO, logger=_BYPASS_LOGGER)
+        caplog.set_level(logging.INFO, logger=_TTS_CANCEL_LOGGER)
         pipeline, refs = _make_pipeline(wake_word_enabled=False, vad_speech=False)
         await pipeline.start()
         await _disable_heartbeat_timer(pipeline)
@@ -3120,6 +3130,7 @@ class TestPipelineHeartbeat:
         caplog.set_level(logging.INFO, logger=_ORCH_LOGGER)
         caplog.set_level(logging.INFO, logger=_HEARTBEAT_LOGGER)
         caplog.set_level(logging.INFO, logger=_BYPASS_LOGGER)
+        caplog.set_level(logging.INFO, logger=_TTS_CANCEL_LOGGER)
         pipeline, refs = _make_pipeline(wake_word_enabled=False, vad_speech=False)
         await pipeline.start()
         await _disable_heartbeat_timer(pipeline)
@@ -3160,6 +3171,7 @@ class TestPipelineHeartbeat:
         caplog.set_level(logging.INFO, logger=_ORCH_LOGGER)
         caplog.set_level(logging.INFO, logger=_HEARTBEAT_LOGGER)
         caplog.set_level(logging.INFO, logger=_BYPASS_LOGGER)
+        caplog.set_level(logging.INFO, logger=_TTS_CANCEL_LOGGER)
         pipeline, refs = _make_pipeline(wake_word_enabled=False, vad_speech=False)
         await pipeline.start()
         await _disable_heartbeat_timer(pipeline)
@@ -3193,6 +3205,7 @@ class TestPipelineHeartbeat:
         caplog.set_level(logging.INFO, logger=_ORCH_LOGGER)
         caplog.set_level(logging.INFO, logger=_HEARTBEAT_LOGGER)
         caplog.set_level(logging.INFO, logger=_BYPASS_LOGGER)
+        caplog.set_level(logging.INFO, logger=_TTS_CANCEL_LOGGER)
         pipeline, refs = _make_pipeline(wake_word_enabled=False, vad_speech=False)
         await pipeline.start()
         await _disable_heartbeat_timer(pipeline)
@@ -3238,6 +3251,7 @@ class TestPipelineHeartbeat:
         caplog.set_level(logging.INFO, logger=_ORCH_LOGGER)
         caplog.set_level(logging.INFO, logger=_HEARTBEAT_LOGGER)
         caplog.set_level(logging.INFO, logger=_BYPASS_LOGGER)
+        caplog.set_level(logging.INFO, logger=_TTS_CANCEL_LOGGER)
         pipeline, refs = _make_pipeline(wake_word_enabled=False, vad_speech=False)
         await pipeline.start()
         await _disable_heartbeat_timer(pipeline)
@@ -3275,6 +3289,7 @@ class TestPipelineHeartbeat:
         caplog.set_level(logging.INFO, logger=_ORCH_LOGGER)
         caplog.set_level(logging.INFO, logger=_HEARTBEAT_LOGGER)
         caplog.set_level(logging.INFO, logger=_BYPASS_LOGGER)
+        caplog.set_level(logging.INFO, logger=_TTS_CANCEL_LOGGER)
         pipeline, refs = _make_pipeline(wake_word_enabled=False, vad_speech=False)
         await pipeline.start()
         await _disable_heartbeat_timer(pipeline)
@@ -3320,6 +3335,7 @@ class TestPipelineHeartbeat:
         caplog.set_level(logging.INFO, logger=_ORCH_LOGGER)
         caplog.set_level(logging.INFO, logger=_HEARTBEAT_LOGGER)
         caplog.set_level(logging.INFO, logger=_BYPASS_LOGGER)
+        caplog.set_level(logging.INFO, logger=_TTS_CANCEL_LOGGER)
         pipeline, refs = _make_pipeline(wake_word_enabled=False, vad_speech=False)
         await pipeline.start()
         await _disable_heartbeat_timer(pipeline)
@@ -3362,6 +3378,7 @@ class TestPipelineHeartbeat:
         caplog.set_level(logging.INFO, logger=_ORCH_LOGGER)
         caplog.set_level(logging.INFO, logger=_HEARTBEAT_LOGGER)
         caplog.set_level(logging.INFO, logger=_BYPASS_LOGGER)
+        caplog.set_level(logging.INFO, logger=_TTS_CANCEL_LOGGER)
         pipeline, refs = _make_pipeline(wake_word_enabled=False, vad_speech=False)
         await pipeline.start()
         await _disable_heartbeat_timer(pipeline)
@@ -3415,6 +3432,7 @@ class TestPipelineHeartbeat:
         caplog.set_level(logging.INFO, logger=_ORCH_LOGGER)
         caplog.set_level(logging.INFO, logger=_HEARTBEAT_LOGGER)
         caplog.set_level(logging.INFO, logger=_BYPASS_LOGGER)
+        caplog.set_level(logging.INFO, logger=_TTS_CANCEL_LOGGER)
         pipeline, refs = _make_pipeline(wake_word_enabled=False, vad_speech=False)
         await pipeline.start()
         await _disable_heartbeat_timer(pipeline)
@@ -3455,6 +3473,7 @@ class TestPipelineHeartbeat:
         caplog.set_level(logging.INFO, logger=_ORCH_LOGGER)
         caplog.set_level(logging.INFO, logger=_HEARTBEAT_LOGGER)
         caplog.set_level(logging.INFO, logger=_BYPASS_LOGGER)
+        caplog.set_level(logging.INFO, logger=_TTS_CANCEL_LOGGER)
         pipeline, refs = _make_pipeline(wake_word_enabled=False, vad_speech=False)
         await pipeline.start()
         await _disable_heartbeat_timer(pipeline)
@@ -3495,6 +3514,7 @@ class TestRecordingLifecycleLogs:
         caplog.set_level(logging.INFO, logger=_ORCH_LOGGER)
         caplog.set_level(logging.INFO, logger=_HEARTBEAT_LOGGER)
         caplog.set_level(logging.INFO, logger=_BYPASS_LOGGER)
+        caplog.set_level(logging.INFO, logger=_TTS_CANCEL_LOGGER)
         pipeline, _ = _make_pipeline(wake_word_enabled=False, vad_speech=True)
         await pipeline.start()
         caplog.clear()
@@ -3513,6 +3533,7 @@ class TestRecordingLifecycleLogs:
         caplog.set_level(logging.INFO, logger=_ORCH_LOGGER)
         caplog.set_level(logging.INFO, logger=_HEARTBEAT_LOGGER)
         caplog.set_level(logging.INFO, logger=_BYPASS_LOGGER)
+        caplog.set_level(logging.INFO, logger=_TTS_CANCEL_LOGGER)
         pipeline, refs = _make_pipeline(wake_word_enabled=False, vad_speech=True)
         await pipeline.start()
         await pipeline.feed_frame(_speech_frame())  # → RECORDING
@@ -3539,6 +3560,7 @@ class TestSTTAndPerceptionLogs:
         caplog.set_level(logging.INFO, logger=_ORCH_LOGGER)
         caplog.set_level(logging.INFO, logger=_HEARTBEAT_LOGGER)
         caplog.set_level(logging.INFO, logger=_BYPASS_LOGGER)
+        caplog.set_level(logging.INFO, logger=_TTS_CANCEL_LOGGER)
         pipeline, refs = _make_pipeline(
             wake_word_enabled=False, vad_speech=True, stt_text="olá mundo"
         )
@@ -3566,6 +3588,7 @@ class TestSTTAndPerceptionLogs:
         caplog.set_level(logging.INFO, logger=_ORCH_LOGGER)
         caplog.set_level(logging.INFO, logger=_HEARTBEAT_LOGGER)
         caplog.set_level(logging.INFO, logger=_BYPASS_LOGGER)
+        caplog.set_level(logging.INFO, logger=_TTS_CANCEL_LOGGER)
         on_perception = AsyncMock()
         pipeline, refs = _make_pipeline(
             wake_word_enabled=False, vad_speech=True, on_perception=on_perception
@@ -3593,6 +3616,7 @@ class TestSTTAndPerceptionLogs:
         caplog.set_level(logging.WARNING, logger=_ORCH_LOGGER)
         caplog.set_level(logging.WARNING, logger=_HEARTBEAT_LOGGER)
         caplog.set_level(logging.WARNING, logger=_BYPASS_LOGGER)
+        caplog.set_level(logging.WARNING, logger=_TTS_CANCEL_LOGGER)
         pipeline, refs = _make_pipeline(
             wake_word_enabled=False, vad_speech=True, on_perception=None
         )
@@ -3732,6 +3756,7 @@ class TestDeafSignalCoordinator:
         caplog.set_level(logging.WARNING, logger=_ORCH_LOGGER)
         caplog.set_level(logging.WARNING, logger=_HEARTBEAT_LOGGER)
         caplog.set_level(logging.WARNING, logger=_BYPASS_LOGGER)
+        caplog.set_level(logging.WARNING, logger=_TTS_CANCEL_LOGGER)
         callback = AsyncMock(
             return_value=[
                 _bypass_outcome(
@@ -3767,6 +3792,7 @@ class TestDeafSignalCoordinator:
         caplog.set_level(logging.WARNING, logger=_ORCH_LOGGER)
         caplog.set_level(logging.WARNING, logger=_HEARTBEAT_LOGGER)
         caplog.set_level(logging.WARNING, logger=_BYPASS_LOGGER)
+        caplog.set_level(logging.WARNING, logger=_TTS_CANCEL_LOGGER)
         callback = AsyncMock(return_value=[])
         pipeline = self._deaf_pipeline(auto_bypass_enabled=False, callback=callback, threshold=2)
         await pipeline.start()
@@ -3786,6 +3812,7 @@ class TestDeafSignalCoordinator:
         caplog.set_level(logging.WARNING, logger=_ORCH_LOGGER)
         caplog.set_level(logging.WARNING, logger=_HEARTBEAT_LOGGER)
         caplog.set_level(logging.WARNING, logger=_BYPASS_LOGGER)
+        caplog.set_level(logging.WARNING, logger=_TTS_CANCEL_LOGGER)
         callback = AsyncMock(return_value=[_bypass_outcome(verdict="applied_healthy")])
         pipeline = self._deaf_pipeline(auto_bypass_enabled=True, callback=callback, threshold=1)
         await pipeline.start()
@@ -3827,6 +3854,7 @@ class TestDeafSignalCoordinator:
         caplog.set_level(logging.ERROR, logger=_ORCH_LOGGER)
         caplog.set_level(logging.ERROR, logger=_HEARTBEAT_LOGGER)
         caplog.set_level(logging.ERROR, logger=_BYPASS_LOGGER)
+        caplog.set_level(logging.ERROR, logger=_TTS_CANCEL_LOGGER)
         callback = AsyncMock(
             return_value=[
                 _bypass_outcome(
@@ -3865,6 +3893,7 @@ class TestDeafSignalCoordinator:
         caplog.set_level(logging.ERROR, logger=_ORCH_LOGGER)
         caplog.set_level(logging.ERROR, logger=_HEARTBEAT_LOGGER)
         caplog.set_level(logging.ERROR, logger=_BYPASS_LOGGER)
+        caplog.set_level(logging.ERROR, logger=_TTS_CANCEL_LOGGER)
 
         async def failing_callback() -> list[Any]:
             raise RuntimeError("simulated coordinator failure")
@@ -4018,6 +4047,7 @@ class TestDeafSignalAtomicityO2:
         caplog.set_level(logging.INFO, logger=_ORCH_LOGGER)
         caplog.set_level(logging.INFO, logger=_HEARTBEAT_LOGGER)
         caplog.set_level(logging.INFO, logger=_BYPASS_LOGGER)
+        caplog.set_level(logging.INFO, logger=_TTS_CANCEL_LOGGER)
         callback = AsyncMock(return_value=[])
         pipeline = self._deaf_pipeline(auto_bypass_enabled=True, callback=callback, threshold=1)
         await pipeline.start()
@@ -4040,6 +4070,7 @@ class TestDeafSignalAtomicityO2:
         caplog.set_level(logging.INFO, logger=_ORCH_LOGGER)
         caplog.set_level(logging.INFO, logger=_HEARTBEAT_LOGGER)
         caplog.set_level(logging.INFO, logger=_BYPASS_LOGGER)
+        caplog.set_level(logging.INFO, logger=_TTS_CANCEL_LOGGER)
         callback = AsyncMock(return_value=[_bypass_outcome(verdict="applied_healthy")])
         pipeline = self._deaf_pipeline(auto_bypass_enabled=True, callback=callback, threshold=1)
         await pipeline.start()
@@ -4069,6 +4100,7 @@ class TestDeafSignalAtomicityO2:
         caplog.set_level(logging.WARNING, logger=_ORCH_LOGGER)
         caplog.set_level(logging.WARNING, logger=_HEARTBEAT_LOGGER)
         caplog.set_level(logging.WARNING, logger=_BYPASS_LOGGER)
+        caplog.set_level(logging.WARNING, logger=_TTS_CANCEL_LOGGER)
         callback = AsyncMock(return_value=[])
         pipeline = self._deaf_pipeline(auto_bypass_enabled=True, callback=callback, threshold=1)
         await pipeline.start()
@@ -4186,6 +4218,7 @@ class TestDeafSignalAtomicityO2:
         caplog.set_level(logging.WARNING, logger=_ORCH_LOGGER)
         caplog.set_level(logging.WARNING, logger=_HEARTBEAT_LOGGER)
         caplog.set_level(logging.WARNING, logger=_BYPASS_LOGGER)
+        caplog.set_level(logging.WARNING, logger=_TTS_CANCEL_LOGGER)
         callback = AsyncMock(return_value=[_bypass_outcome(verdict="applied_healthy")])
         pipeline = self._deaf_pipeline(auto_bypass_enabled=True, callback=callback, threshold=2)
         await pipeline.start()
@@ -4754,6 +4787,7 @@ class TestFrameDropDetectionO3:
         caplog.set_level(logging.WARNING, logger=_ORCH_LOGGER)
         caplog.set_level(logging.WARNING, logger=_HEARTBEAT_LOGGER)
         caplog.set_level(logging.WARNING, logger=_BYPASS_LOGGER)
+        caplog.set_level(logging.WARNING, logger=_TTS_CANCEL_LOGGER)
         pipeline, _ = _make_pipeline()
         await pipeline.start()
         # All frames arrive at exactly the expected cadence (32 ms).
@@ -4769,6 +4803,7 @@ class TestFrameDropDetectionO3:
         caplog.set_level(logging.WARNING, logger=_ORCH_LOGGER)
         caplog.set_level(logging.WARNING, logger=_HEARTBEAT_LOGGER)
         caplog.set_level(logging.WARNING, logger=_BYPASS_LOGGER)
+        caplog.set_level(logging.WARNING, logger=_TTS_CANCEL_LOGGER)
         pipeline, _ = _make_pipeline()
         await pipeline.start()
         from sovyx.voice.pipeline import _orchestrator as mod
@@ -4790,6 +4825,7 @@ class TestFrameDropDetectionO3:
         caplog.set_level(logging.WARNING, logger=_ORCH_LOGGER)
         caplog.set_level(logging.WARNING, logger=_HEARTBEAT_LOGGER)
         caplog.set_level(logging.WARNING, logger=_BYPASS_LOGGER)
+        caplog.set_level(logging.WARNING, logger=_TTS_CANCEL_LOGGER)
         pipeline, _ = _make_pipeline()
         await pipeline.start()
         expected = pipeline._expected_frame_interval_s
@@ -4812,6 +4848,7 @@ class TestFrameDropDetectionO3:
         caplog.set_level(logging.WARNING, logger=_ORCH_LOGGER)
         caplog.set_level(logging.WARNING, logger=_HEARTBEAT_LOGGER)
         caplog.set_level(logging.WARNING, logger=_BYPASS_LOGGER)
+        caplog.set_level(logging.WARNING, logger=_TTS_CANCEL_LOGGER)
         pipeline, _ = _make_pipeline()
         await pipeline.start()
         expected = pipeline._expected_frame_interval_s
@@ -4832,6 +4869,7 @@ class TestFrameDropDetectionO3:
         caplog.set_level(logging.WARNING, logger=_ORCH_LOGGER)
         caplog.set_level(logging.WARNING, logger=_HEARTBEAT_LOGGER)
         caplog.set_level(logging.WARNING, logger=_BYPASS_LOGGER)
+        caplog.set_level(logging.WARNING, logger=_TTS_CANCEL_LOGGER)
         pipeline, _ = _make_pipeline()
         await pipeline.start()
         expected = pipeline._expected_frame_interval_s
@@ -4877,6 +4915,7 @@ class TestFrameDropDetectionO3:
         caplog.set_level(logging.WARNING, logger=_ORCH_LOGGER)
         caplog.set_level(logging.WARNING, logger=_HEARTBEAT_LOGGER)
         caplog.set_level(logging.WARNING, logger=_BYPASS_LOGGER)
+        caplog.set_level(logging.WARNING, logger=_TTS_CANCEL_LOGGER)
         pipeline, _ = _make_pipeline()
         await pipeline.start()
         from sovyx.voice.pipeline import _orchestrator as mod
@@ -4904,6 +4943,7 @@ class TestFrameDropDetectionO3:
         caplog.set_level(logging.WARNING, logger=_ORCH_LOGGER)
         caplog.set_level(logging.WARNING, logger=_HEARTBEAT_LOGGER)
         caplog.set_level(logging.WARNING, logger=_BYPASS_LOGGER)
+        caplog.set_level(logging.WARNING, logger=_TTS_CANCEL_LOGGER)
         pipeline, _ = _make_pipeline()
         await pipeline.start()
         # Just one anchor — _check_frame_drop_signals returns early.
@@ -4955,6 +4995,7 @@ class TestCancellationChainT1:
         caplog.set_level(logging.INFO, logger=_ORCH_LOGGER)
         caplog.set_level(logging.INFO, logger=_HEARTBEAT_LOGGER)
         caplog.set_level(logging.INFO, logger=_BYPASS_LOGGER)
+        caplog.set_level(logging.INFO, logger=_TTS_CANCEL_LOGGER)
         pipeline, _ = _make_pipeline()
         await pipeline.start()
         await pipeline.cancel_speech_chain(reason="test")
@@ -4979,6 +5020,7 @@ class TestCancellationChainT1:
         caplog.set_level(logging.INFO, logger=_ORCH_LOGGER)
         caplog.set_level(logging.INFO, logger=_HEARTBEAT_LOGGER)
         caplog.set_level(logging.INFO, logger=_BYPASS_LOGGER)
+        caplog.set_level(logging.INFO, logger=_TTS_CANCEL_LOGGER)
         pipeline, _ = _make_pipeline()
         await pipeline.start()
 
@@ -5020,6 +5062,7 @@ class TestCancellationChainT1:
         caplog.set_level(logging.INFO, logger=_ORCH_LOGGER)
         caplog.set_level(logging.INFO, logger=_HEARTBEAT_LOGGER)
         caplog.set_level(logging.INFO, logger=_BYPASS_LOGGER)
+        caplog.set_level(logging.INFO, logger=_TTS_CANCEL_LOGGER)
         pipeline, _ = _make_pipeline()
         await pipeline.start()
         called = {"n": 0}
@@ -5044,6 +5087,7 @@ class TestCancellationChainT1:
         caplog.set_level(logging.INFO, logger=_ORCH_LOGGER)
         caplog.set_level(logging.INFO, logger=_HEARTBEAT_LOGGER)
         caplog.set_level(logging.INFO, logger=_BYPASS_LOGGER)
+        caplog.set_level(logging.INFO, logger=_TTS_CANCEL_LOGGER)
         pipeline, _ = _make_pipeline()
         await pipeline.start()
 
@@ -5064,6 +5108,7 @@ class TestCancellationChainT1:
         caplog.set_level(logging.INFO, logger=_ORCH_LOGGER)
         caplog.set_level(logging.INFO, logger=_HEARTBEAT_LOGGER)
         caplog.set_level(logging.INFO, logger=_BYPASS_LOGGER)
+        caplog.set_level(logging.INFO, logger=_TTS_CANCEL_LOGGER)
         pipeline, _ = _make_pipeline()
         await pipeline.start()
 
@@ -5405,6 +5450,7 @@ class TestCogloopTaskCancellationT32:
         caplog.set_level(logging.INFO, logger=_ORCH_LOGGER)
         caplog.set_level(logging.INFO, logger=_HEARTBEAT_LOGGER)
         caplog.set_level(logging.INFO, logger=_BYPASS_LOGGER)
+        caplog.set_level(logging.INFO, logger=_TTS_CANCEL_LOGGER)
         pipeline, _ = _make_pipeline()
         await pipeline.start()
 
@@ -5734,6 +5780,7 @@ class TestFalseWakeRecovery:
         caplog.set_level(logging.WARNING, logger=_ORCH_LOGGER)
         caplog.set_level(logging.WARNING, logger=_HEARTBEAT_LOGGER)
         caplog.set_level(logging.WARNING, logger=_BYPASS_LOGGER)
+        caplog.set_level(logging.WARNING, logger=_TTS_CANCEL_LOGGER)
         await pipeline.start()
 
         with patch.object(_pipeline_mod, "_play_audio", new_callable=AsyncMock):
