@@ -9,13 +9,17 @@ Coverage:
 * :func:`window_summary` is read-only — two consecutive calls
   with no new samples return identical results.
 * Bounded buffer drops oldest samples on overflow (FIFO).
+* Per-mind isolation + LRU eviction at the ``_MAX_MINDS`` cap
+  (Phase 5.A.2 multi-mind keying — Finding 6 closure).
 """
 
 from __future__ import annotations
 
 import pytest
 
+from sovyx.voice.health import _recent_snr
 from sovyx.voice.health._recent_snr import (
+    _MAX_MINDS,
     _WINDOW_SAMPLES,
     record_sample,
     reset_for_tests,
@@ -84,3 +88,75 @@ class TestBufferOverflow:
         # value (total - N) + N//2.
         expected_p50 = float(total - (_WINDOW_SAMPLES - _WINDOW_SAMPLES // 2))
         assert s.p50_db == expected_p50
+
+
+class TestPerMindIsolationAndLruEviction:
+    """Phase 5.A.2 multi-mind keying contract (Finding 6 closure).
+
+    Pre-Phase-5.A.2 the recent-SNR rolling buffer was a single module-
+    level deque so transcription queries on multi-mind hosts averaged
+    samples across every mind. These tests pin per-mind isolation +
+    the ``_MAX_MINDS`` LRU eviction cap.
+    """
+
+    def test_samples_isolated_per_mind(self) -> None:
+        for v in (5.0, 10.0, 15.0):
+            record_sample(snr_db=v, mind_id="mind-a")
+        for v in (40.0, 50.0, 60.0):
+            record_sample(snr_db=v, mind_id="mind-b")
+
+        a = window_summary(mind_id="mind-a")
+        b = window_summary(mind_id="mind-b")
+
+        assert a.count == 3  # noqa: PLR2004
+        assert a.p50_db == 10.0  # noqa: PLR2004 — sorted [5, 10, 15] → idx 1
+        assert b.count == 3  # noqa: PLR2004
+        assert b.p50_db == 50.0  # noqa: PLR2004 — sorted [40, 50, 60] → idx 1
+
+    def test_summary_does_not_clear_target_mind(self) -> None:
+        # Read-only contract per mind — two consecutive summaries
+        # for the same mind are identical even with no new samples.
+        record_sample(snr_db=22.0, mind_id="mind-a")
+        first = window_summary(mind_id="mind-a")
+        second = window_summary(mind_id="mind-a")
+        assert first.count == 1
+        assert second.count == 1
+        assert first.p50_db == second.p50_db
+
+    def test_default_mind_back_compat(self) -> None:
+        # Un-keyed call shares state with explicit mind_id="default".
+        record_sample(snr_db=7.0)
+        record_sample(snr_db=11.0, mind_id="default")
+        s = window_summary()  # also un-keyed
+        assert s.count == 2  # noqa: PLR2004
+        assert s.p50_db == 11.0  # noqa: PLR2004 — sorted [7, 11] → idx 1
+
+    def test_unknown_mind_returns_empty_without_creating_buffer(self) -> None:
+        before = len(_recent_snr._per_mind_buffers)
+        s = window_summary(mind_id="never-recorded")
+        after = len(_recent_snr._per_mind_buffers)
+        assert s.count == 0
+        assert after == before
+
+    def test_lru_eviction_at_max_minds_cap(self) -> None:
+        for i in range(_MAX_MINDS):
+            record_sample(snr_db=float(i), mind_id=f"mind-{i:02d}")
+        assert len(_recent_snr._per_mind_buffers) == _MAX_MINDS
+
+        record_sample(snr_db=999.0, mind_id="mind-overflow")
+        assert len(_recent_snr._per_mind_buffers) == _MAX_MINDS
+        assert "mind-00" not in _recent_snr._per_mind_buffers
+        assert "mind-overflow" in _recent_snr._per_mind_buffers
+
+    def test_lru_touch_protects_recently_used_mind(self) -> None:
+        for i in range(_MAX_MINDS):
+            record_sample(snr_db=float(i), mind_id=f"mind-{i:02d}")
+
+        # Touch mind-00 — moves it to the most-recent position.
+        record_sample(snr_db=42.0, mind_id="mind-00")
+
+        # Trigger one eviction. mind-01 should drop, mind-00 survives.
+        record_sample(snr_db=999.0, mind_id="mind-overflow")
+
+        assert "mind-00" in _recent_snr._per_mind_buffers
+        assert "mind-01" not in _recent_snr._per_mind_buffers

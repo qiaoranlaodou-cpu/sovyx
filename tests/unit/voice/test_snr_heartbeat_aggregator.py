@@ -11,6 +11,8 @@ Coverage:
 * Bounded buffer drops oldest samples on overflow (FIFO via
   ``deque(maxlen=...)``); the percentile computation reflects
   only the surviving samples.
+* Per-mind isolation + LRU eviction at the ``_MAX_MINDS`` cap
+  (Phase 5.A multi-mind keying — Finding 6 closure).
 * Thread safety: concurrent record + drain produces no
   exceptions (smoke test, not a stress test).
 """
@@ -21,8 +23,10 @@ import threading
 
 import pytest
 
+from sovyx.voice.health import _snr_heartbeat
 from sovyx.voice.health._snr_heartbeat import (
     _MAX_BUFFER_SAMPLES,
+    _MAX_MINDS,
     drain_window_stats,
     record_snr_sample,
     reset_for_tests,
@@ -150,6 +154,100 @@ class TestBufferOverflow:
         # Max of surviving = total - 1; p95 idx = int(N * 0.95).
         expected_p95 = float((total - _MAX_BUFFER_SAMPLES) + int(_MAX_BUFFER_SAMPLES * 0.95))
         assert stats.p95_db == expected_p95
+
+
+class TestPerMindIsolationAndLruEviction:
+    """Phase 5.A multi-mind keying contract (Finding 6 closure).
+
+    Pre-Phase-5.A this aggregator used a single module-level deque so
+    samples from every mind merged into one buffer. These tests pin the
+    new per-mind keying + LRU eviction so a regression that re-merges
+    state surfaces immediately.
+    """
+
+    def test_samples_isolated_per_mind(self) -> None:
+        # Mind A gets one set of samples, mind B another. Each mind's
+        # drain must reflect only its own samples — no cross-mind leak.
+        for v in (10.0, 20.0, 30.0):
+            record_snr_sample(snr_db=v, mind_id="mind-a")
+        for v in (90.0, 95.0, 99.0):
+            record_snr_sample(snr_db=v, mind_id="mind-b")
+
+        a = drain_window_stats(mind_id="mind-a")
+        b = drain_window_stats(mind_id="mind-b")
+
+        assert a.count == 3  # noqa: PLR2004
+        assert a.p50_db == 20.0  # noqa: PLR2004 — sorted [10, 20, 30] → idx 1
+        assert b.count == 3  # noqa: PLR2004
+        assert b.p50_db == 95.0  # noqa: PLR2004 — sorted [90, 95, 99] → idx 1
+
+    def test_drain_clears_only_target_mind(self) -> None:
+        # Drain on mind A must not touch mind B's buffer.
+        record_snr_sample(snr_db=42.0, mind_id="mind-a")
+        record_snr_sample(snr_db=84.0, mind_id="mind-b")
+
+        drain_window_stats(mind_id="mind-a")  # clear A
+        b = drain_window_stats(mind_id="mind-b")  # B untouched
+
+        assert b.count == 1
+        assert b.p50_db == 84.0  # noqa: PLR2004
+
+    def test_default_mind_back_compat(self) -> None:
+        # Un-keyed call (legacy producer) shares state with explicit
+        # mind_id="default" — staged-adoption contract.
+        record_snr_sample(snr_db=11.0)  # no mind_id kwarg
+        record_snr_sample(snr_db=13.0, mind_id="default")
+
+        stats = drain_window_stats()  # also no mind_id kwarg
+        assert stats.count == 2  # noqa: PLR2004
+        assert stats.p50_db == 13.0  # noqa: PLR2004 — sorted [11, 13] → idx 1
+
+    def test_unknown_mind_returns_empty_without_creating_buffer(self) -> None:
+        # Querying a mind that has no recorded samples must return
+        # empty stats AND must not allocate a buffer for it (otherwise
+        # an attacker could provoke unbounded allocation by querying
+        # arbitrary mind_ids — the LRU cap would still bound it but
+        # we want zero allocation on read-only paths).
+        before = len(_snr_heartbeat._per_mind_buffers)
+        stats = drain_window_stats(mind_id="never-recorded")
+        after = len(_snr_heartbeat._per_mind_buffers)
+
+        assert stats.count == 0
+        assert after == before
+
+    def test_lru_eviction_at_max_minds_cap(self) -> None:
+        # Recording for _MAX_MINDS + 1 distinct minds must evict the
+        # oldest (mind-0). The cap is the production memory bound.
+        for i in range(_MAX_MINDS):
+            record_snr_sample(snr_db=float(i), mind_id=f"mind-{i:02d}")
+        assert len(_snr_heartbeat._per_mind_buffers) == _MAX_MINDS
+
+        # Add one more — eviction must drop mind-00 (oldest insertion).
+        record_snr_sample(snr_db=999.0, mind_id="mind-overflow")
+        assert len(_snr_heartbeat._per_mind_buffers) == _MAX_MINDS
+        assert "mind-00" not in _snr_heartbeat._per_mind_buffers
+        assert "mind-overflow" in _snr_heartbeat._per_mind_buffers
+
+        # Mind-00's samples must be gone — its drain returns empty
+        # (and re-creates an empty buffer; that's a fresh insertion).
+        evicted_stats = drain_window_stats(mind_id="mind-00")
+        assert evicted_stats.count == 0
+
+    def test_lru_touch_protects_recently_used_mind(self) -> None:
+        # Fill the cap, then touch mind-00 (move-to-end via record).
+        # The next overflow must evict mind-01 (now the oldest), NOT
+        # mind-00.
+        for i in range(_MAX_MINDS):
+            record_snr_sample(snr_db=float(i), mind_id=f"mind-{i:02d}")
+
+        # Touch mind-00 — moves it to the most-recent position.
+        record_snr_sample(snr_db=42.0, mind_id="mind-00")
+
+        # Trigger one eviction. mind-01 should drop, mind-00 survives.
+        record_snr_sample(snr_db=999.0, mind_id="mind-overflow")
+
+        assert "mind-00" in _snr_heartbeat._per_mind_buffers
+        assert "mind-01" not in _snr_heartbeat._per_mind_buffers
 
 
 class TestThreadSafety:
