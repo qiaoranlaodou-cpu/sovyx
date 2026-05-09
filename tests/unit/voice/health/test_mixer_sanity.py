@@ -55,6 +55,7 @@ from sovyx.voice.health import (
     check_and_maybe_heal,
 )
 from sovyx.voice.health import _mixer_sanity as mod
+from sovyx.voice.health import _mixer_sanity_factory as mod_factory
 from sovyx.voice.health import _mixer_sanity_persist as mod_persist
 from sovyx.voice.health.contract import CandidateEndpoint
 
@@ -2021,7 +2022,7 @@ class TestBuildMixerSanitySetup:
         ) -> None:
             _ = (combo, mode, device_index, hard_timeout_s)
 
-        with patch.object(mod, "sys") as sys_mock:
+        with patch.object(mod_factory, "sys") as sys_mock:
             sys_mock.platform = "win32"
             setup = await mod.build_mixer_sanity_setup(probe_fn=dummy_probe)
         assert setup is None
@@ -2033,7 +2034,7 @@ class TestBuildMixerSanitySetup:
         ) -> None:
             _ = (combo, mode, device_index, hard_timeout_s)
 
-        with patch.object(mod, "sys") as sys_mock:
+        with patch.object(mod_factory, "sys") as sys_mock:
             sys_mock.platform = "linux"
             setup = await mod.build_mixer_sanity_setup(
                 probe_fn=dummy_probe,
@@ -2048,7 +2049,7 @@ class TestBuildMixerSanitySetup:
         ) -> None:
             _ = (combo, mode, device_index, hard_timeout_s)
 
-        with patch.object(mod, "sys") as sys_mock:
+        with patch.object(mod_factory, "sys") as sys_mock:
             sys_mock.platform = "linux"
             hw = HardwareContext(
                 driver_family="hda",
