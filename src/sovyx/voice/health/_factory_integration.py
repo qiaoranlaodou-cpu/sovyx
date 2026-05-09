@@ -27,7 +27,6 @@ event loop never blocks.
 
 from __future__ import annotations
 
-import hashlib
 import re
 import sys
 from dataclasses import dataclass
@@ -501,82 +500,16 @@ async def _log_macos_driver_watchdog_scan(
     )
 
 
-def derive_endpoint_guid(
-    resolved: DeviceEntry,
-    *,
-    apo_reports: list[CaptureApoReport] | None = None,
-    platform_key: str | None = None,
-) -> str:
-    """Return a stable identifier for ``resolved`` across boots.
-
-    Resolution order (ADR §1 endpoint_guid semantics):
-
-    1. **Windows + APO report**: use the MMDevices endpoint GUID
-       from the matched :class:`~sovyx.voice._apo_detector.CaptureApoReport`.
-       Canonical identifier used throughout the Windows audit trail.
-
-    2. **Linux, sysfs-available**: use
-       :func:`~sovyx.voice.health._fingerprint_linux.compute_linux_endpoint_fingerprint`
-       which derives a stable ID from ``/sys/class/sound/card<N>/device``
-       symlink targets — PCI BDF for onboard codecs, USB VID:PID for
-       USB-audio. Returns the equivalent of an MMDevice GUID on
-       Linux: ``{linux-pci-<bdf>-codec-<vendor>:<device>-<pcm>-<dir>}``
-       or ``{linux-usb-<vid>:<pid>-<pcm>-<dir>}``. Falls through when
-       the device is a virtual alias (``"default"`` / ``"pulse"``) or
-       sysfs is inaccessible.
-
-    3. **Fallback surrogate** — SHA256 over
-       ``(canonical_name, host_api_name, platform_key)`` formatted as
-       ``{surrogate-8-4-4-4-12}``. Stable enough to survive normal
-       reboots (``canonical_name`` is MME-truncation-normalised) but
-       brittle against hotplug reorder, PipeWire/PulseAudio naming
-       changes, and cross-host-API queries for the same physical
-       device.
-
-    The three distinct visual prefixes (``{...win GUID}`` /
-    ``{linux-...}`` / ``{surrogate-...}``) let operators reading logs
-    tell at a glance which mechanism produced the record. ComboStore
-    accepts any non-empty string per its R12 sanity rule.
-    """
-    plat = platform_key or sys.platform
-
-    if plat == "win32" and apo_reports:
-        from sovyx.voice._apo_detector import find_endpoint_report
-
-        report = find_endpoint_report(apo_reports, device_name=resolved.name)
-        if report is not None and report.endpoint_id:
-            return report.endpoint_id
-
-    if plat == "linux":
-        from sovyx.voice.health._fingerprint_linux import (  # noqa: PLC0415 — lazy-Linux
-            compute_linux_endpoint_fingerprint,
-        )
-
-        linux_fp = compute_linux_endpoint_fingerprint(resolved)
-        if linux_fp is not None:
-            return linux_fp
-
-    if plat == "darwin":
-        from sovyx.voice.health._fingerprint_macos import (  # noqa: PLC0415 — lazy-Darwin
-            compute_macos_endpoint_fingerprint,
-        )
-
-        macos_fp = compute_macos_endpoint_fingerprint(resolved)
-        if macos_fp is not None:
-            return macos_fp
-
-    hasher = hashlib.sha256()
-    hasher.update(resolved.canonical_name.encode("utf-8"))
-    hasher.update(b"\x1f")
-    hasher.update(resolved.host_api_name.encode("utf-8"))
-    hasher.update(b"\x1f")
-    hasher.update(plat.encode("utf-8"))
-    digest = hasher.hexdigest()
-    return (
-        "{surrogate-"
-        f"{digest[0:8]}-{digest[8:12]}-{digest[12:16]}-{digest[16:20]}-{digest[20:32]}"
-        "}"
-    )
+# Phase 5.F.1 god-file split — :func:`derive_endpoint_guid` lives in
+# :mod:`sovyx.voice.health._endpoint_guid`. Re-exported here for
+# backward compatibility with every existing
+# ``from sovyx.voice.health._factory_integration import derive_endpoint_guid``
+# import path. Anti-pattern #16 reference; anti-pattern #20 covers
+# the test-patch migration (the helper's only direct caller is the
+# cascade boot path in this same module, so no test patch path
+# changes — but tests that import the symbol from here continue to
+# work via this re-export).
+from sovyx.voice.health._endpoint_guid import derive_endpoint_guid  # noqa: E402  F401
 
 
 async def run_boot_cascade(
