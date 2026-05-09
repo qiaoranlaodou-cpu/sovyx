@@ -272,9 +272,7 @@ class TestStatsBreakdownEndpoint:
         assert data["by_provider"] == {}
         assert data["by_model"] == {}
 
-    def test_returns_breakdown_when_costguard_available(
-        self, auth: dict[str, str]
-    ) -> None:
+    def test_returns_breakdown_when_costguard_available(self, auth: dict[str, str]) -> None:
         from sovyx.llm.cost import CostBreakdown, CostGuard
 
         app = create_app()
@@ -338,9 +336,7 @@ class TestStatsBreakdownEndpoint:
             "tokens_by_phase",
         }
 
-    def test_returns_empty_when_costguard_unresolvable(
-        self, auth: dict[str, str]
-    ) -> None:
+    def test_returns_empty_when_costguard_unresolvable(self, auth: dict[str, str]) -> None:
         # Registry exists but CostGuard isn't registered yet (boot race).
         app = create_app()
         registry = MagicMock()

@@ -181,6 +181,16 @@ VOICE_MODELS: dict[str, VoiceModelInfo] = {
     ),
     # Piper voices — auto-built from _PIPER_VOICES so adding a voice to
     # the catalog is a one-line tuple addition (no per-voice copy here).
+    #
+    # ``download_available=False`` is the contract surface that keeps
+    # ``collect_missing_models()`` from returning every Piper voice as
+    # "missing": the bulk-download flow (POST /api/voice/models/download)
+    # is meant for the Silero+Kokoro one-shot setup, not for fetching
+    # all 7 curated Piper voices the operator never asked for. Piper
+    # voices are downloaded on-demand by ``ensure_piper_model(voice=…)``
+    # at pipeline-creation time — that path doesn't consult
+    # ``download_available``. Regression caught at v0.35.0 publish.yml
+    # CI — see commit history for the operator-debt note.
     **{
         f"piper-{_piper_voice_id(v, lang, region, q)}": VoiceModelInfo(
             name=f"piper-{_piper_voice_id(v, lang, region, q)}",
@@ -189,6 +199,7 @@ VOICE_MODELS: dict[str, VoiceModelInfo] = {
             urls=_piper_voice_urls(v, lang, region, q),
             filename=f"{_piper_voice_id(v, lang, region, q)}.onnx",
             sha256="",  # See _PIPER_HF_BASE comment for trust posture.
+            download_available=False,
             description=f"Piper voice {_piper_voice_id(v, lang, region, q)}",
         )
         for (v, lang, region, q) in _PIPER_VOICES

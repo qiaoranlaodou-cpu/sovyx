@@ -200,9 +200,7 @@ async def stats_breakdown(request: Request) -> JSONResponse:
             "cache_read_tokens": breakdown.cache_read_tokens,
             "cache_creation_tokens": breakdown.cache_creation_tokens,
             "by_phase": {k: round(v, 6) for k, v in breakdown.by_phase.items()},
-            "by_provider": {
-                k: round(v, 6) for k, v in breakdown.by_provider.items()
-            },
+            "by_provider": {k: round(v, 6) for k, v in breakdown.by_provider.items()},
             "by_model": {k: round(v, 6) for k, v in breakdown.by_model.items()},
             "tokens_by_phase": dict(breakdown.tokens_by_phase),
         }
