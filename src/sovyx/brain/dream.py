@@ -216,6 +216,7 @@ class DreamCycle:
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0.3,
                 max_tokens=800,
+                phase="dream",
             )
         except Exception:  # noqa: BLE001 — DREAM is a background maintenance
             # cycle and must survive every transient provider failure

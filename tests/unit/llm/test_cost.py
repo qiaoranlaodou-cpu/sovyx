@@ -782,6 +782,68 @@ class TestCostGuardDaySnapshot:
         await pool.close()
 
 
+class TestPhaseBreakdown:
+    """Issue #43 — cost attributed to cognitive phases."""
+
+    async def test_record_with_phase_tag(self) -> None:
+        g = CostGuard(daily_budget=10.0, per_conversation_budget=2.0)
+        await g.record(0.5, "m", "c1", phase="think", tokens=1000)
+        await g.record(0.2, "m", "c1", phase="reflect", tokens=400)
+        await g.record(0.1, "m", "c1", phase="dream", tokens=200)
+
+        breakdown = g.get_breakdown("day")
+        assert breakdown.by_phase["think"] == pytest.approx(0.5)
+        assert breakdown.by_phase["reflect"] == pytest.approx(0.2)
+        assert breakdown.by_phase["dream"] == pytest.approx(0.1)
+        assert breakdown.tokens_by_phase["think"] == 1000
+        assert breakdown.tokens_by_phase["reflect"] == 400
+        assert breakdown.tokens_by_phase["dream"] == 200
+
+    async def test_empty_phase_buckets_as_unknown(self) -> None:
+        # Calls without an explicit phase tag (chat, plugin tooling)
+        # MUST always have an answer in the breakdown, not silently
+        # disappear from the dashboard.
+        g = CostGuard(daily_budget=10.0, per_conversation_budget=2.0)
+        await g.record(0.3, "m", "c1", tokens=500)  # phase omitted
+
+        breakdown = g.get_breakdown("day")
+        assert breakdown.by_phase == {"unknown": pytest.approx(0.3)}
+        assert breakdown.tokens_by_phase == {"unknown": 500}
+
+    async def test_phase_spend_aggregates_across_calls(self) -> None:
+        g = CostGuard(daily_budget=10.0, per_conversation_budget=10.0)
+        for _ in range(3):
+            await g.record(0.1, "m", "c1", phase="think", tokens=100)
+
+        breakdown = g.get_breakdown("day")
+        assert breakdown.by_phase["think"] == pytest.approx(0.3)
+        assert breakdown.tokens_by_phase["think"] == 300
+
+    async def test_maybe_reset_clears_phase_totals(self) -> None:
+        from datetime import timedelta
+
+        g = CostGuard(daily_budget=10.0, per_conversation_budget=10.0)
+        await g.record(0.5, "m", "c1", phase="think", tokens=500)
+
+        # Force a day rollover.
+        g._last_reset = datetime.now(tz=UTC).date() - timedelta(days=1)
+        g._maybe_reset()
+
+        breakdown = g.get_breakdown("day")
+        assert breakdown.by_phase == {}
+        assert breakdown.tokens_by_phase == {}
+
+    async def test_total_cost_is_sum_of_phase_costs(self) -> None:
+        g = CostGuard(daily_budget=10.0, per_conversation_budget=10.0)
+        await g.record(0.5, "m", "c1", phase="think")
+        await g.record(0.3, "m", "c1", phase="reflect")
+        await g.record(0.1, "m", "c1")  # bucketed as "unknown"
+
+        breakdown = g.get_breakdown("day")
+        assert sum(breakdown.by_phase.values()) == pytest.approx(0.9)
+        assert breakdown.total_cost == pytest.approx(0.9)
+
+
 class TestMonthlyBudget:
     """Issue #42 — monthly budget cap on top of daily + per-conversation."""
 

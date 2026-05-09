@@ -675,3 +675,33 @@ class TestPricingFallbackWarn:
         matching = [e for e in cap if e.get("event") == "llm.pricing.fallback_used"]
         assert len(matching) == 1
         assert matching[0]["source"] == "global_default"
+
+
+class TestPhaseTagPlumbing:
+    """Issue #43 — router.generate(phase=) reaches CostGuard."""
+
+    async def test_generate_threads_phase_to_cost_guard(
+        self, cost_guard: CostGuard, event_bus: AsyncMock
+    ) -> None:
+        provider = _mock_provider("anthropic")
+        router = LLMRouter([provider], cost_guard, event_bus)
+
+        await router.generate(
+            [{"role": "user", "content": "hi"}],
+            phase="reflect",
+        )
+
+        breakdown = cost_guard.get_breakdown("day")
+        assert "reflect" in breakdown.by_phase
+        assert breakdown.by_phase["reflect"] > 0
+
+    async def test_generate_without_phase_buckets_as_unknown(
+        self, cost_guard: CostGuard, event_bus: AsyncMock
+    ) -> None:
+        provider = _mock_provider("anthropic")
+        router = LLMRouter([provider], cost_guard, event_bus)
+
+        await router.generate([{"role": "user", "content": "hi"}])
+
+        breakdown = cost_guard.get_breakdown("day")
+        assert "unknown" in breakdown.by_phase

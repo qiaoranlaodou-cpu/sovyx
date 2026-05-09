@@ -28,6 +28,23 @@
     "costLabel": "Costo",
     "noData": "Aún no hay datos de costo"
   },
+  "phaseBreakdown": {
+    "title": "Costo por fase cognitiva",
+    "description": "Gasto de hoy atribuido a cada fase cognitiva.",
+    "phase": {
+      "think": "Pensar",
+      "reflect": "Reflexionar",
+      "dream": "Soñar",
+      "act": "Actuar (herramientas)",
+      "safety": "Clasificador de seguridad",
+      "pii_guard": "Protección PII",
+      "financial_gate": "Puerta financiera",
+      "contradiction": "Comprobación de contradicciones",
+      "conv_import": "Importación de conversación",
+      "unknown": "Otros",
+      "other": "Otros (fases desconocidas)"
+    }
+  },
   "events": {
     "PerceptionReceived": "Percepción",
     "ThinkCompleted": "Pensar",

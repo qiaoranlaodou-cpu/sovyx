@@ -342,6 +342,7 @@ class LLMRouter:
         max_tokens: int = 4096,
         conversation_id: str = "",
         tools: list[dict[str, object]] | None = None,
+        phase: str = "",
     ) -> LLMResponse:
         """Generate response via most available provider.
 
@@ -353,6 +354,11 @@ class LLMRouter:
             conversation_id: For per-conversation cost tracking.
             tools: Optional tool definitions for function calling.
                 Each dict has name, description, parameters keys.
+            phase: Cognitive phase tag for cost attribution
+                (``"think"`` / ``"reflect"`` / ``"dream"`` / ``"act"`` /
+                ``"safety"`` / ``"pii_guard"`` / ``"financial_gate"`` /
+                ``"contradiction"``). Empty string aggregates as
+                ``"unknown"`` in dashboard reports (issue #43).
 
         Returns:
             LLMResponse from first successful provider.
@@ -510,6 +516,7 @@ class LLMRouter:
                         tokens=response.tokens_in + response.tokens_out,
                         cache_read_tokens=response.cache_read_tokens,
                         cache_creation_tokens=response.cache_creation_tokens,
+                        phase=phase,
                     )
 
                     # Update dashboard counters (non-OTel, queryable)
@@ -611,6 +618,7 @@ class LLMRouter:
         max_tokens: int = 4096,
         conversation_id: str = "",
         tools: list[dict[str, object]] | None = None,
+        phase: str = "",
     ) -> AsyncIterator[LLMStreamChunk]:
         """Stream LLM response chunks via the first available provider.
 
@@ -621,6 +629,7 @@ class LLMRouter:
 
         Cost/usage accounting waits for the final ``is_final`` chunk
         because cloud providers emit token counts only at stream end.
+        See :meth:`generate` for the meaning of *phase* (issue #43).
 
         Yields:
             :class:`LLMStreamChunk` per-token (text) or per-delta
@@ -796,6 +805,7 @@ class LLMRouter:
                 tokens=final_chunk.tokens_in + final_chunk.tokens_out,
                 cache_read_tokens=final_chunk.cache_read_tokens,
                 cache_creation_tokens=final_chunk.cache_creation_tokens,
+                phase=phase,
             )
 
             from sovyx.dashboard.status import get_counters

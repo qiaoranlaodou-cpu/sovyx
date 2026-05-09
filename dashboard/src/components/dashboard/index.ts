@@ -19,3 +19,4 @@ export { NeuralMesh } from "./neural-mesh";
 export { WelcomeBanner } from "./welcome-banner";
 export { MindAliveCard } from "./mind-alive-card";
 export { ChannelStatusCard } from "./channel-status";
+export { CostByPhaseCard } from "./cost-by-phase-card";

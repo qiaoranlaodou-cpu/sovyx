@@ -199,6 +199,7 @@ async def _detect_via_llm(
         model=fast_model or None,
         temperature=0.0,
         max_tokens=100,
+        phase="contradiction",
     )
 
     text = resp.content.strip()

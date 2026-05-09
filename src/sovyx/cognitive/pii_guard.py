@@ -437,6 +437,7 @@ class PIIGuard:
                     ],
                     temperature=0.0,
                     max_tokens=50,
+                    phase="pii_guard",
                 ),
                 timeout=_NER_TIMEOUT_SEC,
             )

@@ -198,6 +198,7 @@ async def _call_summariser(
             model=fast_model,
             temperature=0.1,
             max_tokens=512,
+            phase="conv_import",
         )
     except (LLMError, AttributeError) as exc:
         warnings.append(f"summariser LLM failure: {exc}")

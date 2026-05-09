@@ -1691,3 +1691,16 @@ export const PricingInfoResponseSchema = z.object({
   output_per_1m_usd: z.number(),
   source: PricingSourceSchema,
 });
+
+// ── Cost breakdown (issue #43) ──
+
+export const CostBreakdownResponseSchema = z.object({
+  total_cost: z.number(),
+  total_tokens: z.number(),
+  cache_read_tokens: z.number(),
+  cache_creation_tokens: z.number(),
+  by_phase: z.record(z.string(), z.number()),
+  by_provider: z.record(z.string(), z.number()),
+  by_model: z.record(z.string(), z.number()),
+  tokens_by_phase: z.record(z.string(), z.number()),
+});

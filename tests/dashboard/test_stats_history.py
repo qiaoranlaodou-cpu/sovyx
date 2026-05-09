@@ -256,3 +256,98 @@ class TestStatsHistoryEndpoint:
         data = resp.json()
 
         assert data["current_month"]["cost"] >= 3.0
+
+
+class TestStatsBreakdownEndpoint:
+    """GET /api/stats/breakdown — issue #43 phase attribution."""
+
+    def test_returns_empty_when_no_registry(self, auth: dict[str, str]) -> None:
+        app = create_app()
+        client = TestClient(app)
+        resp = client.get("/api/stats/breakdown", headers=auth)
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["total_cost"] == 0.0
+        assert data["by_phase"] == {}
+        assert data["by_provider"] == {}
+        assert data["by_model"] == {}
+
+    def test_returns_breakdown_when_costguard_available(
+        self, auth: dict[str, str]
+    ) -> None:
+        from sovyx.llm.cost import CostBreakdown, CostGuard
+
+        app = create_app()
+        guard = MagicMock(spec=CostGuard)
+        breakdown = CostBreakdown(
+            total_cost=1.0,
+            total_tokens=5000,
+            cache_read_tokens=1000,
+            cache_creation_tokens=200,
+            by_provider={"anthropic": 0.8, "openai": 0.2},
+            by_model={"claude-sonnet-4-20250514": 0.8, "gpt-4o": 0.2},
+            by_phase={"think": 0.7, "reflect": 0.2, "dream": 0.1},
+            tokens_by_provider={"anthropic": 4000, "openai": 1000},
+            tokens_by_mind={"default": 5000},
+            tokens_by_phase={"think": 3000, "reflect": 1500, "dream": 500},
+        )
+        guard.get_breakdown.return_value = breakdown
+
+        registry = MagicMock()
+
+        async def resolve(cls: type) -> object:
+            if cls is CostGuard:
+                return guard
+            msg = f"Unknown: {cls}"
+            raise ValueError(msg)
+
+        registry.resolve = AsyncMock(side_effect=resolve)
+        app.state.registry = registry
+
+        client = TestClient(app)
+        resp = client.get("/api/stats/breakdown", headers=auth)
+        assert resp.status_code == 200
+        data = resp.json()
+
+        assert data["total_cost"] == 1.0
+        assert data["total_tokens"] == 5000
+        assert data["cache_read_tokens"] == 1000
+        assert data["cache_creation_tokens"] == 200
+        assert data["by_phase"] == {"think": 0.7, "reflect": 0.2, "dream": 0.1}
+        assert data["by_provider"] == {"anthropic": 0.8, "openai": 0.2}
+        assert data["tokens_by_phase"] == {
+            "think": 3000,
+            "reflect": 1500,
+            "dream": 500,
+        }
+
+    def test_response_shape_is_pinned(self, auth: dict[str, str]) -> None:
+        # Frontend zod schema requires these exact keys.
+        app = create_app()
+        client = TestClient(app)
+        resp = client.get("/api/stats/breakdown", headers=auth)
+        assert resp.status_code == 200
+        assert set(resp.json().keys()) == {
+            "total_cost",
+            "total_tokens",
+            "cache_read_tokens",
+            "cache_creation_tokens",
+            "by_phase",
+            "by_provider",
+            "by_model",
+            "tokens_by_phase",
+        }
+
+    def test_returns_empty_when_costguard_unresolvable(
+        self, auth: dict[str, str]
+    ) -> None:
+        # Registry exists but CostGuard isn't registered yet (boot race).
+        app = create_app()
+        registry = MagicMock()
+        registry.resolve = AsyncMock(side_effect=Exception("not registered"))
+        app.state.registry = registry
+
+        client = TestClient(app)
+        resp = client.get("/api/stats/breakdown", headers=auth)
+        assert resp.status_code == 200
+        assert resp.json()["by_phase"] == {}

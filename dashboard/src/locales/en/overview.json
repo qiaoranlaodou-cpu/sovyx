@@ -28,6 +28,23 @@
     "costLabel": "Cost",
     "noData": "No cost data yet"
   },
+  "phaseBreakdown": {
+    "title": "Cost by cognitive phase",
+    "description": "Today's spend attributed to each cognitive phase.",
+    "phase": {
+      "think": "Think",
+      "reflect": "Reflect",
+      "dream": "Dream",
+      "act": "Act (tools)",
+      "safety": "Safety classifier",
+      "pii_guard": "PII guard",
+      "financial_gate": "Financial gate",
+      "contradiction": "Contradiction check",
+      "conv_import": "Conversation import",
+      "unknown": "Other",
+      "other": "Other (unknown phases)"
+    }
+  },
   "events": {
     "PerceptionReceived": "Perception",
     "ThinkCompleted": "Think",

@@ -307,6 +307,7 @@ class ReflectPhase:
                 model=self._fast_model or None,
                 temperature=0.1,
                 max_tokens=1024,
+                phase="reflect",
             )
 
             # Parse JSON response
@@ -438,6 +439,7 @@ class ReflectPhase:
                 model=self._fast_model or None,
                 temperature=0.1,
                 max_tokens=512,
+                phase="reflect",
             )
 
             text = resp.content.strip()
@@ -508,6 +510,7 @@ class ReflectPhase:
                 model=self._fast_model or None,
                 temperature=0.1,
                 max_tokens=64,
+                phase="reflect",
             )
             summary = resp.content.strip()
             # Remove wrapping quotes if present

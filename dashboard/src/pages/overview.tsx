@@ -12,7 +12,7 @@ import {
   XIcon,
 } from "lucide-react";
 import { useDashboardStore } from "@/stores/dashboard";
-import { StatCard, StatCardSkeleton, HealthGrid, ActivityFeed, MetricChart, CognitiveTimeline } from "@/components/dashboard";
+import { StatCard, StatCardSkeleton, HealthGrid, ActivityFeed, MetricChart, CognitiveTimeline, CostByPhaseCard } from "@/components/dashboard";
 import { UsageCard } from "@/components/dashboard/usage-card";
 import { formatUptime, formatCost, formatNumber } from "@/lib/format";
 
@@ -303,14 +303,17 @@ export default function OverviewPage() {
         <HealthGrid checks={healthChecks} />
       </div>
 
-      {/* Cost Chart */}
-      <MetricChart
-        title={t("chart.costTitle")}
-        data={costData}
-        color="var(--chart-1)"
-        unit="$"
-        label={t("chart.costLabel")}
-      />
+      {/* Cost Chart + Phase breakdown side by side on desktop */}
+      <div className="grid gap-4 lg:grid-cols-2">
+        <MetricChart
+          title={t("chart.costTitle")}
+          data={costData}
+          color="var(--chart-1)"
+          unit="$"
+          label={t("chart.costLabel")}
+        />
+        <CostByPhaseCard />
+      </div>
 
       {/* Channel Status + Live Feed (left) | Cognitive Timeline (right) */}
       <div className="grid gap-4 lg:grid-cols-3">

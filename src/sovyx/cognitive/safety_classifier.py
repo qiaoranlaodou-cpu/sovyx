@@ -210,6 +210,7 @@ async def classify_content(
                 temperature=0.0,
                 max_tokens=20,
                 conversation_id="__safety_classifier__",
+                phase="safety",
             ),
             timeout=timeout,
         )

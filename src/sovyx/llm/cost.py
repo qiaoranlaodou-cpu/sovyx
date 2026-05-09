@@ -53,8 +53,12 @@ class CostBreakdown:
         by_provider: Cost per provider (e.g. ``{"anthropic": 1.5}``).
         by_mind: Cost per mind ID (e.g. ``{"default": 0.8}``).
         by_model: Cost per model (e.g. ``{"claude-3-opus": 1.2}``).
+        by_phase: Cost per cognitive phase (e.g. ``{"think": 1.2,
+            "reflect": 0.4, "dream": 0.1}``) — issue #43. Calls without
+            an explicit phase tag are bucketed under ``"unknown"``.
         tokens_by_provider: Token counts per provider.
         tokens_by_mind: Token counts per mind ID.
+        tokens_by_phase: Token counts per cognitive phase (issue #43).
     """
 
     total_cost: float = 0.0
@@ -64,8 +68,10 @@ class CostBreakdown:
     by_provider: dict[str, float] = field(default_factory=dict)
     by_mind: dict[str, float] = field(default_factory=dict)
     by_model: dict[str, float] = field(default_factory=dict)
+    by_phase: dict[str, float] = field(default_factory=dict)
     tokens_by_provider: dict[str, int] = field(default_factory=dict)
     tokens_by_mind: dict[str, int] = field(default_factory=dict)
+    tokens_by_phase: dict[str, int] = field(default_factory=dict)
 
 
 class CostGuard:
@@ -107,12 +113,17 @@ class CostGuard:
         # Buffered snapshot of the previous day, awaiting async flush
         self._pending_day_snapshot: dict[str, object] | None = None
 
-        # Per-provider/mind/model breakdowns (reset daily with _maybe_reset)
+        # Per-provider/mind/model/phase breakdowns (reset daily)
         self._provider_spend: dict[str, float] = defaultdict(float)
         self._mind_spend: dict[str, float] = defaultdict(float)
         self._model_spend: dict[str, float] = defaultdict(float)
+        # Issue #43 — cognitive-phase attribution. Calls with empty
+        # ``phase`` are bucketed under ``"unknown"`` so the dashboard
+        # surface always has an answer for every cost.
+        self._phase_spend: dict[str, float] = defaultdict(float)
         self._provider_tokens: dict[str, int] = defaultdict(int)
         self._mind_tokens: dict[str, int] = defaultdict(int)
+        self._phase_tokens: dict[str, int] = defaultdict(int)
         self._total_tokens: int = 0
         # Cache-token totals (issue #44) — observability surface for the
         # economic value of prompt caching. Aggregate-only; per-provider
@@ -168,6 +179,14 @@ class CostGuard:
                 self._mind_tokens = defaultdict(
                     int,
                     {k: int(v) for k, v in state.get("mind_tokens", {}).items()},
+                )
+                self._phase_spend = defaultdict(
+                    float,
+                    {k: float(v) for k, v in state.get("phase_spend", {}).items()},
+                )
+                self._phase_tokens = defaultdict(
+                    int,
+                    {k: int(v) for k, v in state.get("phase_tokens", {}).items()},
                 )
                 self._total_tokens = int(state.get("total_tokens", 0))
                 self._cache_read_tokens = int(state.get("cache_read_tokens", 0))
@@ -256,6 +275,8 @@ class CostGuard:
                 "model_spend": {k: round(v, 8) for k, v in self._model_spend.items()},
                 "provider_tokens": dict(self._provider_tokens),
                 "mind_tokens": dict(self._mind_tokens),
+                "phase_spend": {k: round(v, 8) for k, v in self._phase_spend.items()},
+                "phase_tokens": dict(self._phase_tokens),
                 "total_tokens": self._total_tokens,
                 "cache_read_tokens": self._cache_read_tokens,
                 "cache_creation_tokens": self._cache_creation_tokens,
@@ -333,8 +354,10 @@ class CostGuard:
             self._provider_spend.clear()
             self._mind_spend.clear()
             self._model_spend.clear()
+            self._phase_spend.clear()
             self._provider_tokens.clear()
             self._mind_tokens.clear()
+            self._phase_tokens.clear()
             self._total_tokens = 0
             self._cache_read_tokens = 0
             self._cache_creation_tokens = 0
@@ -448,6 +471,7 @@ class CostGuard:
         tokens: int = 0,
         cache_read_tokens: int = 0,
         cache_creation_tokens: int = 0,
+        phase: str = "",
     ) -> None:
         """Record a spend and persist to SQLite.
 
@@ -460,6 +484,10 @@ class CostGuard:
             tokens: Total tokens consumed (input + output).
             cache_read_tokens: Tokens served from prompt cache (issue #44).
             cache_creation_tokens: Tokens that wrote a new cache entry.
+            phase: Cognitive phase tag — ``"think"`` / ``"reflect"`` /
+                ``"dream"`` / ``"act"`` / ``"safety"`` / ``"pii_guard"``
+                / ``"financial_gate"`` / ``"contradiction"``. Empty
+                string is bucketed as ``"unknown"`` (issue #43).
         """
         self._maybe_reset()
         self._daily_spend += cost
@@ -468,7 +496,7 @@ class CostGuard:
             self._conversation_spend[conversation_id] = (
                 self._conversation_spend.get(conversation_id, 0.0) + cost
             )
-        # Track per-provider/mind/model breakdowns
+        # Track per-provider/mind/model/phase breakdowns
         if provider:
             self._provider_spend[provider] += cost
             self._provider_tokens[provider] += tokens
@@ -477,6 +505,9 @@ class CostGuard:
             self._mind_tokens[mind_id] += tokens
         if model:
             self._model_spend[model] += cost
+        phase_key = phase or "unknown"
+        self._phase_spend[phase_key] += cost
+        self._phase_tokens[phase_key] += tokens
         self._total_tokens += tokens
         self._cache_read_tokens += cache_read_tokens
         self._cache_creation_tokens += cache_creation_tokens
@@ -490,6 +521,7 @@ class CostGuard:
             model=model,
             provider=provider or "unknown",
             mind_id=mind_id or "default",
+            phase=phase_key,
             tokens=tokens,
             cache_read=cache_read_tokens,
             cache_create=cache_creation_tokens,
@@ -589,8 +621,10 @@ class CostGuard:
             by_provider=dict(self._provider_spend),
             by_mind=dict(self._mind_spend),
             by_model=dict(self._model_spend),
+            by_phase=dict(self._phase_spend),
             tokens_by_provider=dict(self._provider_tokens),
             tokens_by_mind=dict(self._mind_tokens),
+            tokens_by_phase=dict(self._phase_tokens),
         )
 
     def get_provider_spend(self, provider: str) -> float:

@@ -218,6 +218,7 @@ async def classify_intent_llm(
             messages=messages,
             temperature=0.0,
             max_tokens=10,
+            phase="financial_gate",
         )
         raw = response.content.strip().upper()
         if "CONFIRM" in raw:

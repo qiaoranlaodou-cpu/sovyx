@@ -2209,3 +2209,25 @@ export interface PricingInfoResponse {
   output_per_1m_usd: number;
   source: PricingSource;
 }
+
+// ── Cost breakdown by cognitive phase (issue #43) ──
+
+/**
+ * GET /api/stats/breakdown response — today's cost attribution.
+ *
+ * ``by_phase`` keys: ``think`` / ``reflect`` / ``dream`` / ``act`` /
+ * ``safety`` / ``pii_guard`` / ``financial_gate`` / ``contradiction`` /
+ * ``conv_import`` / ``unknown``. Empty calls without an explicit
+ * phase tag are bucketed under ``unknown`` so the chart always has
+ * an answer for every cost.
+ */
+export interface CostBreakdownResponse {
+  total_cost: number;
+  total_tokens: number;
+  cache_read_tokens: number;
+  cache_creation_tokens: number;
+  by_phase: Record<string, number>;
+  by_provider: Record<string, number>;
+  by_model: Record<string, number>;
+  tokens_by_phase: Record<string, number>;
+}

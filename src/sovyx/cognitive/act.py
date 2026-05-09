@@ -410,6 +410,7 @@ class ActPhase:
                 current_response = await self._router.generate(
                     messages=messages,
                     tools=tools,
+                    phase="act",
                 )
             except Exception as e:  # noqa: BLE001
                 logger.error("react_reinvoke_failed", error=str(e))

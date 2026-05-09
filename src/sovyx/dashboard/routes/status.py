@@ -148,6 +148,67 @@ async def stats_history(request: Request) -> JSONResponse:
     return JSONResponse({"days": history, "totals": totals, "current_month": month})
 
 
+@router.get("/stats/breakdown", dependencies=[Depends(verify_token)])
+async def stats_breakdown(request: Request) -> JSONResponse:
+    """Return today's cost breakdown by cognitive phase / provider / model.
+
+    Issue #43 — surfaces the per-phase attribution that
+    :meth:`CostGuard.record` accumulates. Resets at the user-timezone
+    midnight along with the rest of CostGuard's daily counters.
+
+    Response shape::
+
+        {
+          "total_cost": 1.234,
+          "total_tokens": 5000,
+          "cache_read_tokens": 9000,
+          "cache_creation_tokens": 100,
+          "by_phase": {"think": 0.8, "reflect": 0.3, "dream": 0.1, "unknown": 0.0},
+          "by_provider": {"anthropic": 1.0, "openai": 0.234},
+          "by_model": {"claude-sonnet-4-20250514": 0.9, ...},
+          "tokens_by_phase": {"think": 4000, "reflect": 800, ...}
+        }
+
+    Returns empty dicts when CostGuard is unavailable.
+    """
+    from sovyx.llm.cost import CostGuard
+
+    registry = getattr(request.app.state, "registry", None)
+    empty: dict[str, object] = {
+        "total_cost": 0.0,
+        "total_tokens": 0,
+        "cache_read_tokens": 0,
+        "cache_creation_tokens": 0,
+        "by_phase": {},
+        "by_provider": {},
+        "by_model": {},
+        "tokens_by_phase": {},
+    }
+    if registry is None:
+        return JSONResponse(empty)
+
+    try:
+        cost_guard: CostGuard = await registry.resolve(CostGuard)
+    except Exception:  # noqa: BLE001
+        return JSONResponse(empty)
+
+    breakdown = cost_guard.get_breakdown("day")
+    return JSONResponse(
+        {
+            "total_cost": round(breakdown.total_cost, 6),
+            "total_tokens": breakdown.total_tokens,
+            "cache_read_tokens": breakdown.cache_read_tokens,
+            "cache_creation_tokens": breakdown.cache_creation_tokens,
+            "by_phase": {k: round(v, 6) for k, v in breakdown.by_phase.items()},
+            "by_provider": {
+                k: round(v, 6) for k, v in breakdown.by_provider.items()
+            },
+            "by_model": {k: round(v, 6) for k, v in breakdown.by_model.items()},
+            "tokens_by_phase": dict(breakdown.tokens_by_phase),
+        }
+    )
+
+
 @router.get("/health", dependencies=[Depends(verify_token)])
 async def get_health(request: Request) -> JSONResponse:
     """Health check results."""
