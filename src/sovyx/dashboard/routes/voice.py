@@ -294,6 +294,122 @@ class VoiceQualitySnapshotResponse(BaseModel):
     dnsmos_extras_installed: bool = False
 
 
+# ── Phase 5.D group B — Typed responses for ``/models`` family ──────
+
+
+class VoiceModelSelectionPayload(BaseModel):
+    """One auto-select model selection block, per hardware tier.
+
+    Mirrors :func:`sovyx.dashboard.voice_status._selection_to_dict`
+    output one-for-one (``ModelSelection`` → flat dict shape).
+    Production helper always populates every field; defaults to ``""``
+    so partial test mocks + downstream-omitted fields validate cleanly
+    (same tolerance pattern as :class:`VoiceStatusResponse`).
+    """
+
+    stt_primary: str = ""
+    stt_streaming: str = ""
+    tts_primary: str = ""
+    tts_quality: str = ""
+    wake: str = ""
+    vad: str = ""
+
+
+class VoiceModelsResponse(BaseModel):
+    """``/api/voice/models`` payload.
+
+    ``detected_tier`` is the runtime auto-selector verdict (``None`` when
+    the selector is not yet wired); ``active`` is the corresponding
+    selection dict (``None`` when no selection has been made);
+    ``available_tiers`` is the static map of every tier → its selection,
+    used by the wizard to render the operator-selectable list.
+    """
+
+    detected_tier: str | None = None
+    active: VoiceModelSelectionPayload | None = None
+    available_tiers: dict[str, VoiceModelSelectionPayload] = Field(default_factory=dict)
+
+
+class VoiceModelDiskEntry(BaseModel):
+    """One disk-state entry inside ``/api/voice/models/status`` payload.
+
+    Mirrors :class:`sovyx.voice.model_status.VoiceModelDiskStatus`.
+    """
+
+    name: str
+    category: str
+    description: str
+    installed: bool
+    path: str
+    size_mb: float
+    expected_size_mb: float
+    download_available: bool
+
+
+class VoiceModelsDiskStatusResponse(BaseModel):
+    """``/api/voice/models/status`` payload — per-model on-disk presence.
+
+    Drives the setup wizard's "model installed" green check.
+    Mirrors :class:`sovyx.voice.model_status.VoiceModelsStatus`
+    one-for-one via the ``check_voice_models_status`` helper.
+    """
+
+    model_dir: str
+    all_installed: bool
+    missing_count: int
+    missing_download_mb: float
+    models: list[VoiceModelDiskEntry] = Field(default_factory=list)
+
+
+class VoiceCatalogEntry(BaseModel):
+    """One voice in the Kokoro catalog returned by ``/api/voice/voices``."""
+
+    id: str
+    display_name: str
+    language: str
+    gender: str
+
+
+class VoiceCatalogResponse(BaseModel):
+    """``/api/voice/voices`` payload — Kokoro catalog grouped by language.
+
+    ``recommended_per_language`` keys to the default voice ID the wizard
+    should pick whenever the operator changes language but hasn't yet
+    selected a voice explicitly. ``by_language`` is the full dropdown
+    population.
+    """
+
+    supported_languages: list[str] = Field(default_factory=list)
+    by_language: dict[str, list[VoiceCatalogEntry]] = Field(default_factory=dict)
+    recommended_per_language: dict[str, str] = Field(default_factory=dict)
+
+
+_DownloadStatus = Literal["running", "done", "error"]
+"""Stable closed enum for ``ModelDownloadProgress.status``. Adding new
+values requires a frontend zod migration."""
+
+
+class VoiceModelDownloadProgressResponse(BaseModel):
+    """Shared payload for ``POST /api/voice/models/download`` and
+    ``GET /api/voice/models/download/{task_id}``.
+
+    Mirrors :class:`sovyx.voice.model_status.ModelDownloadProgress`
+    one-for-one. ``error_code`` is the low-cardinality categorical the
+    frontend maps to i18n; ``error`` is the raw diagnostic string;
+    ``retry_after_seconds`` is set when ``error_code == "cooldown"`` so
+    the UI renders a countdown without parsing the error text.
+    """
+
+    task_id: str
+    status: _DownloadStatus
+    total_models: int
+    completed_models: int
+    current_model: str | None = None
+    error: str | None = None
+    error_code: str | None = None
+    retry_after_seconds: int | None = None
+
+
 def _resolve_engine_config(request: Request) -> EngineConfig | None:
     """Pull EngineConfig from the FastAPI app state (best-effort)."""
     return getattr(request.app.state, "engine_config", None)
@@ -902,8 +1018,14 @@ async def get_voice_status_endpoint(
     return VoiceStatusResponse.model_validate(status)
 
 
-@router.get("/models")
-async def get_voice_models_endpoint(request: Request) -> JSONResponse:
+@router.get(
+    "/models",
+    response_model=VoiceModelsResponse,
+    responses={HTTP_503_SERVICE_UNAVAILABLE: {"description": "Engine not running"}},
+)
+async def get_voice_models_endpoint(
+    request: Request,
+) -> VoiceModelsResponse | JSONResponse:
     """Available voice models by hardware tier, with detected/active info."""
     registry = getattr(request.app.state, "registry", None)
     if registry is None:
@@ -915,11 +1037,13 @@ async def get_voice_models_endpoint(request: Request) -> JSONResponse:
     from sovyx.dashboard.voice_status import get_voice_models
 
     models = await get_voice_models(registry)
-    return JSONResponse(models)
+    return VoiceModelsResponse.model_validate(models)
 
 
-@router.get("/models/status")
-async def get_voice_models_disk_status(request: Request) -> JSONResponse:
+@router.get("/models/status", response_model=VoiceModelsDiskStatusResponse)
+async def get_voice_models_disk_status(
+    request: Request,
+) -> VoiceModelsDiskStatusResponse:
     """Return per-model disk presence + aggregate missing-size.
 
     Drives the setup-wizard's "model installed" green check — unlike
@@ -930,26 +1054,24 @@ async def get_voice_models_disk_status(request: Request) -> JSONResponse:
     from sovyx.voice.model_status import check_voice_models_status
 
     status = await asyncio.to_thread(check_voice_models_status)
-    return JSONResponse(
-        {
-            "model_dir": status.model_dir,
-            "all_installed": status.all_installed,
-            "missing_count": status.missing_count,
-            "missing_download_mb": status.missing_download_mb,
-            "models": [
-                {
-                    "name": m.name,
-                    "category": m.category,
-                    "description": m.description,
-                    "installed": m.installed,
-                    "path": m.path,
-                    "size_mb": m.size_mb,
-                    "expected_size_mb": m.expected_size_mb,
-                    "download_available": m.download_available,
-                }
-                for m in status.models
-            ],
-        }
+    return VoiceModelsDiskStatusResponse(
+        model_dir=status.model_dir,
+        all_installed=status.all_installed,
+        missing_count=status.missing_count,
+        missing_download_mb=status.missing_download_mb,
+        models=[
+            VoiceModelDiskEntry(
+                name=m.name,
+                category=m.category,
+                description=m.description,
+                installed=m.installed,
+                path=m.path,
+                size_mb=m.size_mb,
+                expected_size_mb=m.expected_size_mb,
+                download_available=m.download_available,
+            )
+            for m in status.models
+        ],
     )
 
 
@@ -963,8 +1085,8 @@ def _get_model_download_tracker(request: Request) -> dict[str, object]:
     return tracker
 
 
-@router.get("/voices")
-async def list_voice_catalog() -> JSONResponse:
+@router.get("/voices", response_model=VoiceCatalogResponse)
+async def list_voice_catalog() -> VoiceCatalogResponse:
     """List every voice the Kokoro v1.0 model exposes, grouped by language.
 
     Drives the setup-wizard's language + voice picker. The wizard uses
@@ -982,15 +1104,17 @@ async def list_voice_catalog() -> JSONResponse:
         recommended_voice,
     )
 
-    by_language: dict[str, list[dict[str, str]]] = {lang: [] for lang in SUPPORTED_LANGUAGES}
+    by_language: dict[str, list[VoiceCatalogEntry]] = {
+        lang: [] for lang in SUPPORTED_LANGUAGES
+    }
     for v in all_voices():
         by_language[v.language].append(
-            {
-                "id": v.id,
-                "display_name": v.display_name,
-                "language": v.language,
-                "gender": v.gender,
-            },
+            VoiceCatalogEntry(
+                id=v.id,
+                display_name=v.display_name,
+                language=v.language,
+                gender=v.gender,
+            ),
         )
 
     recommended_per_language: dict[str, str] = {}
@@ -999,17 +1123,17 @@ async def list_voice_catalog() -> JSONResponse:
         if info is not None:
             recommended_per_language[lang] = info.id
 
-    return JSONResponse(
-        {
-            "supported_languages": sorted(SUPPORTED_LANGUAGES),
-            "by_language": by_language,
-            "recommended_per_language": recommended_per_language,
-        },
+    return VoiceCatalogResponse(
+        supported_languages=sorted(SUPPORTED_LANGUAGES),
+        by_language=by_language,
+        recommended_per_language=recommended_per_language,
     )
 
 
-@router.post("/models/download")
-async def start_voice_models_download(request: Request) -> JSONResponse:
+@router.post("/models/download", response_model=VoiceModelDownloadProgressResponse)
+async def start_voice_models_download(
+    request: Request,
+) -> VoiceModelDownloadProgressResponse:
     """Start a background download of all missing voice models.
 
     Returns the task_id immediately so the UI can poll
@@ -1025,7 +1149,7 @@ async def start_voice_models_download(request: Request) -> JSONResponse:
     prune_finished(tracker)  # type: ignore[arg-type]
     entry = start_download(tracker)  # type: ignore[arg-type]
     p = entry.progress
-    return JSONResponse(
+    return VoiceModelDownloadProgressResponse.model_validate(
         {
             "task_id": p.task_id,
             "status": p.status,
@@ -1039,8 +1163,14 @@ async def start_voice_models_download(request: Request) -> JSONResponse:
     )
 
 
-@router.get("/models/download/{task_id}")
-async def get_voice_models_download_status(request: Request, task_id: str) -> JSONResponse:
+@router.get(
+    "/models/download/{task_id}",
+    response_model=VoiceModelDownloadProgressResponse,
+    responses={404: {"description": "Task not found"}},
+)
+async def get_voice_models_download_status(
+    request: Request, task_id: str
+) -> VoiceModelDownloadProgressResponse | JSONResponse:
     """Poll the progress of a background download task."""
     from sovyx.voice.model_status import prune_finished
 
@@ -1053,7 +1183,7 @@ async def get_voice_models_download_status(request: Request, task_id: str) -> JS
             status_code=404,
         )
     p = entry.progress  # type: ignore[attr-defined]
-    return JSONResponse(
+    return VoiceModelDownloadProgressResponse.model_validate(
         {
             "task_id": p.task_id,
             "status": p.status,
