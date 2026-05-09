@@ -38,7 +38,7 @@ from sovyx.voice.pipeline._state import VoicePipelineState
 
 def _make_pipeline() -> VoicePipeline:
     return VoicePipeline(
-        config=VoicePipelineConfig(),
+        config=VoicePipelineConfig(mind_id="frame-soak-test"),
         vad=MagicMock(),
         wake_word=MagicMock(),
         stt=AsyncMock(),

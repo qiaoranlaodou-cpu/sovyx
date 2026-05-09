@@ -258,6 +258,7 @@ class TestVoicePipelineIntegration:
         tts.synthesize = AsyncMock(return_value=[chunk])
 
         config = VoicePipelineConfig(
+            mind_id="barge-in-test",
             barge_in_enabled=True,
             barge_in_threshold=1,
             wake_word_enabled=False,

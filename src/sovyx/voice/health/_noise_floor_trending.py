@@ -137,9 +137,7 @@ def _get_or_create_buffer_locked(mind_id: str) -> deque[float]:
     return buf
 
 
-def record_noise_floor_sample(
-    noise_floor_db: float, *, mind_id: str = _DEFAULT_MIND
-) -> None:
+def record_noise_floor_sample(noise_floor_db: float, *, mind_id: str = _DEFAULT_MIND) -> None:
     """Append one noise-floor dBFS sample to the rolling buffer.
 
     Called from :meth:`sovyx.voice._frame_normalizer.FrameNormalizer.

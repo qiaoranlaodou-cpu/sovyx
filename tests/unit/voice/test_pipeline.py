@@ -198,27 +198,27 @@ class TestValidateConfig:
 
     def test_valid_config(self) -> None:
         """Default config is valid."""
-        validate_config(VoicePipelineConfig())
+        validate_config(VoicePipelineConfig(mind_id="test-mind"))
 
     def test_negative_filler_delay(self) -> None:
         with pytest.raises(ValueError, match="filler_delay_ms"):
-            validate_config(VoicePipelineConfig(filler_delay_ms=-1))
+            validate_config(VoicePipelineConfig(mind_id="test-mind", filler_delay_ms=-1))
 
     def test_zero_silence_frames(self) -> None:
         with pytest.raises(ValueError, match="silence_frames_end"):
-            validate_config(VoicePipelineConfig(silence_frames_end=0))
+            validate_config(VoicePipelineConfig(mind_id="test-mind", silence_frames_end=0))
 
     def test_zero_max_recording(self) -> None:
         with pytest.raises(ValueError, match="max_recording_frames"):
-            validate_config(VoicePipelineConfig(max_recording_frames=0))
+            validate_config(VoicePipelineConfig(mind_id="test-mind", max_recording_frames=0))
 
     def test_zero_barge_in_threshold(self) -> None:
         with pytest.raises(ValueError, match="barge_in_threshold"):
-            validate_config(VoicePipelineConfig(barge_in_threshold=0))
+            validate_config(VoicePipelineConfig(mind_id="test-mind", barge_in_threshold=0))
 
     def test_invalid_confirmation_tone(self) -> None:
         with pytest.raises(ValueError, match="confirmation_tone"):
-            validate_config(VoicePipelineConfig(confirmation_tone="chime"))
+            validate_config(VoicePipelineConfig(mind_id="test-mind", confirmation_tone="chime"))
 
 
 class TestValidateConfigUpperBoundsHardening:
@@ -246,12 +246,16 @@ class TestValidateConfigUpperBoundsHardening:
         from sovyx.voice.pipeline._config import _FILLER_DELAY_MS_MAX
 
         with pytest.raises(ValueError, match="filler_delay_ms"):
-            validate_config(VoicePipelineConfig(filler_delay_ms=_FILLER_DELAY_MS_MAX + 1))
+            validate_config(
+                VoicePipelineConfig(mind_id="test-mind", filler_delay_ms=_FILLER_DELAY_MS_MAX + 1)
+            )
 
     def test_filler_delay_ms_at_ceiling_accepted(self) -> None:
         from sovyx.voice.pipeline._config import _FILLER_DELAY_MS_MAX
 
-        validate_config(VoicePipelineConfig(filler_delay_ms=_FILLER_DELAY_MS_MAX))
+        validate_config(
+            VoicePipelineConfig(mind_id="test-mind", filler_delay_ms=_FILLER_DELAY_MS_MAX)
+        )
 
     # silence_frames_end upper bound ─────────────────────────────────
 
@@ -259,12 +263,18 @@ class TestValidateConfigUpperBoundsHardening:
         from sovyx.voice.pipeline._config import _SILENCE_FRAMES_END_MAX
 
         with pytest.raises(ValueError, match="silence_frames_end"):
-            validate_config(VoicePipelineConfig(silence_frames_end=_SILENCE_FRAMES_END_MAX + 1))
+            validate_config(
+                VoicePipelineConfig(
+                    mind_id="test-mind", silence_frames_end=_SILENCE_FRAMES_END_MAX + 1
+                )
+            )
 
     def test_silence_frames_end_at_ceiling_accepted(self) -> None:
         from sovyx.voice.pipeline._config import _SILENCE_FRAMES_END_MAX
 
-        validate_config(VoicePipelineConfig(silence_frames_end=_SILENCE_FRAMES_END_MAX))
+        validate_config(
+            VoicePipelineConfig(mind_id="test-mind", silence_frames_end=_SILENCE_FRAMES_END_MAX)
+        )
 
     # max_recording_frames upper bound ───────────────────────────────
 
@@ -273,13 +283,19 @@ class TestValidateConfigUpperBoundsHardening:
 
         with pytest.raises(ValueError, match="max_recording_frames"):
             validate_config(
-                VoicePipelineConfig(max_recording_frames=_MAX_RECORDING_FRAMES_MAX + 1)
+                VoicePipelineConfig(
+                    mind_id="test-mind", max_recording_frames=_MAX_RECORDING_FRAMES_MAX + 1
+                )
             )
 
     def test_max_recording_frames_at_ceiling_accepted(self) -> None:
         from sovyx.voice.pipeline._config import _MAX_RECORDING_FRAMES_MAX
 
-        validate_config(VoicePipelineConfig(max_recording_frames=_MAX_RECORDING_FRAMES_MAX))
+        validate_config(
+            VoicePipelineConfig(
+                mind_id="test-mind", max_recording_frames=_MAX_RECORDING_FRAMES_MAX
+            )
+        )
 
     # barge_in_threshold upper bound ─────────────────────────────────
 
@@ -287,34 +303,45 @@ class TestValidateConfigUpperBoundsHardening:
         from sovyx.voice.pipeline._config import _BARGE_IN_THRESHOLD_MAX
 
         with pytest.raises(ValueError, match="barge_in_threshold"):
-            validate_config(VoicePipelineConfig(barge_in_threshold=_BARGE_IN_THRESHOLD_MAX + 1))
+            validate_config(
+                VoicePipelineConfig(
+                    mind_id="test-mind", barge_in_threshold=_BARGE_IN_THRESHOLD_MAX + 1
+                )
+            )
 
     def test_barge_in_threshold_at_ceiling_accepted(self) -> None:
         from sovyx.voice.pipeline._config import _BARGE_IN_THRESHOLD_MAX
 
-        validate_config(VoicePipelineConfig(barge_in_threshold=_BARGE_IN_THRESHOLD_MAX))
+        validate_config(
+            VoicePipelineConfig(mind_id="test-mind", barge_in_threshold=_BARGE_IN_THRESHOLD_MAX)
+        )
 
     # filler_phrases consistency ─────────────────────────────────────
 
     def test_fillers_enabled_with_empty_catalog_rejected(self) -> None:
         with pytest.raises(ValueError, match="non-empty filler_phrases"):
-            validate_config(VoicePipelineConfig(fillers_enabled=True, filler_phrases=()))
+            validate_config(
+                VoicePipelineConfig(mind_id="test-mind", fillers_enabled=True, filler_phrases=())
+            )
 
     def test_fillers_disabled_with_empty_catalog_accepted(self) -> None:
         """Disabling fillers makes the empty catalog harmless."""
-        validate_config(VoicePipelineConfig(fillers_enabled=False, filler_phrases=()))
+        validate_config(
+            VoicePipelineConfig(mind_id="test-mind", fillers_enabled=False, filler_phrases=())
+        )
 
     def test_filler_phrases_above_catalog_ceiling_rejected(self) -> None:
         from sovyx.voice.pipeline._config import _FILLER_PHRASES_MAX
 
         too_many = tuple(f"phrase {i}" for i in range(_FILLER_PHRASES_MAX + 1))
         with pytest.raises(ValueError, match="filler_phrases catalog"):
-            validate_config(VoicePipelineConfig(filler_phrases=too_many))
+            validate_config(VoicePipelineConfig(mind_id="test-mind", filler_phrases=too_many))
 
     def test_empty_filler_phrase_rejected(self) -> None:
         with pytest.raises(ValueError, match=r"filler_phrases\[1\]"):
             validate_config(
                 VoicePipelineConfig(
+                    mind_id="test-mind",
                     filler_phrases=("Let me think...", "", "One moment..."),
                 ),
             )
@@ -322,13 +349,13 @@ class TestValidateConfigUpperBoundsHardening:
     def test_whitespace_filler_phrase_rejected(self) -> None:
         with pytest.raises(ValueError, match=r"filler_phrases\[0\]"):
             validate_config(
-                VoicePipelineConfig(filler_phrases=("   \t\n   ", "Sure...")),
+                VoicePipelineConfig(mind_id="test-mind", filler_phrases=("   \t\n   ", "Sure...")),
             )
 
     def test_default_config_passes_hardened_validation(self) -> None:
         """Backwards-compat regression — the shipped default must
         continue to pass all the new hardening checks."""
-        validate_config(VoicePipelineConfig())
+        validate_config(VoicePipelineConfig(mind_id="test-mind"))
 
 
 class TestConfigBoundsConstants:
@@ -5535,24 +5562,30 @@ class TestFalseWakeRecovery:
         assert config.false_wake_min_confidence == 0.0
 
     def test_validator_accepts_zero(self) -> None:
-        validate_config(VoicePipelineConfig(false_wake_min_confidence=0.0))
+        validate_config(VoicePipelineConfig(mind_id="test-mind", false_wake_min_confidence=0.0))
 
     def test_validator_accepts_typical_opt_in(self) -> None:
         for v in (0.1, 0.3, 0.5, 0.7, 0.95):
-            validate_config(VoicePipelineConfig(false_wake_min_confidence=v))
+            validate_config(VoicePipelineConfig(mind_id="test-mind", false_wake_min_confidence=v))
 
     def test_validator_rejects_negative(self) -> None:
         with pytest.raises(ValueError, match="false_wake_min_confidence"):
-            validate_config(VoicePipelineConfig(false_wake_min_confidence=-0.1))
+            validate_config(
+                VoicePipelineConfig(mind_id="test-mind", false_wake_min_confidence=-0.1)
+            )
 
     def test_validator_rejects_above_ceiling(self) -> None:
         with pytest.raises(ValueError, match="band-aid #46"):
-            validate_config(VoicePipelineConfig(false_wake_min_confidence=1.0))
+            validate_config(
+                VoicePipelineConfig(mind_id="test-mind", false_wake_min_confidence=1.0)
+            )
 
     def test_validator_rejects_unit_confusion(self) -> None:
         """A user passing 50 thinking "50%" must loud-fail."""
         with pytest.raises(ValueError, match=r"\[0\.0, 0\.99\]"):
-            validate_config(VoicePipelineConfig(false_wake_min_confidence=50.0))
+            validate_config(
+                VoicePipelineConfig(mind_id="test-mind", false_wake_min_confidence=50.0)
+            )
 
     @pytest.mark.asyncio
     async def test_default_pipeline_passes_low_confidence(self) -> None:

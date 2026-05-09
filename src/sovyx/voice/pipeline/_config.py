@@ -114,7 +114,12 @@ class VoicePipelineConfig:
     """Configuration for the VoicePipeline orchestrator.
 
     Attributes:
-        mind_id: Owning mind identifier.
+        mind_id: Owning mind identifier. **REQUIRED** — Phase 5.E
+            v0.32.7 removed the ``"default"`` sentinel default per
+            CLAUDE.md anti-pattern #35. Every caller MUST pass an
+            explicit, resolved mind_id; the dashboard route resolves
+            it via :func:`sovyx.dashboard._shared.resolve_active_mind_id_for_request`,
+            non-request callers via the bootstrap-resolved active mind.
         wake_word_enabled: Whether to require wake word before recording.
         barge_in_enabled: Whether user can interrupt TTS by speaking.
         fillers_enabled: Whether to play filler phrases during LLM thinking.
@@ -126,7 +131,7 @@ class VoicePipelineConfig:
         filler_phrases: Phrases used during LLM thinking time.
     """
 
-    mind_id: str = "default"
+    mind_id: str
     wake_word_enabled: bool = True
     barge_in_enabled: bool = True
     fillers_enabled: bool = True

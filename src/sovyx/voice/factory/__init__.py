@@ -910,26 +910,23 @@ async def create_voice_pipeline(
     )
 
     # ── 6. Build pipeline with auto-bypass hooks ──────────────
-    # Sentinel WARN (Mission §Phase 1 T1.2): the literal ``"default"``
-    # is the dataclass default of :attr:`VoicePipelineConfig.mind_id`
-    # and signals "caller forgot to pass an active mind". The dashboard
-    # route is the canonical resolver
-    # (:func:`sovyx.dashboard._shared.resolve_active_mind_id_for_request`);
-    # any other caller hitting the factory with the bare sentinel is
-    # almost certainly a wiring bug worth surfacing in dashboards.
-    # We do NOT auto-resolve here — the factory has no
-    # :class:`ServiceRegistry` access in its signature, and threading
-    # one through would couple the factory layer to
-    # :mod:`sovyx.engine.bootstrap.MindManager`, a layering violation
-    # per CLAUDE.md anti-pattern #16.
+    # Phase 5.E v0.32.7 — the previous sentinel WARN at this site
+    # (Mission §Phase 1 T1.2) detected callers passing the literal
+    # ``"default"`` mind_id, which was the dataclass default. That
+    # default is now removed (anti-pattern #35 staged-removal Stage A);
+    # ``VoicePipelineConfig`` requires every caller to pass an
+    # explicit, resolved mind_id. The factory still validates here
+    # because operators can pass ``mind_id="default"`` literally as
+    # a string — the same diagnostic value applies even after the
+    # default is gone.
     if mind_id == "default":
         logger.warning(
             "voice.factory.mind_id_default_sentinel",
             **{
                 "voice.passed_mind_id": mind_id,
                 "voice.action_required": (
-                    "caller passed the 'default' sentinel; resolve the "
-                    "active mind via "
+                    "caller passed the literal 'default' mind_id; "
+                    "resolve the active mind via "
                     "sovyx.dashboard._shared.resolve_active_mind_id_for_request "
                     "(or get_active_mind_id for non-request callers) "
                     "before invoking create_voice_pipeline"

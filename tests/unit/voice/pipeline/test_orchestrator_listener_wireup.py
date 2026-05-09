@@ -49,7 +49,7 @@ def _make_pipeline(
     individually.
     """
     return VoicePipeline(
-        config=VoicePipelineConfig(),
+        config=VoicePipelineConfig(mind_id="listener-wireup-test"),
         vad=MagicMock(),
         wake_word=MagicMock(),
         stt=AsyncMock(),

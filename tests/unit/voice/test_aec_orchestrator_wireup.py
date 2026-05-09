@@ -38,7 +38,7 @@ class TestPipelineSetRenderBuffer:
         from sovyx.voice.pipeline._config import VoicePipelineConfig
         from sovyx.voice.pipeline._orchestrator import VoicePipeline
 
-        cfg = VoicePipelineConfig()
+        cfg = VoicePipelineConfig(mind_id="aec-test")
         return VoicePipeline(
             config=cfg,
             vad=MagicMock(),

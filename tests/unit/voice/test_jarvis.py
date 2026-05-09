@@ -660,6 +660,7 @@ class TestJarvisConfigCompatibility:
         from sovyx.voice.pipeline import VoicePipelineConfig
 
         pipeline_cfg = VoicePipelineConfig(
+            mind_id="jarvis-test",
             fillers_enabled=True,
             filler_delay_ms=100,
             confirmation_tone="beep",
@@ -677,7 +678,7 @@ class TestJarvisConfigCompatibility:
         """VoicePipeline should create JarvisIllusion internally."""
         from sovyx.voice.pipeline import VoicePipeline, VoicePipelineConfig
 
-        config = VoicePipelineConfig()
+        config = VoicePipelineConfig(mind_id="jarvis-illusion-test")
         vad = MagicMock()
         vad.process_frame = MagicMock()
         wake = MagicMock()

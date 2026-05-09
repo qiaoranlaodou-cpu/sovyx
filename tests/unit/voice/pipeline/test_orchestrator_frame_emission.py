@@ -49,7 +49,7 @@ class TestEndFrameOnTerminalIdle:
         from sovyx.voice.pipeline._config import VoicePipelineConfig
 
         if config is None:
-            config = VoicePipelineConfig()
+            config = VoicePipelineConfig(mind_id="frame-emission-test")
         return VoicePipeline(
             config=config,
             vad=MagicMock(),
@@ -107,7 +107,7 @@ class TestSpeakEmitsOutputAudioRawFrame:
         # focuses on the frame emission, not on actual synthesis.
         tts = AsyncMock()
         return VoicePipeline(
-            config=VoicePipelineConfig(),
+            config=VoicePipelineConfig(mind_id="frame-emission-test"),
             vad=MagicMock(),
             wake_word=MagicMock(),
             stt=AsyncMock(),
@@ -151,7 +151,7 @@ class TestFrameTypesIntegrationSurface:
         from sovyx.voice.pipeline._config import VoicePipelineConfig
 
         pipeline = VoicePipeline(
-            config=VoicePipelineConfig(),
+            config=VoicePipelineConfig(mind_id="frame-emission-test"),
             vad=MagicMock(),
             wake_word=MagicMock(),
             stt=AsyncMock(),
@@ -201,7 +201,7 @@ class TestLLMFullResponseEndFrame:
         from sovyx.voice.pipeline._config import VoicePipelineConfig
 
         return VoicePipeline(
-            config=VoicePipelineConfig(),
+            config=VoicePipelineConfig(mind_id="frame-emission-test"),
             vad=MagicMock(),
             wake_word=MagicMock(),
             stt=AsyncMock(),
@@ -283,7 +283,7 @@ class TestBargeInInterruptionFrame:
         from sovyx.voice.pipeline._config import VoicePipelineConfig
 
         return VoicePipeline(
-            config=VoicePipelineConfig(),
+            config=VoicePipelineConfig(mind_id="frame-emission-test"),
             vad=MagicMock(),
             wake_word=MagicMock(),
             stt=AsyncMock(),

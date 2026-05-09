@@ -55,7 +55,7 @@ def _reset_resolver_singleton() -> Generator[None, None, None]:
 def _make_pipeline() -> VoicePipeline:
     """Synthetic pipeline that doesn't require ONNX models or audio device."""
     return VoicePipeline(
-        config=VoicePipelineConfig(),
+        config=VoicePipelineConfig(mind_id="migration-test"),
         vad=MagicMock(),
         wake_word=MagicMock(),
         stt=AsyncMock(),

@@ -72,7 +72,7 @@ _RUNTIME_HOST_API = {
 
 def _make_pipeline() -> VoicePipeline:
     return VoicePipeline(
-        config=VoicePipelineConfig(),
+        config=VoicePipelineConfig(mind_id="test-mind"),
         vad=MagicMock(),
         wake_word=MagicMock(),
         stt=AsyncMock(),
