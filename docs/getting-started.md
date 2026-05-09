@@ -117,6 +117,68 @@ By default the dashboard binds to `http://127.0.0.1:7777`.
 The dashboard has a chat page, a live brain graph, conversation history, logs,
 and plugin management.
 
+#### Configure providers and plugins (setup wizard)
+
+The plugin and provider setup wizards walk you through API key entry,
+connection testing, and voice hardware selection without leaving the
+dashboard. The flows are identical across providers — only the form
+fields change.
+
+**Configuring a plugin or provider**
+
+Open the **Plugins** page and click the **Configure** button on any
+plugin card.
+
+![Plugin card with Configure button](_assets/setup-wizard/01-plugin-card-configure.png)
+
+The setup wizard opens as a modal. Pick the provider you want to wire
+up; the form below changes to match the provider's required fields.
+
+![Wizard modal with provider selector](_assets/setup-wizard/02-wizard-provider-selector.png)
+
+Form fields are typed (text, password, dropdown, toggle) and the
+wizard validates each one as you type — required fields are flagged
+inline before you submit.
+
+![Dynamic form field types in the wizard](_assets/setup-wizard/03-form-field-types.png)
+
+Use the **Test connection** button to verify the credentials before
+saving. A green panel confirms latency and the responding model:
+
+![Test connection success state](_assets/setup-wizard/04-test-connection-success.png)
+
+A red panel surfaces the structured error from the provider — common
+failures are bad API key, expired credentials, or the provider being
+unreachable from your network.
+
+![Test connection error state](_assets/setup-wizard/05-test-connection-error.png)
+
+**Configuring voice**
+
+The voice setup wizard enumerates every microphone PortAudio sees and
+runs a short diagnostic on each so you can pick the one that actually
+captures audio (not the silent default many laptops ship with).
+
+![Voice setup wizard hardware detection](_assets/setup-wizard/06-voice-hardware-detection.png)
+
+If the Python voice dependencies (`moonshine-voice`, `sounddevice`)
+or the underlying system library (PortAudio on Linux/macOS) are
+missing, the wizard refuses to proceed and shows the install command
+verbatim:
+
+![Missing voice dependencies panel](_assets/setup-wizard/07-missing-deps-panel.png)
+
+If the dependencies are present but the device can't be opened (driver
+busy, USB unplugged, permission denied), the wizard surfaces the
+PortAudio error code with a remediation hint per platform:
+
+![Audio capture error panel](_assets/setup-wizard/08-audio-error-panel.png)
+
+> Screenshots are captured against a fresh dashboard instance and may
+> drift across releases. The capture conventions are documented in
+> [`docs/_assets/setup-wizard/README.md`](_assets/setup-wizard/README.md)
+> if you want to refresh them or contribute updates.
+
 ### Via Telegram
 
 Add your bot token to `~/.sovyx/my-mind/mind.yaml`:
