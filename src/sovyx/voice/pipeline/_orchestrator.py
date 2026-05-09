@@ -9,7 +9,6 @@ from typing import TYPE_CHECKING, Any
 
 from sovyx.engine.config import VoiceTuningConfig as _VoiceTuning
 from sovyx.engine.errors import VoiceError
-from sovyx.engine.types import MindId
 from sovyx.observability.logging import get_logger
 from sovyx.observability.saga import SagaHandle, begin_saga, end_saga
 from sovyx.observability.tasks import spawn
@@ -90,10 +89,10 @@ from sovyx.voice.pipeline._heartbeat_mixin import HeartbeatMixin
 from sovyx.voice.pipeline._output_queue import AudioOutputQueue
 from sovyx.voice.pipeline._state import VoicePipelineState
 from sovyx.voice.pipeline._state_machine import PipelineStateMachine
+from sovyx.voice.pipeline._wake_word_mixin import WakeWordRouterMixin
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Sequence
-    from pathlib import Path
 
     import numpy as np
     import numpy.typing as npt
@@ -106,7 +105,7 @@ if TYPE_CHECKING:
     from sovyx.voice.stt import STTEngine
     from sovyx.voice.tts_piper import TTSEngine
     from sovyx.voice.vad import SileroVAD, VADEvent
-    from sovyx.voice.wake_word import WakeWordConfig, WakeWordDetector
+    from sovyx.voice.wake_word import WakeWordDetector
 
 logger = get_logger(__name__)
 
@@ -246,7 +245,7 @@ _SPEAKER_DRIFT_RATIO_THRESHOLD = _VoiceTuning().pipeline_speaker_drift_ratio_thr
 ``VoiceTuningConfig.pipeline_speaker_drift_ratio_threshold``."""
 
 
-class VoicePipeline(HeartbeatMixin):
+class VoicePipeline(WakeWordRouterMixin, HeartbeatMixin):
     """Orchestrates the complete voice pipeline.
 
     Lifecycle (SPE-010 §8):
@@ -961,100 +960,15 @@ class VoicePipeline(HeartbeatMixin):
         """Wake word detector used by this pipeline."""
         return self._wake_word
 
-    def register_mind_wake_word(
-        self,
-        mind_id: MindId,
-        *,
-        model_path: Path,
-        config: WakeWordConfig | None = None,
-    ) -> None:
-        """Hot-reload a mind's wake-word detector with a new ONNX model.
-
-        Phase 8 / T8.15 — wires the ``wake_word.register_mind`` RPC
-        handler to the live :class:`~sovyx.voice._wake_word_router.WakeWordRouter`
-        owned by this pipeline. Idempotent: re-registering the same
-        ``mind_id`` replaces the prior detector (the prior ONNX session
-        is garbage-collected normally; no manual close needed). Use case:
-        the operator finishes ``sovyx voice train-wake-word ...`` and
-        wants the new model active without restarting the daemon.
-
-        Args:
-            mind_id: Stable mind identifier (matches MindConfig.id).
-            model_path: Filesystem path to the trained ``.onnx``
-                checkpoint. The router does not validate the file;
-                callers MUST verify the path exists + ends in ``.onnx``
-                before invoking. The RPC handler in
-                :mod:`sovyx.engine._rpc_handlers` performs that
-                validation.
-            config: Per-mind ``WakeWordConfig`` (cooldown, thresholds,
-                etc.). Default ``None`` reuses the router's default.
-
-        Raises:
-            VoiceError: When the multi-mind ``WakeWordRouter`` is not
-                configured (single-mind mode). Message includes a
-                remediation hint.
-            ValueError: Propagated from
-                :meth:`WakeWordRouter.register_mind` when ``mind_id``
-                is empty.
-        """
-        from sovyx.engine.errors import VoiceError  # noqa: PLC0415
-
-        if self._wake_word_router is None:
-            msg = (
-                "wake-word router not configured (single-mind mode); "
-                "hot-reload requires multi-mind setup. Restart the daemon "
-                "to pick up the new model from "
-                "``<data_dir>/wake_word_models/pretrained/``."
-            )
-            raise VoiceError(msg)
-        self._wake_word_router.register_mind(
-            mind_id,
-            model_path=model_path,
-            config=config,
-        )
-
-    def unregister_mind_wake_word(self, mind_id: MindId) -> bool:
-        """Remove a mind's wake-word detector from the live router.
-
-        Mission ``MISSION-wake-word-runtime-wireup-2026-05-03.md`` §T2
-        — the symmetric inverse of :meth:`register_mind_wake_word`.
-        Wires the ``wake_word.unregister_mind`` RPC handler to the
-        live :class:`~sovyx.voice._wake_word_router.WakeWordRouter`
-        owned by this pipeline.
-
-        Use case: the operator flips
-        :attr:`MindConfig.wake_word_enabled` from ``True`` to ``False``
-        in the dashboard. T3's toggle endpoint persists the YAML +
-        calls this method so the running pipeline drops the detector
-        without a daemon restart. Idempotent on unknown mind_ids
-        (the router itself is idempotent — see
-        :meth:`WakeWordRouter.unregister_mind`).
-
-        Args:
-            mind_id: Stable mind identifier (matches MindConfig.id).
-
-        Returns:
-            ``True`` when the mind was previously registered and got
-            removed; ``False`` when no detector existed for this id
-            (idempotent no-op — caller can ignore or surface it).
-
-        Raises:
-            VoiceError: When the multi-mind ``WakeWordRouter`` is not
-                configured (single-mind mode). Message includes a
-                remediation hint mirroring
-                :meth:`register_mind_wake_word`.
-        """
-        from sovyx.engine.errors import VoiceError  # noqa: PLC0415
-
-        if self._wake_word_router is None:
-            msg = (
-                "wake-word router not configured (single-mind mode); "
-                "unregister_mind requires multi-mind setup. The "
-                "single-mind pipeline owns one detector via the legacy "
-                "wake_word slot, not via the router."
-            )
-            raise VoiceError(msg)
-        return self._wake_word_router.unregister_mind(mind_id)
+    # ── Wake-word delegate methods extracted to ``_wake_word_mixin.py`` ──
+    # ``register_mind_wake_word`` + ``unregister_mind_wake_word`` now
+    # live on
+    # :class:`sovyx.voice.pipeline._wake_word_mixin.WakeWordRouterMixin`,
+    # mounted via the multi-mixin host above. Methods stay resolvable
+    # via ``self.register_mind_wake_word(...)`` /
+    # ``self.unregister_mind_wake_word(...)`` through MRO. The third
+    # extracted method ``_notify_wake_word_false_fire`` is removed
+    # below in the same split. Anti-pattern #16 — Phase 5.F.20.
 
     @property
     def vad_inference_timeout_count(self) -> int:
@@ -1134,51 +1048,10 @@ class VoicePipeline(HeartbeatMixin):
         # for the next turn, but only if this site clears the leak.
         self._llm_thinking_start_monotonic = None
 
-    def _notify_wake_word_false_fire(self) -> None:
-        """Forward a false-fire signal to the wake-word detector.
-
-        Phase 7 / T7.8 — orchestrator → detector feedback for the
-        adaptive-cooldown sliding window. The detector accumulates
-        timestamps and elevates cooldown to ``cooldown_max_seconds``
-        when the rolling-window count crosses the threshold.
-
-        v0.32.0 / Round-3 paranoid audit C1 — multi-mind dispatch.
-        When ``self._wake_word_router is not None`` (multi-mind mode)
-        AND ``self._current_mind_id`` resolves to a router-matched
-        detector, dispatch via :meth:`WakeWordRouter.note_false_fire`
-        so the matched mind's adaptive cooldown window increments.
-        Pre-fix (v0.31.x) the orchestrator always called
-        ``self._wake_word.note_false_fire()`` — the single fallback
-        detector that NEVER fired in multi-mind mode — which corrupted
-        the per-mind sliding window: the matched mind's window stayed
-        empty while an unrelated detector's window over-counted.
-
-        Best-effort: a wake-word detector that doesn't expose
-        ``note_false_fire`` (e.g. the factory's no-op stub when
-        ``wake_word_enabled=False``) is silently skipped. The
-        orchestrator's other false-fire paths (counter + log event)
-        still fire regardless.
-        """
-        # Multi-mind path — dispatch to the matched mind's detector via
-        # the router. ``_current_mind_id`` is always populated (defaults
-        # to ``config.mind_id`` at construction; router match overrides
-        # per turn at ``_handle_idle``); the router silently no-ops on
-        # unknown mind_ids so a stale/cleared mind_id is safe.
-        if self._wake_word_router is not None:
-            try:
-                self._wake_word_router.note_false_fire(MindId(self._current_mind_id))
-            except Exception:  # noqa: BLE001 — observability path must not break the pipeline
-                logger.exception("voice.wake_word.note_false_fire_failed")
-            return
-
-        # Single-mind path — fall through to the legacy detector.
-        notify = getattr(self._wake_word, "note_false_fire", None)
-        if notify is None:
-            return
-        try:
-            notify()
-        except Exception:  # noqa: BLE001 — observability path must not break the pipeline
-            logger.exception("voice.wake_word.note_false_fire_failed")
+    # ``_notify_wake_word_false_fire`` extracted to
+    # ``_wake_word_mixin.py`` (see WakeWordRouterMixin docstring +
+    # the carve-out comment under the class header above). Resolves
+    # via MRO; no caller-side change.
 
     # -- Lifecycle -----------------------------------------------------------
 
