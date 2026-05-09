@@ -29,9 +29,18 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from sovyx.voice.pipeline import _listener_wireup_mixin as listener_mixin_module
 from sovyx.voice.pipeline import _orchestrator as module_under_test
 from sovyx.voice.pipeline._config import VoicePipelineConfig
 from sovyx.voice.pipeline._orchestrator import VoicePipeline
+
+# Phase 5.F.23 — listener wire-up extracted to ``_listener_wireup_mixin``.
+# Patches for ``create_mm_notification_listener`` /
+# ``build_driver_update_listener`` / ``DriverUpdateHandler`` MUST target
+# the mixin module (where ``_register_listeners`` resolves them at call
+# time), not the orchestrator module (where they no longer live). Per
+# CLAUDE.md anti-pattern #20: "Grep for the old path and migrate patches
+# to the new one in the same commit as the split."
 
 
 def _make_pipeline(
@@ -77,12 +86,12 @@ class TestListenerRegistrationFlagPlumbing:
         mock_driver_listener = MagicMock(name="driver_listener")
         with (
             patch.object(
-                module_under_test,
+                listener_mixin_module,
                 "create_mm_notification_listener",
                 return_value=mock_mm_listener,
             ) as mock_mm_factory,
             patch.object(
-                module_under_test,
+                listener_mixin_module,
                 "build_driver_update_listener",
                 return_value=mock_driver_listener,
             ),
@@ -100,12 +109,12 @@ class TestListenerRegistrationFlagPlumbing:
 
         with (
             patch.object(
-                module_under_test,
+                listener_mixin_module,
                 "create_mm_notification_listener",
                 return_value=MagicMock(),
             ) as mock_mm_factory,
             patch.object(
-                module_under_test,
+                listener_mixin_module,
                 "build_driver_update_listener",
                 return_value=MagicMock(),
             ),
@@ -120,12 +129,12 @@ class TestListenerRegistrationFlagPlumbing:
 
         with (
             patch.object(
-                module_under_test,
+                listener_mixin_module,
                 "create_mm_notification_listener",
                 return_value=MagicMock(),
             ),
             patch.object(
-                module_under_test,
+                listener_mixin_module,
                 "build_driver_update_listener",
                 return_value=MagicMock(),
             ) as mock_driver_factory,
@@ -155,12 +164,12 @@ class TestListenerRegistrationFlagPlumbing:
 
         with (
             patch.object(
-                module_under_test,
+                listener_mixin_module,
                 "create_mm_notification_listener",
                 return_value=MagicMock(),
             ),
             patch.object(
-                module_under_test,
+                listener_mixin_module,
                 "build_driver_update_listener",
                 side_effect=_capture_callback,
             ),
@@ -188,12 +197,12 @@ class TestRegisterAndUnregisterContract:
         mock_driver_listener = MagicMock(name="driver_listener")
         with (
             patch.object(
-                module_under_test,
+                listener_mixin_module,
                 "create_mm_notification_listener",
                 return_value=mock_mm_listener,
             ),
             patch.object(
-                module_under_test,
+                listener_mixin_module,
                 "build_driver_update_listener",
                 return_value=mock_driver_listener,
             ),
@@ -212,12 +221,12 @@ class TestRegisterAndUnregisterContract:
         async def _full_lifecycle() -> None:
             with (
                 patch.object(
-                    module_under_test,
+                    listener_mixin_module,
                     "create_mm_notification_listener",
                     return_value=mock_mm_listener,
                 ),
                 patch.object(
-                    module_under_test,
+                    listener_mixin_module,
                     "build_driver_update_listener",
                     return_value=mock_driver_listener,
                 ),
@@ -262,12 +271,12 @@ class TestFailureIsolation:
 
         with (
             patch.object(
-                module_under_test,
+                listener_mixin_module,
                 "create_mm_notification_listener",
                 return_value=mock_mm_listener,
             ),
             patch.object(
-                module_under_test,
+                listener_mixin_module,
                 "build_driver_update_listener",
                 return_value=mock_driver_listener,
             ),
@@ -289,12 +298,12 @@ class TestFailureIsolation:
 
         with (
             patch.object(
-                module_under_test,
+                listener_mixin_module,
                 "create_mm_notification_listener",
                 return_value=mock_mm_listener,
             ),
             patch.object(
-                module_under_test,
+                listener_mixin_module,
                 "build_driver_update_listener",
                 return_value=mock_driver_listener,
             ),
@@ -318,12 +327,12 @@ class TestFailureIsolation:
 
         with (
             patch.object(
-                module_under_test,
+                listener_mixin_module,
                 "create_mm_notification_listener",
                 return_value=mock_mm_listener,
             ),
             patch.object(
-                module_under_test,
+                listener_mixin_module,
                 "build_driver_update_listener",
                 return_value=mock_driver_listener,
             ),
@@ -345,12 +354,12 @@ class TestFailureIsolation:
         async def _full_lifecycle() -> None:
             with (
                 patch.object(
-                    module_under_test,
+                    listener_mixin_module,
                     "create_mm_notification_listener",
                     return_value=mock_mm_listener,
                 ),
                 patch.object(
-                    module_under_test,
+                    listener_mixin_module,
                     "build_driver_update_listener",
                     return_value=mock_driver_listener,
                 ),
@@ -376,12 +385,12 @@ class TestStartIdempotency:
 
         with (
             patch.object(
-                module_under_test,
+                listener_mixin_module,
                 "create_mm_notification_listener",
                 return_value=MagicMock(),
             ) as mock_mm_factory,
             patch.object(
-                module_under_test,
+                listener_mixin_module,
                 "build_driver_update_listener",
                 return_value=MagicMock(),
             ) as mock_driver_factory,
@@ -417,12 +426,12 @@ class TestRestartAfterStop:
         async def _restart_cycle() -> None:
             with (
                 patch.object(
-                    module_under_test,
+                    listener_mixin_module,
                     "create_mm_notification_listener",
                     return_value=mm_first,
                 ),
                 patch.object(
-                    module_under_test,
+                    listener_mixin_module,
                     "build_driver_update_listener",
                     return_value=driver_first,
                 ),
@@ -432,12 +441,12 @@ class TestRestartAfterStop:
 
             with (
                 patch.object(
-                    module_under_test,
+                    listener_mixin_module,
                     "create_mm_notification_listener",
                     return_value=mm_second,
                 ),
                 patch.object(
-                    module_under_test,
+                    listener_mixin_module,
                     "build_driver_update_listener",
                     return_value=driver_second,
                 ),
