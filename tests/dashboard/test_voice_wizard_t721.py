@@ -368,6 +368,128 @@ class TestTestRecord:
         assert response.status_code == 422  # noqa: PLR2004
 
 
+class TestSessionRegistryHandoff:
+    """Forensic regression: live VU stream concurrent-open conflict.
+
+    Operator's logs_new.txt (2026-05-09, Razer USB headset on Linux +
+    PipeWire) showed three consecutive ``voice_wizard_test_record_failed``
+    events with ``PaErrorCode -9985 (paDeviceUnavailable)``. Each
+    failure timestamp coincided with an active
+    ``voice_test_session_opened`` from the live ``HardwareDetection``
+    mic-test panel — i.e. the same daemon process was holding the mic
+    via the live VU WebSocket stream and the recorder couldn't open
+    it a second time (ALSA exclusive open).
+
+    The fix mirrors ``/api/voice/enable`` (voice.py:2317-2334):
+    ``post_wizard_test_record`` now invokes
+    ``SessionRegistry.close_all`` BEFORE delegating to the recorder,
+    releasing the mic for the duration of the test recording.
+    These tests pin that contract so a future refactor can't silently
+    re-introduce the concurrent-open bug class.
+    """
+
+    def test_handoff_calls_close_all_before_recorder_runs(self) -> None:
+        """When ``app.state.voice_test_registry`` is set, the route
+        MUST await ``close_all`` before invoking the recorder. The
+        ordering matters: ``close_all`` is what releases the mic, so
+        it must complete before the recorder opens it."""
+        from sovyx.voice.device_test import CloseReason, SessionRegistry
+
+        order: list[str] = []
+
+        class _OrderingRecorder:
+            def record(
+                self,
+                *,
+                duration_s: float,  # noqa: ARG002
+                device_id: str | None,  # noqa: ARG002
+            ) -> npt.NDArray[np.float32]:
+                order.append("recorder.record")
+                return np.zeros(48000, dtype=np.float32)
+
+        registry = SessionRegistry(max_per_token=1, force_close_grace_s=0.1)
+        captured_reasons: list[CloseReason] = []
+        original_close_all = registry.close_all
+
+        async def _spy_close_all(
+            *,
+            reason: CloseReason = CloseReason.SERVER_SHUTDOWN,
+        ) -> None:
+            order.append("registry.close_all")
+            captured_reasons.append(reason)
+            await original_close_all(reason=reason)
+
+        registry.close_all = _spy_close_all  # type: ignore[method-assign]
+
+        app = _build_app(recorder=_OrderingRecorder())
+        app.state.voice_test_registry = registry
+        client = _client(app)
+        response = client.post(
+            "/api/voice/wizard/test-record",
+            json={"duration_seconds": 3.0},
+        )
+        assert response.status_code == 200  # noqa: PLR2004
+        # Ordering contract: close_all → recorder.record. If the
+        # recorder ran first the live VU stream would still be holding
+        # the mic and the recorder would get ``paDeviceUnavailable``.
+        assert order == ["registry.close_all", "recorder.record"], (
+            f"close_all must run before the recorder; got {order!r}"
+        )
+        # Use the same reason ``/api/voice/enable`` uses — that endpoint
+        # is the canonical reference for "release the mic for a
+        # higher-priority server-side capture operation".
+        assert captured_reasons == [CloseReason.SERVER_SHUTDOWN]
+
+    def test_handoff_is_noop_when_registry_absent(self) -> None:
+        """Pre-init state (no live VU stream ever opened): the route
+        MUST NOT crash + MUST still invoke the recorder."""
+        app = _build_app(recorder=_DeterministicRecorder())
+        # Explicitly assert the registry IS absent — otherwise the
+        # test could pass for the wrong reason.
+        assert getattr(app.state, "voice_test_registry", None) is None
+        client = _client(app)
+        response = client.post(
+            "/api/voice/wizard/test-record",
+            json={"duration_seconds": 3.0},
+        )
+        assert response.status_code == 200  # noqa: PLR2004
+        assert response.json()["success"] is True
+
+    def test_handoff_failure_does_not_block_recorder(self) -> None:
+        """A stuck or buggy SessionRegistry MUST NOT prevent the
+        recorder from running. ``close_all`` is a best-effort handoff;
+        the recorder still gets a chance even when the handoff itself
+        raises. The improved ``open_input_stream`` opener will surface
+        a clearer error if the device is genuinely unreachable."""
+        from sovyx.voice.device_test import CloseReason, SessionRegistry
+
+        class _BrokenRegistry(SessionRegistry):
+            def __init__(self) -> None:
+                super().__init__(max_per_token=1, force_close_grace_s=0.1)
+
+            async def close_all(
+                self,
+                *,
+                reason: CloseReason = CloseReason.SERVER_SHUTDOWN,  # noqa: ARG002
+            ) -> None:
+                msg = "registry intentionally raises"
+                raise RuntimeError(msg)
+
+        app = _build_app(recorder=_DeterministicRecorder())
+        app.state.voice_test_registry = _BrokenRegistry()
+        client = _client(app)
+        response = client.post(
+            "/api/voice/wizard/test-record",
+            json={"duration_seconds": 3.0},
+        )
+        # Recorder still ran (success=True with the deterministic
+        # silence recorder's analysis, NOT the recorder-error path).
+        assert response.status_code == 200  # noqa: PLR2004
+        data = response.json()
+        assert data["success"] is True
+        assert data["diagnosis"] != "device_error"
+
+
 # ── T7.23 test-result by session_id ─────────────────────────────────
 
 

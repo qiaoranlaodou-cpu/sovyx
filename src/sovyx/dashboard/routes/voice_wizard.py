@@ -42,6 +42,7 @@ Reference: master mission §Phase 7 / T7.21-T7.24.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import secrets
 import sys
 import threading
@@ -597,6 +598,50 @@ async def post_wizard_test_record(
     started = time.monotonic()
     recorded_at_iso = datetime.now(UTC).isoformat()
 
+    # Forensic case 2026-05-09: operator's logs_new.txt showed three
+    # consecutive ``voice_wizard_test_record_failed`` events with
+    # ``PaErrorCode -9985 (paDeviceUnavailable)`` on a Linux host
+    # (Razer USB headset, hw:2,0). Each failure timestamp coincided
+    # with an active ``voice_test_session_opened`` from the live
+    # ``HardwareDetection`` mic-test panel — i.e. the same daemon
+    # process was holding the mic via the live VU stream and the
+    # recorder couldn't open it a second time (ALSA exclusive open).
+    #
+    # The fix mirrors ``/api/voice/enable`` (voice.py:2317-2334) which
+    # uses the SAME primitive to release the mic before the
+    # production pipeline opens it. ``SessionRegistry.close_all`` is
+    # documented as the canonical pre-acquire handoff:
+    # ``device_test/_session.py:458``. Without this await, the next
+    # PortAudio open races the live session's ``stream.close`` and
+    # produces spurious ``-9985`` on the first candidate.
+    voice_test_registry = getattr(request.app.state, "voice_test_registry", None)
+    if voice_test_registry is not None:
+        from sovyx.voice.device_test import CloseReason, SessionRegistry  # noqa: PLC0415
+
+        if isinstance(voice_test_registry, SessionRegistry):
+            logger.info(
+                "voice_wizard_test_record_session_handoff_begin",
+                session_id=session_id,
+            )
+            try:
+                await voice_test_registry.close_all(reason=CloseReason.SERVER_SHUTDOWN)
+            except Exception as exc:  # noqa: BLE001
+                # Handoff is best-effort: even if a stuck session can't
+                # be closed, we still attempt the recorder. The
+                # ``open_input_stream`` opener now used by
+                # ``SoundDeviceWizardRecorder`` will surface a clearer
+                # error if the device is genuinely unreachable.
+                logger.warning(
+                    "voice_wizard_test_record_session_handoff_failed",
+                    session_id=session_id,
+                    error=str(exc),
+                )
+            else:
+                logger.info(
+                    "voice_wizard_test_record_session_handoff_done",
+                    session_id=session_id,
+                )
+
     try:
         samples = await asyncio.to_thread(
             recorder.record,
@@ -916,6 +961,19 @@ class SoundDeviceWizardRecorder:
     Resamples to 16 kHz mono inside ``record()`` so callers always
     get the canonical pipeline format regardless of the device's
     native rate.
+
+    v0.35.2 + forensic case 2026-05-09 (operator's logs_new.txt):
+    pre-v0.35.2 the recorder called ``sounddevice.rec`` directly,
+    bypassing the host-API × sample-rate × channels × auto-convert
+    fallback pyramid that the live VU-meter path
+    (``SoundDeviceInputSource``) routes through. Linux + PipeWire
+    operators on USB headsets routinely got ``PaErrorCode -9985
+    paDeviceUnavailable`` from the wizard while the live VU stream
+    on the same selected device worked, because the live path went
+    through ``open_input_stream`` (which has the fallback chain) and
+    the wizard didn't. v0.35.2 unifies the two paths: both now share
+    ``open_input_stream`` so they have identical capture semantics
+    + identical observability (``voice_opener_attempt`` events).
     """
 
     def record(
@@ -924,7 +982,28 @@ class SoundDeviceWizardRecorder:
         duration_s: float,
         device_id: str | None,
     ) -> npt.NDArray[np.float32]:
-        import sounddevice as sd  # noqa: PLC0415
+        # The route does ``await asyncio.to_thread(recorder.record, ...)``
+        # so this method runs on a worker thread without an event loop.
+        # ``asyncio.run`` is allowed (and is the canonical way to bridge
+        # sync → async on a thread that has no loop). Using a fresh loop
+        # per record call is fine: the wizard's call rate is bounded by
+        # operator clicks (~1/min worst case).
+        return asyncio.run(
+            self._record_async(duration_s=duration_s, device_id=device_id),
+        )
+
+    async def _record_async(
+        self,
+        *,
+        duration_s: float,
+        device_id: str | None,
+    ) -> npt.NDArray[np.float32]:
+        from sovyx.engine.config import VoiceTuningConfig  # noqa: PLC0415
+        from sovyx.voice._stream_opener import (  # noqa: PLC0415
+            StreamOpenError,
+            open_input_stream,
+        )
+        from sovyx.voice.device_enum import enumerate_devices  # noqa: PLC0415
 
         device: int | None = None
         if device_id is not None and device_id.strip():
@@ -934,42 +1013,98 @@ class SoundDeviceWizardRecorder:
                 msg = f"device_id must be a numeric PortAudio index; got {device_id!r}"
                 raise RuntimeError(msg) from exc
 
-        # Negotiate sample rate: prefer 16 kHz native; else fallback.
-        native_rate = _TARGET_SAMPLE_RATE
-        try:
-            sd.check_input_settings(device=device, samplerate=_TARGET_SAMPLE_RATE)
-        except sd.PortAudioError:
-            try:
-                info: object = sd.query_devices(device, "input")
-                native_rate = int(getattr(info, "default_samplerate", 48000))
-            except Exception:  # noqa: BLE001
-                native_rate = 48000
+        # Resolve to a live ``DeviceEntry`` with the SAME semantics the
+        # live VU path uses (``device_test._source._resolve_input_entry``):
+        # match by index, fall back to OS default, then to the first
+        # input-capable device. Inlined here instead of importing the
+        # private helper so a future split of ``device_test`` doesn't
+        # break this consumer (anti-pattern #20).
+        entries = enumerate_devices()
+        candidates = [e for e in entries if e.max_input_channels > 0]
+        if not candidates:
+            msg = "No audio input devices available"
+            raise RuntimeError(msg)
+        entry = None
+        if device is not None:
+            for candidate in candidates:
+                if candidate.index == device:
+                    entry = candidate
+                    break
+        if entry is None:
+            defaults = [e for e in candidates if e.is_os_default]
+            entry = defaults[0] if defaults else candidates[0]
+
+        captured_frames: list[npt.NDArray[np.int16]] = []
+
+        def _callback(
+            indata: npt.NDArray[np.int16],
+            _frames: int,
+            _time: object,
+            _status: object,
+        ) -> None:
+            # PortAudio reuses ``indata`` after the callback returns —
+            # copy before storing.
+            mono = indata[:, 0].copy() if indata.ndim > 1 else indata.copy()
+            captured_frames.append(np.asarray(mono, dtype=np.int16))
 
         try:
-            captured = sd.rec(
-                int(duration_s * native_rate),
-                samplerate=native_rate,
-                channels=1,
-                dtype="float32",
-                device=device,
-                blocking=True,
+            stream, info = await open_input_stream(
+                device=entry,
+                target_rate=_TARGET_SAMPLE_RATE,
+                blocksize=512,
+                callback=_callback,
+                tuning=VoiceTuningConfig(),
+                dtype="int16",
             )
-        except sd.PortAudioError as exc:
-            msg = f"PortAudio error opening device {device_id!r}: {exc}"
+        except StreamOpenError as exc:
+            # Surface the most-recent (deepest) attempt's detail — that
+            # is what an operator wants to see ("device busy", "rate not
+            # supported", etc.). The attempts list is preserved on the
+            # exception for log forensics.
+            last = exc.attempts[-1] if exc.attempts else None
+            detail = last.error_detail if last and last.error_detail else str(exc)
+            msg = f"PortAudio error opening device {device_id!r}: {detail}"
             raise RuntimeError(msg) from exc
 
-        mono = np.asarray(captured, dtype=np.float32).flatten()
+        try:
+            # Run the stream long enough to collect ``duration_s`` of
+            # audio. ``asyncio.sleep`` yields to other tasks; the
+            # PortAudio callback fires from its own thread and
+            # accumulates into ``captured_frames`` without contending
+            # with this coroutine.
+            await asyncio.sleep(duration_s)
+        finally:
+            with contextlib.suppress(Exception):
+                await asyncio.to_thread(stream.stop)
+            with contextlib.suppress(Exception):
+                await asyncio.to_thread(stream.close)
 
-        if native_rate != _TARGET_SAMPLE_RATE:
+        actual_rate = info.sample_rate
+        target_samples = int(duration_s * actual_rate)
+        if not captured_frames:
+            return np.zeros(int(duration_s * _TARGET_SAMPLE_RATE), dtype=np.float32)
+
+        joined = np.concatenate(captured_frames)
+        # Trim to the exact requested duration. Over-capture is normal
+        # because the callback boundary doesn't align with ``duration_s``.
+        joined = joined[:target_samples]
+        # int16 → float32 in [-1.0, 1.0]
+        as_float = joined.astype(np.float32) / 32768.0
+
+        if actual_rate != _TARGET_SAMPLE_RATE:
             # Simple linear resampling — adequate for the wizard's
             # level/SNR analysis. The voice pipeline uses scipy.signal
             # for its own resampling but that's overkill here.
-            target_len = int(len(mono) * _TARGET_SAMPLE_RATE / native_rate)
-            if target_len > 0 and len(mono) > 1:
-                indices = np.linspace(0, len(mono) - 1, target_len)
-                mono = np.interp(indices, np.arange(len(mono)), mono).astype(np.float32)
+            target_len = int(len(as_float) * _TARGET_SAMPLE_RATE / actual_rate)
+            if target_len > 0 and len(as_float) > 1:
+                indices = np.linspace(0, len(as_float) - 1, target_len)
+                as_float = np.interp(
+                    indices,
+                    np.arange(len(as_float)),
+                    as_float,
+                ).astype(np.float32)
 
-        return mono
+        return as_float
 
 
 # Re-export the protocol so tests can build their own stubs without
