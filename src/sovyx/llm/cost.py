@@ -86,15 +86,23 @@ class CostGuard:
         *,
         timezone: str = "UTC",
         stats_recorder: DailyStatsRecorder | None = None,
+        monthly_budget: float | None = None,
     ) -> None:
         self._daily_budget = daily_budget
         self._per_conversation_budget = per_conversation_budget
+        # ``None`` disables the cap entirely (default for back-compat).
+        # Issue #42 — operators with daily budgets had no way to cap
+        # cumulative monthly spend; a $2/day cap permits ~$60/month.
+        self._monthly_budget = monthly_budget
         self._system_pool = system_pool
         self._tz = ZoneInfo(timezone)
         self._stats_recorder = stats_recorder
         self._daily_spend: float = 0.0
+        self._monthly_spend: float = 0.0
         self._conversation_spend: dict[str, float] = {}
-        self._last_reset: date = datetime.now(tz=self._tz).date()
+        _today = datetime.now(tz=self._tz).date()
+        self._last_reset: date = _today
+        self._last_month_reset: tuple[int, int] = (_today.year, _today.month)
         self._dirty = False
         # Buffered snapshot of the previous day, awaiting async flush
         self._pending_day_snapshot: dict[str, object] | None = None
@@ -164,6 +172,15 @@ class CostGuard:
                 self._total_tokens = int(state.get("total_tokens", 0))
                 self._cache_read_tokens = int(state.get("cache_read_tokens", 0))
                 self._cache_creation_tokens = int(state.get("cache_creation_tokens", 0))
+                # Monthly aggregate (issue #42) — persists across days,
+                # zeroed only on month-boundary detection.
+                self._monthly_spend = float(state.get("monthly_spend", 0.0))
+                month_key = state.get("monthly_reset")
+                if isinstance(month_key, list) and len(month_key) == 2:  # noqa: PLR2004
+                    self._last_month_reset = (
+                        int(month_key[0]),
+                        int(month_key[1]),
+                    )
                 # Restore cost log ring buffer
                 raw_log = state.get("cost_log", [])
                 self._cost_log = deque(
@@ -242,6 +259,8 @@ class CostGuard:
                 "total_tokens": self._total_tokens,
                 "cache_read_tokens": self._cache_read_tokens,
                 "cache_creation_tokens": self._cache_creation_tokens,
+                "monthly_spend": round(self._monthly_spend, 8),
+                "monthly_reset": list(self._last_month_reset),
                 "cost_log": list(self._cost_log),
             }
         )
@@ -275,12 +294,30 @@ class CostGuard:
         except Exception:  # noqa: BLE001
             logger.debug("counters_piggyback_persist_failed")  # non-critical
 
+    def _maybe_reset_month(self) -> None:
+        """Zero monthly spend on calendar-month boundary (user timezone).
+
+        Issue #42 — runs alongside :meth:`_maybe_reset` so daily and
+        monthly windows roll over independently. Monthly history is
+        already persisted via :class:`DailyStatsRecorder`, so no buffer
+        is needed here.
+        """
+        today = datetime.now(tz=self._tz).date()
+        current_month = (today.year, today.month)
+        if current_month != self._last_month_reset:
+            self._monthly_spend = 0.0
+            self._last_month_reset = current_month
+            self._dirty = True
+
     def _maybe_reset(self) -> None:
         """Reset daily spend if new day (user timezone).
 
         Buffers previous day's cost data for async snapshot by
-        :meth:`persist` → :class:`DailyStatsRecorder`.
+        :meth:`persist` → :class:`DailyStatsRecorder`. Also rolls the
+        monthly window via :meth:`_maybe_reset_month` so a daily-only
+        check doesn't leave the monthly counter stale.
         """
+        self._maybe_reset_month()
         today = datetime.now(tz=self._tz).date()
         if today > self._last_reset:
             # Buffer previous day's data before zeroing
@@ -370,7 +407,10 @@ class CostGuard:
         estimated_cost: float,
         conversation_id: str = "",
     ) -> bool:
-        """Check if both daily and per-conversation budgets allow the spend.
+        """Check if every applicable budget allows the spend.
+
+        Daily, per-conversation, and (when configured) monthly caps all
+        gate the call — any one of them rejecting fails the check.
 
         Args:
             estimated_cost: Estimated cost of the call.
@@ -382,6 +422,12 @@ class CostGuard:
         self._maybe_reset()
 
         if self._daily_spend + estimated_cost > self._daily_budget:
+            return False
+
+        if (
+            self._monthly_budget is not None
+            and self._monthly_spend + estimated_cost > self._monthly_budget
+        ):
             return False
 
         if conversation_id:
@@ -417,6 +463,7 @@ class CostGuard:
         """
         self._maybe_reset()
         self._daily_spend += cost
+        self._monthly_spend += cost
         if conversation_id:
             self._conversation_spend[conversation_id] = (
                 self._conversation_spend.get(conversation_id, 0.0) + cost
@@ -491,6 +538,18 @@ class CostGuard:
         """Get remaining daily budget."""
         self._maybe_reset()
         return max(0.0, self._daily_budget - self._daily_spend)
+
+    def get_monthly_spend(self) -> float:
+        """Get cumulative spend in the current calendar month (issue #42)."""
+        self._maybe_reset()
+        return self._monthly_spend
+
+    def get_remaining_monthly_budget(self) -> float | None:
+        """Return remaining monthly budget; ``None`` when no cap is set."""
+        if self._monthly_budget is None:
+            return None
+        self._maybe_reset()
+        return max(0.0, self._monthly_budget - self._monthly_spend)
 
     def get_conversation_spend(self, conversation_id: str) -> float:
         """Get total spend for a conversation."""

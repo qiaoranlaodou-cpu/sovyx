@@ -66,6 +66,10 @@ class LLMConfig(BaseModel):
     streaming: bool = True
     budget_daily_usd: float = Field(default=2.0, ge=0.0)
     budget_per_conversation_usd: float = Field(default=0.5, ge=0.0)
+    # ``None`` (default) disables the monthly cap. Setting a value caps
+    # cumulative spend across the calendar month (user timezone) — the
+    # check runs in addition to (not instead of) the daily cap (issue #42).
+    budget_monthly_usd: float | None = Field(default=None, ge=0.0)
 
     @model_validator(mode="after")
     def resolve_provider_at_runtime(self) -> LLMConfig:

@@ -782,6 +782,112 @@ class TestCostGuardDaySnapshot:
         await pool.close()
 
 
+class TestMonthlyBudget:
+    """Issue #42 — monthly budget cap on top of daily + per-conversation."""
+
+    async def test_default_monthly_budget_is_disabled(self) -> None:
+        # Backwards-compat: omitting monthly_budget keeps the cap off.
+        g = CostGuard(daily_budget=10.0, per_conversation_budget=2.0)
+        assert g._monthly_budget is None
+        assert g.get_remaining_monthly_budget() is None
+        # A spend much larger than any sensible monthly cap is allowed.
+        await g.record(5.0, "m", "c1")
+        assert g.can_afford(5.0) is True
+
+    async def test_monthly_cap_blocks_spend_over_limit(self) -> None:
+        # Simulate spending across multiple days within the month.
+        # Daily 10 USD, monthly 15 USD: after one full daily spend the
+        # monthly counter sits at 10/15. A daily rollover (next day)
+        # zeroes daily but keeps monthly at 10 — the next 6 USD call
+        # exceeds the monthly cap even though daily has full headroom.
+        from datetime import timedelta
+
+        g = CostGuard(
+            daily_budget=10.0,
+            per_conversation_budget=10.0,
+            monthly_budget=15.0,
+        )
+        await g.record(10.0, "m", "c1")
+        # Force a day rollover (within the same month).
+        g._last_reset = datetime.now(tz=UTC).date() - timedelta(days=1)
+        g._maybe_reset()
+
+        assert g.get_daily_spend() == 0.0
+        assert g.get_monthly_spend() == pytest.approx(10.0)
+
+        # Daily has 10 USD headroom; monthly only has 5 USD left.
+        assert g.can_afford(6.0) is False  # blocked by monthly
+        assert g.can_afford(4.0) is True  # under monthly cap
+
+    async def test_monthly_spend_persists_across_day_boundary(self) -> None:
+        g = CostGuard(
+            daily_budget=10.0,
+            per_conversation_budget=10.0,
+            monthly_budget=20.0,
+        )
+        await g.record(8.0, "m", "c1")
+        assert g.get_monthly_spend() == pytest.approx(8.0)
+
+        # Force a day rollover within the same month.
+        from datetime import timedelta
+
+        g._last_reset = datetime.now(tz=UTC).date() - timedelta(days=1)
+        g._maybe_reset()
+        # Daily zeroed, monthly preserved.
+        assert g.get_daily_spend() == 0.0
+        assert g.get_monthly_spend() == pytest.approx(8.0)
+
+    async def test_month_boundary_zeroes_monthly_spend(self) -> None:
+        g = CostGuard(
+            daily_budget=10.0,
+            per_conversation_budget=10.0,
+            monthly_budget=20.0,
+        )
+        await g.record(8.0, "m", "c1")
+
+        # Force a month rollover by clearing the reset key to a past month.
+        prev_year, prev_month = g._last_month_reset
+        prev = (
+            prev_year - 1 if prev_month == 1 else prev_year,
+            12 if prev_month == 1 else prev_month - 1,
+        )
+        g._last_month_reset = prev
+        g._maybe_reset_month()
+
+        assert g.get_monthly_spend() == 0.0
+
+    async def test_remaining_monthly_budget_with_cap(self) -> None:
+        g = CostGuard(
+            daily_budget=10.0,
+            per_conversation_budget=10.0,
+            monthly_budget=30.0,
+        )
+        await g.record(7.5, "m", "c1")
+        assert g.get_remaining_monthly_budget() == pytest.approx(22.5)
+
+    async def test_remaining_monthly_clamps_at_zero(self) -> None:
+        g = CostGuard(
+            daily_budget=10.0,
+            per_conversation_budget=10.0,
+            monthly_budget=5.0,
+        )
+        # The cap rejects this, but if the spend gets through some other
+        # path (manual record), get_remaining must clamp at zero.
+        await g.record(7.0, "m", "c1")
+        assert g.get_remaining_monthly_budget() == 0.0
+
+    async def test_daily_cap_still_enforced_with_monthly_set(self) -> None:
+        g = CostGuard(
+            daily_budget=2.0,
+            per_conversation_budget=10.0,
+            monthly_budget=100.0,
+        )
+        await g.record(1.5, "m", "c1")
+        # 1.0 USD > remaining daily 0.5 — daily MUST reject regardless of
+        # how much monthly budget remains.
+        assert g.can_afford(1.0) is False
+
+
 class TestCacheTokenTracking:
     """Issue #44 — CostGuard separately tracks cache tokens."""
 

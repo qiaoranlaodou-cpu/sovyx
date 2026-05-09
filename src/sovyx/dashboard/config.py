@@ -109,6 +109,7 @@ def get_config(mind_config: MindConfig) -> dict[str, Any]:
             "streaming": llm.streaming,
             "budget_daily_usd": llm.budget_daily_usd,
             "budget_per_conversation_usd": llm.budget_per_conversation_usd,
+            "budget_monthly_usd": llm.budget_monthly_usd,
         },
     }
 

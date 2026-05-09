@@ -154,6 +154,7 @@ def register_cli_handlers(
                 "fast_model": cfg.llm.fast_model,
                 "temperature": cfg.llm.temperature,
                 "budget_daily_usd": cfg.llm.budget_daily_usd,
+                "budget_monthly_usd": cfg.llm.budget_monthly_usd,
             },
             "brain": {
                 "consolidation_interval_hours": cfg.brain.consolidation_interval_hours,

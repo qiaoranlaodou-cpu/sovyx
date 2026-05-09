@@ -758,6 +758,7 @@ async def bootstrap(
             cost_guard = CostGuard(
                 daily_budget=mind_config.llm.budget_daily_usd,
                 per_conversation_budget=mind_config.llm.budget_per_conversation_usd,
+                monthly_budget=mind_config.llm.budget_monthly_usd,
                 system_pool=db_manager.get_system_pool(),
                 timezone=mind_config.timezone,
                 stats_recorder=stats_recorder,
