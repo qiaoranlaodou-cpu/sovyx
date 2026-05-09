@@ -448,6 +448,94 @@ class VoiceRestartHistoryResponse(BaseModel):
     limit: int
 
 
+# ── Phase 5.D group D — Typed responses for diagnostics family ─────
+
+
+class VoiceCaptureDiagnosticsResponse(BaseModel):
+    """``/api/voice/capture-diagnostics`` payload — Windows APO scan + L10 grab.
+
+    Top-level shape is fully typed; the deeply nested per-endpoint
+    dict + the session-manager-grab payload are kept as
+    ``dict[str, Any]`` because both grow with new APO categories +
+    detector verdicts (forward-compat: the dashboard's zod schemas
+    discriminate at use-time on ``known_apos`` / ``detection_method``).
+    """
+
+    model_config = {"extra": "allow"}
+
+    platform_supported: bool = False
+    active_device_name: str | None = None
+    active_endpoint: dict[str, Any] | None = None
+    voice_clarity_active: bool = False
+    any_voice_clarity_active: bool = False
+    endpoints: list[dict[str, Any]] = Field(default_factory=list)
+    session_manager_grab: dict[str, Any] = Field(default_factory=dict)
+    fix_suggestion: str | None = None
+    error: str | None = None
+
+
+class VoiceLinuxMixerDiagnosticsResponse(BaseModel):
+    """``/api/voice/linux-mixer-diagnostics`` payload — ALSA card snapshots.
+
+    Top-level fields fully typed; ``snapshots`` items kept as
+    ``dict[str, Any]`` because the per-control field set grows with
+    new mixer-role categories + KB profile additions.
+    """
+
+    platform_supported: bool = False
+    amixer_available: bool = False
+    snapshots: list[dict[str, Any]] = Field(default_factory=list)
+    aggregated_boost_db_ceiling: float
+    saturation_ratio_ceiling: float
+    reset_enabled_by_default: bool
+
+
+class VoiceHardwareInfo(BaseModel):
+    """Hardware sub-payload for ``/api/voice/hardware-detect``."""
+
+    cpu_cores: int = 0
+    ram_mb: int = 0
+    has_gpu: bool = False
+    gpu_vram_mb: int = 0
+    tier: str = "DESKTOP_CPU"
+
+
+class VoiceDeviceEntry(BaseModel):
+    """One audio device entry inside ``/api/voice/hardware-detect``."""
+
+    index: int
+    name: str
+    is_default: bool = False
+    host_api: str | None = None
+
+
+class VoiceAudioInfo(BaseModel):
+    """Audio sub-payload for ``/api/voice/hardware-detect``."""
+
+    available: bool = False
+    input_devices: list[VoiceDeviceEntry] = Field(default_factory=list)
+    output_devices: list[VoiceDeviceEntry] = Field(default_factory=list)
+
+
+class VoiceRecommendedModel(BaseModel):
+    """Recommended model entry for ``/api/voice/hardware-detect``."""
+
+    name: str
+    category: str
+    size_mb: float
+    download_available: bool
+    description: str = ""
+
+
+class VoiceHardwareDetectResponse(BaseModel):
+    """``/api/voice/hardware-detect`` payload — CPU/RAM/GPU + recommended models."""
+
+    hardware: VoiceHardwareInfo = Field(default_factory=VoiceHardwareInfo)
+    audio: VoiceAudioInfo = Field(default_factory=VoiceAudioInfo)
+    recommended_models: list[VoiceRecommendedModel] = Field(default_factory=list)
+    total_download_mb: float = 0.0
+
+
 def _resolve_engine_config(request: Request) -> EngineConfig | None:
     """Pull EngineConfig from the FastAPI app state (best-effort)."""
     return getattr(request.app.state, "engine_config", None)
@@ -1237,8 +1325,8 @@ async def get_voice_models_download_status(
     )
 
 
-@router.get("/capture-diagnostics")
-async def capture_diagnostics(request: Request) -> JSONResponse:
+@router.get("/capture-diagnostics", response_model=VoiceCaptureDiagnosticsResponse)
+async def capture_diagnostics(request: Request) -> VoiceCaptureDiagnosticsResponse:
     """Report the Windows capture-APO chain attached to the active mic.
 
     Surfaces the same data that powers the pipeline's auto-bypass logic:
@@ -1263,12 +1351,10 @@ async def capture_diagnostics(request: Request) -> JSONResponse:
         reports = await asyncio.to_thread(detect_capture_apos)
     except Exception as exc:  # noqa: BLE001
         logger.warning("voice_apo_detection_failed", error=str(exc))
-        return JSONResponse(
-            {
-                "error": f"Capture-APO scan failed: {exc}",
-                "endpoints": [],
-                "voice_clarity_active": False,
-            }
+        return VoiceCaptureDiagnosticsResponse(
+            error=f"Capture-APO scan failed: {exc}",
+            endpoints=[],
+            voice_clarity_active=False,
         )
 
     # Prefer the device name from the running capture task; fall back to
@@ -1309,34 +1395,32 @@ async def capture_diagnostics(request: Request) -> JSONResponse:
     # detection_method="unavailable" on those platforms).
     session_manager_grab = await _collect_session_manager_grab_report()
 
-    return JSONResponse(
-        {
-            "platform_supported": bool(reports) or _is_windows(),
-            "active_device_name": active_device_name,
-            "active_endpoint": (
-                {
-                    "endpoint_id": active_report.endpoint_id,
-                    "endpoint_name": active_report.endpoint_name,
-                    "device_interface_name": active_report.device_interface_name,
-                    "known_apos": list(active_report.known_apos),
-                    "voice_clarity_active": active_report.voice_clarity_active,
-                }
-                if active_report is not None
-                else None
-            ),
-            "voice_clarity_active": active_clarity,
-            "any_voice_clarity_active": any_clarity,
-            "endpoints": endpoints,
-            "session_manager_grab": session_manager_grab,
-            "fix_suggestion": (
-                "Open the mic in WASAPI exclusive mode to bypass the APO chain. "
-                "Set SOVYX_TUNING__VOICE__CAPTURE_WASAPI_EXCLUSIVE=true, or leave "
-                "voice_clarity_autofix enabled (default) and Sovyx will switch "
-                "automatically after the pipeline goes deaf."
-            )
-            if active_clarity
-            else None,
-        }
+    return VoiceCaptureDiagnosticsResponse(
+        platform_supported=bool(reports) or _is_windows(),
+        active_device_name=active_device_name,
+        active_endpoint=(
+            {
+                "endpoint_id": active_report.endpoint_id,
+                "endpoint_name": active_report.endpoint_name,
+                "device_interface_name": active_report.device_interface_name,
+                "known_apos": list(active_report.known_apos),
+                "voice_clarity_active": active_report.voice_clarity_active,
+            }
+            if active_report is not None
+            else None
+        ),
+        voice_clarity_active=active_clarity,
+        any_voice_clarity_active=any_clarity,
+        endpoints=endpoints,
+        session_manager_grab=session_manager_grab,
+        fix_suggestion=(
+            "Open the mic in WASAPI exclusive mode to bypass the APO chain. "
+            "Set SOVYX_TUNING__VOICE__CAPTURE_WASAPI_EXCLUSIVE=true, or leave "
+            "voice_clarity_autofix enabled (default) and Sovyx will switch "
+            "automatically after the pipeline goes deaf."
+        )
+        if active_clarity
+        else None,
     )
 
 
@@ -1579,8 +1663,8 @@ def _serialize_mixer_snapshots(
     return payload
 
 
-@router.get("/linux-mixer-diagnostics")
-async def linux_mixer_diagnostics(request: Request) -> JSONResponse:
+@router.get("/linux-mixer-diagnostics", response_model=VoiceLinuxMixerDiagnosticsResponse)
+async def linux_mixer_diagnostics(request: Request) -> VoiceLinuxMixerDiagnosticsResponse:
     """Snapshot of every ALSA card's gain state — Linux-only.
 
     Drives the dashboard's ``LinuxMicGainCard`` component. Non-Linux
@@ -1606,15 +1690,13 @@ async def linux_mixer_diagnostics(request: Request) -> JSONResponse:
     tuning = VoiceTuningConfig()
 
     if not _is_linux():
-        return JSONResponse(
-            {
-                "platform_supported": False,
-                "amixer_available": False,
-                "snapshots": [],
-                "aggregated_boost_db_ceiling": (tuning.linux_mixer_aggregated_boost_db_ceiling),
-                "saturation_ratio_ceiling": (tuning.linux_mixer_saturation_ratio_ceiling),
-                "reset_enabled_by_default": (tuning.linux_alsa_mixer_reset_enabled),
-            }
+        return VoiceLinuxMixerDiagnosticsResponse(
+            platform_supported=False,
+            amixer_available=False,
+            snapshots=[],
+            aggregated_boost_db_ceiling=tuning.linux_mixer_aggregated_boost_db_ceiling,
+            saturation_ratio_ceiling=tuning.linux_mixer_saturation_ratio_ceiling,
+            reset_enabled_by_default=tuning.linux_alsa_mixer_reset_enabled,
         )
 
     from sovyx.voice.health._linux_mixer_probe import (
@@ -1628,15 +1710,13 @@ async def linux_mixer_diagnostics(request: Request) -> JSONResponse:
         logger.warning("linux_mixer_diagnostics_probe_failed", exc_info=True)
         snapshots = []
 
-    return JSONResponse(
-        {
-            "platform_supported": True,
-            "amixer_available": amixer_available,
-            "snapshots": _serialize_mixer_snapshots(snapshots),
-            "aggregated_boost_db_ceiling": (tuning.linux_mixer_aggregated_boost_db_ceiling),
-            "saturation_ratio_ceiling": (tuning.linux_mixer_saturation_ratio_ceiling),
-            "reset_enabled_by_default": tuning.linux_alsa_mixer_reset_enabled,
-        }
+    return VoiceLinuxMixerDiagnosticsResponse(
+        platform_supported=True,
+        amixer_available=amixer_available,
+        snapshots=_serialize_mixer_snapshots(snapshots),
+        aggregated_boost_db_ceiling=tuning.linux_mixer_aggregated_boost_db_ceiling,
+        saturation_ratio_ceiling=tuning.linux_mixer_saturation_ratio_ceiling,
+        reset_enabled_by_default=tuning.linux_alsa_mixer_reset_enabled,
     )
 
 
@@ -1843,8 +1923,14 @@ async def linux_mixer_reset(request: Request) -> JSONResponse:
     )
 
 
-@router.get("/hardware-detect")
-async def hardware_detect(request: Request) -> JSONResponse:
+@router.get(
+    "/hardware-detect",
+    response_model=VoiceHardwareDetectResponse,
+    responses={500: {"description": "Hardware detection failed"}},
+)
+async def hardware_detect(
+    request: Request,
+) -> VoiceHardwareDetectResponse | JSONResponse:
     """Detect hardware capabilities for voice pipeline.
 
     Returns CPU, RAM, GPU info, detected hardware tier, recommended
@@ -1863,8 +1949,8 @@ async def hardware_detect(request: Request) -> JSONResponse:
     # MME/DirectSound/WDM-KS on Windows. See device_enum.py for *why* MME
     # gets demoted (silent-mic bug with non-native sample rates).
     audio_available = False
-    input_devices: list[dict[str, object]] = []
-    output_devices: list[dict[str, object]] = []
+    input_devices: list[VoiceDeviceEntry] = []
+    output_devices: list[VoiceDeviceEntry] = []
     try:
         from sovyx.voice.device_enum import enumerate_devices, pick_preferred
 
@@ -1872,21 +1958,21 @@ async def hardware_detect(request: Request) -> JSONResponse:
         in_preferred = pick_preferred(entries, kind="input")
         out_preferred = pick_preferred(entries, kind="output")
         input_devices = [
-            {
-                "index": e.index,
-                "name": e.name,
-                "is_default": e.is_os_default,
-                "host_api": e.host_api_name,
-            }
+            VoiceDeviceEntry(
+                index=e.index,
+                name=e.name,
+                is_default=e.is_os_default,
+                host_api=e.host_api_name,
+            )
             for e in in_preferred
         ]
         output_devices = [
-            {
-                "index": e.index,
-                "name": e.name,
-                "is_default": e.is_os_default,
-                "host_api": e.host_api_name,
-            }
+            VoiceDeviceEntry(
+                index=e.index,
+                name=e.name,
+                is_default=e.is_os_default,
+                host_api=e.host_api_name,
+            )
             for e in out_preferred
         ]
         audio_available = bool(input_devices and output_devices)
@@ -1901,32 +1987,30 @@ async def hardware_detect(request: Request) -> JSONResponse:
 
     total_download_mb = sum(m.size_mb for m in models if m.download_available)
 
-    return JSONResponse(
-        {
-            "hardware": {
-                "cpu_cores": hw.cpu_cores,
-                "ram_mb": hw.ram_mb,
-                "has_gpu": hw.has_gpu,
-                "gpu_vram_mb": hw.gpu_vram_mb,
-                "tier": tier_name,
-            },
-            "audio": {
-                "available": audio_available,
-                "input_devices": input_devices,
-                "output_devices": output_devices,
-            },
-            "recommended_models": [
-                {
-                    "name": m.name,
-                    "category": m.category,
-                    "size_mb": m.size_mb,
-                    "download_available": m.download_available,
-                    "description": m.description,
-                }
-                for m in models
-            ],
-            "total_download_mb": round(total_download_mb, 1),
-        }
+    return VoiceHardwareDetectResponse(
+        hardware=VoiceHardwareInfo(
+            cpu_cores=hw.cpu_cores,
+            ram_mb=hw.ram_mb,
+            has_gpu=hw.has_gpu,
+            gpu_vram_mb=hw.gpu_vram_mb,
+            tier=tier_name,
+        ),
+        audio=VoiceAudioInfo(
+            available=audio_available,
+            input_devices=input_devices,
+            output_devices=output_devices,
+        ),
+        recommended_models=[
+            VoiceRecommendedModel(
+                name=m.name,
+                category=m.category,
+                size_mb=m.size_mb,
+                download_available=m.download_available,
+                description=m.description,
+            )
+            for m in models
+        ],
+        total_download_mb=round(total_download_mb, 1),
     )
 
 
