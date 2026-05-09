@@ -121,6 +121,179 @@ class ServiceHealthResponse(BaseModel):
     user_remediation: str | None = None
 
 
+# ── Phase 5.D — Typed responses for ``/status`` family ───────────────
+
+
+class VoiceStatusPipeline(BaseModel):
+    """Voice pipeline runtime state for ``/api/voice/status``."""
+
+    running: bool
+    state: str
+    latency_ms: float | None = None
+
+
+class VoiceStatusCapture(BaseModel):
+    """Capture-task heartbeat snapshot for ``/api/voice/status``.
+
+    Fields beyond the explicit ones are accepted to match the
+    open-ended ``capture.status_snapshot()`` contract — the snapshot
+    grows over time as new SLIs are added and the response model must
+    not reject forward-additive shapes.
+    """
+
+    model_config = {"extra": "allow"}
+
+    running: bool = False
+    input_device: str | None = None
+    host_api: str | None = None
+    sample_rate: int | None = None
+    frames_delivered: int = 0
+    last_rms_db: float | None = None
+
+
+class VoiceStatusSTT(BaseModel):
+    """STT-engine state for ``/api/voice/status``."""
+
+    engine: str | None = None
+    model: str | None = None
+    state: str | None = None
+
+
+class VoiceStatusTTS(BaseModel):
+    """TTS-engine state for ``/api/voice/status``."""
+
+    engine: str | None = None
+    model: str | None = None
+    initialized: bool = False
+
+
+class VoiceStatusWakeWord(BaseModel):
+    """Wake-word detector state for ``/api/voice/status``."""
+
+    enabled: bool = False
+    phrase: str | None = None
+
+
+class VoiceStatusVAD(BaseModel):
+    """VAD state for ``/api/voice/status``."""
+
+    enabled: bool = False
+
+
+class VoiceStatusWyoming(BaseModel):
+    """Wyoming-server state for ``/api/voice/status``."""
+
+    connected: bool = False
+    endpoint: str | None = None
+
+
+class VoiceStatusHardware(BaseModel):
+    """Hardware-tier auto-select snapshot for ``/api/voice/status``."""
+
+    tier: str | None = None
+    ram_mb: int | None = None
+
+
+class VoiceStatusResponse(BaseModel):
+    """Top-level ``/api/voice/status`` payload.
+
+    Phase 5.D v0.32.7 typed-response migration. Mirrors the dict shape
+    the dashboard's voice page has consumed since v0.6.x; the explicit
+    schema makes the contract enforceable at request-time and lets the
+    frontend's zod schemas validate against a single canonical source.
+
+    ``preflight_warnings`` carries Linux-only mixer-sanity boot
+    warnings (always empty on non-Linux); each entry is the raw
+    ``BootPreflightWarningsStore`` snapshot dict — its shape lives in
+    ``voice/health/_preflight_warnings.py`` and is intentionally
+    typed as ``dict[str, Any]`` here because the warning catalogue
+    grows through KB profile authorship and we do not gate
+    forward-additive fields on a route schema migration.
+    """
+
+    # All 8 nested blocks are optional with default factories: the
+    # production helper always populates the full dict (see
+    # ``dashboard/voice_status.py::get_voice_status`` initial dict),
+    # but tests mock partial shapes and downstream consumers may
+    # legitimately omit blocks they don't care about.
+    pipeline: VoiceStatusPipeline = Field(
+        default_factory=lambda: VoiceStatusPipeline(running=False, state="not_configured")
+    )
+    capture: VoiceStatusCapture = Field(default_factory=VoiceStatusCapture)
+    stt: VoiceStatusSTT = Field(default_factory=VoiceStatusSTT)
+    tts: VoiceStatusTTS = Field(default_factory=VoiceStatusTTS)
+    wake_word: VoiceStatusWakeWord = Field(default_factory=VoiceStatusWakeWord)
+    vad: VoiceStatusVAD = Field(default_factory=VoiceStatusVAD)
+    wyoming: VoiceStatusWyoming = Field(default_factory=VoiceStatusWyoming)
+    hardware: VoiceStatusHardware = Field(default_factory=VoiceStatusHardware)
+    preflight_warnings: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class VoiceBypassTierStatusResponse(BaseModel):
+    """``/api/voice/bypass-tier-status`` payload.
+
+    Mirrors ``BypassTierSnapshot`` (the in-memory mirror dataclass at
+    ``voice/health/_bypass_tier_state.py``) one-for-one. Frontend zod
+    schema ``VoiceBypassTierStatusResponseSchema`` is the wire-side
+    twin.
+    """
+
+    current_bypass_tier: int | None = None
+    tier1_raw_attempted: int = 0
+    tier1_raw_succeeded: int = 0
+    tier2_host_api_rotate_attempted: int = 0
+    tier2_host_api_rotate_succeeded: int = 0
+    tier3_wasapi_exclusive_attempted: int = 0
+    tier3_wasapi_exclusive_succeeded: int = 0
+
+
+class VoiceQualityNoiseFloor(BaseModel):
+    """Noise-floor sub-payload for ``/api/voice/quality-snapshot``."""
+
+    short_avg_db: float | None = None
+    long_avg_db: float | None = None
+    drift_db: float | None = None
+    ready: bool = False
+    short_sample_count: int = 0
+    long_sample_count: int = 0
+
+
+class VoiceQualityAGC2(BaseModel):
+    """AGC2 sub-payload for ``/api/voice/quality-snapshot``.
+
+    ``None`` at the parent level when AGC2 is not wired (foundation
+    default); when wired, every field is present (the orchestrator
+    populates them on every frame).
+    """
+
+    frames_processed: int
+    frames_silenced: int
+    frames_vad_silenced: int
+    current_gain_db: float
+    speech_level_dbfs: float
+
+
+_QualityVerdict = Literal["excellent", "good", "degraded", "poor", "no_signal"]
+"""Closed enum of SNR verdict labels — dashboard renders one badge per
+verdict; adding new values requires a frontend schema migration."""
+
+
+class VoiceQualitySnapshotResponse(BaseModel):
+    """``/api/voice/quality-snapshot`` payload.
+
+    Source-of-truth shape for the dashboard's voice-quality panel + the
+    ``VoiceQualitySnapshotResponseSchema`` zod twin in
+    ``dashboard/src/types/schemas.ts``.
+    """
+
+    snr_p50_db: float | None = None
+    snr_sample_count: int = 0
+    snr_verdict: _QualityVerdict
+    noise_floor: VoiceQualityNoiseFloor
+    agc2: VoiceQualityAGC2 | None = None
+    dnsmos_extras_installed: bool = False
+
+
 def _resolve_engine_config(request: Request) -> EngineConfig | None:
     """Pull EngineConfig from the FastAPI app state (best-effort)."""
     return getattr(request.app.state, "engine_config", None)
@@ -505,8 +678,14 @@ async def get_voice_restart_history(
     )
 
 
-@router.get("/bypass-tier-status")
-async def get_voice_bypass_tier_status(request: Request) -> JSONResponse:
+@router.get(
+    "/bypass-tier-status",
+    response_model=VoiceBypassTierStatusResponse,
+    responses={HTTP_503_SERVICE_UNAVAILABLE: {"description": "Engine not running"}},
+)
+async def get_voice_bypass_tier_status(
+    request: Request,
+) -> VoiceBypassTierStatusResponse | JSONResponse:
     """Return current bypass-tier health snapshot (Tier 1 / 2 / 3).
 
     Voice Windows Paranoid Mission §B — a single snapshot of which
@@ -545,11 +724,17 @@ async def get_voice_bypass_tier_status(request: Request) -> JSONResponse:
             status_code=HTTP_503_SERVICE_UNAVAILABLE,
         )
 
-    return JSONResponse(_bypass_tier_snapshot())
+    return VoiceBypassTierStatusResponse.model_validate(_bypass_tier_snapshot())
 
 
-@router.get("/quality-snapshot")
-async def get_voice_quality_snapshot(request: Request) -> JSONResponse:
+@router.get(
+    "/quality-snapshot",
+    response_model=VoiceQualitySnapshotResponse,
+    responses={HTTP_503_SERVICE_UNAVAILABLE: {"description": "Engine not running"}},
+)
+async def get_voice_quality_snapshot(
+    request: Request,
+) -> VoiceQualitySnapshotResponse | JSONResponse:
     """Return a single snapshot of the voice-quality observables.
 
     Phase 4 / T4.26 + T4.37 dashboard backing endpoint. Reads the
@@ -674,7 +859,7 @@ async def get_voice_quality_snapshot(request: Request) -> JSONResponse:
     except Exception:  # noqa: BLE001 — probe is observability-only
         dnsmos_installed = False
 
-    return JSONResponse(
+    return VoiceQualitySnapshotResponse.model_validate(
         {
             "snr_p50_db": snr_p50,
             "snr_sample_count": snr.count,
@@ -686,9 +871,21 @@ async def get_voice_quality_snapshot(request: Request) -> JSONResponse:
     )
 
 
-@router.get("/status")
-async def get_voice_status_endpoint(request: Request) -> JSONResponse:
-    """Voice pipeline status — running state, models, hardware tier."""
+@router.get(
+    "/status",
+    response_model=VoiceStatusResponse,
+    responses={HTTP_503_SERVICE_UNAVAILABLE: {"description": "Engine not running"}},
+)
+async def get_voice_status_endpoint(
+    request: Request,
+) -> VoiceStatusResponse | JSONResponse:
+    """Voice pipeline status — running state, models, hardware tier.
+
+    Phase 5.D v0.32.7 — migrated from raw ``JSONResponse(dict)`` to a
+    typed :class:`VoiceStatusResponse`. The 503 path keeps emitting a
+    ``JSONResponse`` (FastAPI uses the type-union return to dispatch
+    the 503 envelope distinctly from the success body).
+    """
     registry = getattr(request.app.state, "registry", None)
     if registry is None:
         return JSONResponse(
@@ -699,7 +896,10 @@ async def get_voice_status_endpoint(request: Request) -> JSONResponse:
     from sovyx.dashboard.voice_status import get_voice_status
 
     status = await get_voice_status(registry)
-    return JSONResponse(status)
+    # ``get_voice_status`` keeps returning ``dict[str, Any]`` so legacy
+    # callers (and the broader dict-shape contract that dashboards already
+    # consume) stay stable; the validation step is the route boundary.
+    return VoiceStatusResponse.model_validate(status)
 
 
 @router.get("/models")
