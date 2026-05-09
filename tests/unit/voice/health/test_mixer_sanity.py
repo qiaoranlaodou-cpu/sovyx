@@ -55,6 +55,7 @@ from sovyx.voice.health import (
     check_and_maybe_heal,
 )
 from sovyx.voice.health import _mixer_sanity as mod
+from sovyx.voice.health import _mixer_sanity_persist as mod_persist
 from sovyx.voice.health.contract import CandidateEndpoint
 
 if TYPE_CHECKING:
@@ -1735,7 +1736,7 @@ class TestCheckValidationGates:
 class TestDefaultPersistViaAlsactl:
     @pytest.mark.asyncio()
     async def test_non_linux_returns_false(self) -> None:
-        with patch.object(mod, "sys") as sys_mock:
+        with patch.object(mod_persist, "sys") as sys_mock:
             sys_mock.platform = "win32"
             ok = await mod.default_persist_via_alsactl([0], VoiceTuningConfig())
         assert ok is False
@@ -1744,8 +1745,8 @@ class TestDefaultPersistViaAlsactl:
     async def test_missing_alsactl_returns_false(self) -> None:
         """Neither systemctl nor alsactl available → False."""
         with (
-            patch.object(mod, "sys") as sys_mock,
-            patch.object(mod, "_find_trusted_binary", return_value=None),
+            patch.object(mod_persist, "sys") as sys_mock,
+            patch.object(mod_persist, "_find_trusted_binary", return_value=None),
         ):
             sys_mock.platform = "linux"
             ok = await mod.default_persist_via_alsactl([0], VoiceTuningConfig())
@@ -1782,9 +1783,9 @@ class TestDefaultPersistViaAlsactl:
             raise AssertionError(msg)
 
         with (
-            patch.object(mod, "sys") as sys_mock,
-            patch.object(mod, "_find_trusted_binary", side_effect=fake_find),
-            patch.object(mod.subprocess, "run", side_effect=fake_run),
+            patch.object(mod_persist, "sys") as sys_mock,
+            patch.object(mod_persist, "_find_trusted_binary", side_effect=fake_find),
+            patch.object(mod_persist.subprocess, "run", side_effect=fake_run),
         ):
             sys_mock.platform = "linux"
             ok = await mod.default_persist_via_alsactl([0], VoiceTuningConfig())
@@ -1819,9 +1820,9 @@ class TestDefaultPersistViaAlsactl:
             raise AssertionError(msg)
 
         with (
-            patch.object(mod, "sys") as sys_mock,
-            patch.object(mod, "_find_trusted_binary", side_effect=fake_find),
-            patch.object(mod.subprocess, "run", side_effect=fake_run),
+            patch.object(mod_persist, "sys") as sys_mock,
+            patch.object(mod_persist, "_find_trusted_binary", side_effect=fake_find),
+            patch.object(mod_persist.subprocess, "run", side_effect=fake_run),
         ):
             sys_mock.platform = "linux"
             ok = await mod.default_persist_via_alsactl([0, 1], VoiceTuningConfig())
@@ -1855,9 +1856,9 @@ class TestDefaultPersistViaAlsactl:
             return _R(1)  # alsactl also fails
 
         with (
-            patch.object(mod, "sys") as sys_mock,
-            patch.object(mod, "_find_trusted_binary", side_effect=fake_find),
-            patch.object(mod.subprocess, "run", side_effect=fake_run),
+            patch.object(mod_persist, "sys") as sys_mock,
+            patch.object(mod_persist, "_find_trusted_binary", side_effect=fake_find),
+            patch.object(mod_persist.subprocess, "run", side_effect=fake_run),
         ):
             sys_mock.platform = "linux"
             ok = await mod.default_persist_via_alsactl([0], VoiceTuningConfig())
@@ -1884,9 +1885,9 @@ class TestDefaultPersistViaAlsactl:
 
         zero = VoiceTuningConfig(linux_mixer_subprocess_timeout_s=0.0)
         with (
-            patch.object(mod, "sys") as sys_mock,
-            patch.object(mod, "_find_trusted_binary", side_effect=fake_find),
-            patch.object(mod.subprocess, "run", side_effect=fake_run),
+            patch.object(mod_persist, "sys") as sys_mock,
+            patch.object(mod_persist, "_find_trusted_binary", side_effect=fake_find),
+            patch.object(mod_persist.subprocess, "run", side_effect=fake_run),
         ):
             sys_mock.platform = "linux"
             await mod.default_persist_via_alsactl([0], zero)
