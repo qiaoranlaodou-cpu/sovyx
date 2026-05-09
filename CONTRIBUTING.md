@@ -15,7 +15,7 @@ Thanks for wanting to contribute. This file is the short version; the long versi
 git clone https://github.com/sovyx-ai/sovyx.git
 cd sovyx
 uv sync --dev                                    # installs runtime + dev extras
-uv run sovyx --version                           # should print 0.16.0 or newer
+uv run sovyx --version                           # should print a version number
 ```
 
 Dashboard:
@@ -23,7 +23,7 @@ Dashboard:
 ```bash
 cd dashboard
 npm install
-npx vitest run                                   # ~820 tests
+npx vitest run                                   # ~1.3k tests (drifts; trust the CI run)
 npx tsc -b tsconfig.app.json                     # type check
 ```
 
@@ -73,7 +73,7 @@ Everything structural — Python style, async rules, typing, config, logging, er
 - Dashboard: API calls only through `src/lib/api.ts`; token in `sessionStorage`; zod validation on responses; `React.memo` on virtualized rows.
 - Enums with string values: `StrEnum`, never `Enum`.
 
-The **Anti-Patterns** section in `CLAUDE.md` lists 20 concrete footguns we've actually hit — read it end to end before touching plugins, tests, or anything under `src/sovyx/voice/` or `src/sovyx/brain/`.
+The **Anti-Patterns** section in `CLAUDE.md` catalogs every footgun we've actually hit (categorized index by topic — Logging & Config, Imports & Test Patches, Concurrency & Async, Cross-Platform, Voice Subsystem, Tests, Architecture & Design). Read it end to end before touching plugins, tests, or anything under `src/sovyx/voice/` or `src/sovyx/brain/`.
 
 ## Commit messages
 

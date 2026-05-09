@@ -176,6 +176,36 @@ original content is never persisted.
 
 ---
 
+## Cross-mind isolation
+
+Sovyx supports multiple Minds running concurrently in one daemon, each with its
+own SQLite database, voice identity, retention policy, and configuration. The
+isolation contract is enforced both at storage layer (database-per-mind) and at
+runtime — every request that touches per-mind state MUST resolve the active
+`mind_id` at the route boundary, never accept a sentinel default.
+
+Anti-pattern #35 in [`CLAUDE.md`](../CLAUDE.md) documents the failure mode: a
+low-level config field with `mind_id: str = "default"` propagating as a
+sentinel through layers that fail to overwrite it, causing voice / brain /
+calibration state to land under a phantom `"default"` mind even when the
+operator has created `"meu-mind"`. The structural mitigations:
+
+- **Backend:** `dashboard/_shared.resolve_active_mind_id_for_request` queries
+  `MindManager.get_active_minds()` at the route boundary; `voice/factory/__init__.py`
+  emits a `voice.factory.mind_id_default_sentinel` structured WARN when the
+  sentinel reaches the factory (lenient detection, with telemetry).
+- **Frontend:** `useResolvedMindId` hook is the only sanctioned source of
+  `mind_id` in any component. An ESLint rule (`no-restricted-syntax`) blocks
+  literal `"default"` assignments to `mind_id` props.
+- **Property tests:** `tests/property/test_cross_mind_isolation_t820.py`
+  pins cross-mind state isolation under Hypothesis-generated message
+  interleavings.
+
+Operator-set strings (mind names, device names, friendly names) are hashed
+or removed in telemetry per the calibration retention contract below.
+
+---
+
 ## Authentication and tokens
 
 **Dashboard token.** `dashboard/server.py` generates a 32-byte URL-safe token
@@ -308,8 +338,9 @@ defense; the **operational** evidence is:
   AST scanner against arbitrary attacker-generated import graphs.
 
 No bypass has been reported as of v0.30.0. Re-audits at every minor
-version bump are operator-side per
-[`OPERATOR-DEBT-MASTER-2026-05-02.md`](../docs-internal/OPERATOR-DEBT-MASTER-2026-05-02.md).
+version bump are operator-side per the operator-debt master ledger
+(`docs-internal/OPERATOR-DEBT-MASTER-2026-05-03.md`, gitignored — internal
+reference only).
 
 ### Test coverage (T7.46 evidence)
 

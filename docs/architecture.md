@@ -22,6 +22,27 @@ network.
 | CLI | Typer + Rich over JSON-RPC on a Unix socket |
 | Dashboard | React 19 + TypeScript + Vite + Tailwind + Zustand |
 
+## Design Principles
+
+The architectural decisions below derive from the **North Star** in
+[`CLAUDE.md`](../CLAUDE.md):
+
+- **Enterprise-grade — no band-aids AND no over-engineering.** Every layer
+  fixes a real failure mode and stops where marginal value < marginal risk.
+  God files split when responsibilities mix; abstractions arrive on the third
+  call site, not the first.
+- **Zero speculation.** Behavioural claims in this document reference code
+  paths verifiable at HEAD. Forensic detail (incident reports, mission logs)
+  lives in `docs-internal/`.
+- **Staged adoption.** New validators ship LENIENT (log-WARN-don't-raise);
+  flip STRICT only after one minor cycle of telemetry-validated soak.
+- **Local-first, fail-closed.** SQLite is the source of truth; LLM inference
+  is the only step allowed to leave the host. When a check errors rather than
+  explicitly allowing, it denies.
+- **Anti-patterns catalog is canonical.** Every architectural pattern below
+  has a counterpart in the [`CLAUDE.md`](../CLAUDE.md) **Anti-Patterns**
+  section explaining what NOT to do and why.
+
 ## High-Level Data Flow
 
 ```mermaid

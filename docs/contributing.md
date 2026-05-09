@@ -5,7 +5,9 @@ dashboard. It is licensed under **AGPL-3.0-or-later**. By opening a pull
 request you agree your contribution is offered under the same license.
 
 This guide covers local setup, the development workflow, commits, the dashboard
-submodule flow, the release pipeline, and the twelve anti-patterns we track.
+flow, the release pipeline, and points at the anti-patterns catalog in
+[`CLAUDE.md`](../CLAUDE.md) (categorized index by topic; cross-referenced from
+commits and code).
 
 ## Quick start
 
@@ -78,14 +80,14 @@ uv run ruff check src/ tests/
 uv run ruff format --check src/ tests/
 uv run mypy src/                          # strict mode
 uv run bandit -r src/sovyx/ --configfile pyproject.toml
-uv run pytest tests/ --ignore=tests/smoke --timeout=30   # ~7,960 tests, coverage >= 95%
+uv run pytest tests/ --ignore=tests/smoke --timeout=30   # coverage >= 95% (test count drifts)
 ```
 
 ### Dashboard (from `dashboard/`)
 
 ```bash
 npx tsc -b tsconfig.app.json             # zero errors
-npx vitest run                            # ~820 tests
+npx vitest run                            # ~1.3k tests (drifts; trust CI)
 ```
 
 **If any gate fails, fix it before committing. Never skip.** The only
@@ -201,41 +203,15 @@ that requires a migration is at least `MINOR`.
 
 ## Anti-patterns
 
-Twelve bugs we already paid for. If a PR reintroduces any of them, revert and
-link this section.
+Bugs we already paid for live in [`CLAUDE.md`](../CLAUDE.md) under
+**Anti-Patterns**, with a category index (Logging & Config, Imports & Test
+Patches, Concurrency & Async, Cross-Platform, Voice Subsystem, Tests,
+Architecture & Design). The catalog is the canonical source — duplicating it
+here would drift. Read it end-to-end before your first PR. Cross-references
+from commits, code comments, and tests use the entry numbers (e.g. "anti-pattern
+#20 reincidente" in a test patch migration commit).
 
-1. **Circular imports in `observability/__init__.py`.** Use the lazy
-   `__getattr__` pattern; never add eager re-exports.
-2. **`sys.modules` stubs in tests.** Use `monkeypatch.setattr(module, ...)` on
-   an already-imported module, or accept an injection seam in production.
-3. **`LoggingConfig.console_format` vs `format`.** The field is
-   `console_format`. The file handler always writes JSON and is not
-   configurable. Legacy YAML is auto-migrated with a `DeprecationWarning`.
-4. **Hardcoded `log_file` paths.** `LoggingConfig.log_file` defaults to `None`
-   and is resolved by `EngineConfig` to `data_dir/logs/sovyx.log`.
-5. **Dashboard instantiating `EngineConfig()`.** The dashboard must read
-   config from `ServiceRegistry`, not create a new instance.
-6. **Raw `httpx` logs in the console.** `setup_logging()` suppresses `httpx`
-   to WARNING. If you see raw HTTP lines, `setup_logging()` was not called.
-7. **Dashboard `LogEntry` field names.** Required fields are `timestamp`,
-   `level`, `logger`, `event`. The backend normalizes `ts`, `severity`,
-   `message`, and `module`.
-8. **`pytest.raises(InternalClass)` under xdist.** Class identity is not
-   stable under `pytest-xdist`. Use `pytest.raises(Exception)` and assert on
-   `type(exc).__name__`. Production code must not use `isinstance` for
-   exception dispatch either — use the class name.
-9. **Plain `Enum` with string values.** Always inherit from `StrEnum`.
-   Guarantees value-based comparison and survives xdist namespace
-   duplication.
-10. **Monkeypatching auth in tests.** Use `create_app(token="literal")`.
-    Never monkeypatch `_ensure_token` or set the `_server_token` global.
-11. **`patch("dotted.path")`.** String paths resolve to different module
-    objects under xdist. Use `patch.object(imported_module, "function")`.
-12. **Defence-in-depth in tests.** If three layers are patched "to be safe"
-    and the test passes, only one of them is actually doing work. Remove the
-    workaround once the real fix is in.
-
-The same checklist applies to plain `print()` calls, plain
+The same discipline applies to plain `print()` calls, plain
 `logging.getLogger()`, hardcoded filesystem paths, and env vars that skip the
 `SOVYX_` prefix.
 
