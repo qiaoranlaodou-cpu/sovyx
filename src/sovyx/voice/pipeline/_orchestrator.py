@@ -19,7 +19,7 @@ from sovyx.voice._speaker_consistency import (
 from sovyx.voice.health._metrics import (
     record_time_to_first_utterance,
 )
-from sovyx.voice.jarvis import JarvisConfig, JarvisIllusion, split_at_boundaries
+from sovyx.voice.jarvis import JarvisConfig, JarvisIllusion
 from sovyx.voice.pipeline._barge_in import BargeInDetector
 from sovyx.voice.pipeline._bypass_coordinator_mixin import BypassCoordinatorMixin
 from sovyx.voice.pipeline._config import VoicePipelineConfig, validate_config
@@ -30,15 +30,12 @@ from sovyx.voice.pipeline._events import (
     SpeechStartedEvent,
     TranscriptionCompletedEvent,
     TTSCompletedEvent,
-    TTSStartedEvent,
     WakeWordDetectedEvent,
 )
 from sovyx.voice.pipeline._frame_recording_mixin import FrameRecordingMixin
 from sovyx.voice.pipeline._frame_types import (
     EndFrame,
-    LLMFullResponseEndFrame,
     LLMFullResponseStartFrame,
-    OutputAudioRawFrame,
     TranscriptionFrame,
     UserStartedSpeakingFrame,
     UserStoppedSpeakingFrame,
@@ -74,6 +71,10 @@ from sovyx.voice.pipeline._heartbeat_mixin import HeartbeatMixin
 from sovyx.voice.pipeline._listener_wireup_mixin import ListenerWireupMixin
 from sovyx.voice.pipeline._output_queue import AudioOutputQueue
 from sovyx.voice.pipeline._public_accessors_mixin import PublicAccessorsMixin
+from sovyx.voice.pipeline._speech_streaming_mixin import (  # noqa: F401 — back-compat re-export
+    _CONSECUTIVE_TTS_FAILURE_THRESHOLD as _CONSECUTIVE_TTS_FAILURE_THRESHOLD,
+)
+from sovyx.voice.pipeline._speech_streaming_mixin import SpeechStreamingMixin
 from sovyx.voice.pipeline._state import VoicePipelineState
 from sovyx.voice.pipeline._state_machine import PipelineStateMachine
 from sovyx.voice.pipeline._tts_cancel_chain_mixin import (  # noqa: F401 — back-compat re-exports for start/stop + tests
@@ -219,7 +220,8 @@ _VAD_INFERENCE_TIMEOUT_WARN_INTERVAL_S = (
 # with start/stop's existing usage + test sites.
 
 
-_CONSECUTIVE_TTS_FAILURE_THRESHOLD = _VoiceTuning().pipeline_consecutive_tts_failure_threshold
+# ``_CONSECUTIVE_TTS_FAILURE_THRESHOLD`` moved to ``_speech_streaming_mixin.py``
+# alongside ``stream_text``. Re-exported above for back-compat with tests.
 """Mission Phase 1 / T1.21 — streaming TTS abort threshold. See
 ``VoiceTuningConfig.pipeline_consecutive_tts_failure_threshold`` for
 the canonical schema with bound-validators."""
@@ -240,6 +242,7 @@ _SPEAKER_CONSISTENCY_ENABLED = _VoiceTuning().pipeline_speaker_consistency_enabl
 
 
 class VoicePipeline(
+    SpeechStreamingMixin,
     PublicAccessorsMixin,
     TtsCancelChainMixin,
     BypassCoordinatorMixin,
@@ -1866,411 +1869,17 @@ class VoicePipeline(
 
     # -- TTS / speaking interface (called by CogLoop) -----------------------
 
-    def _emit_llm_full_response_end_frame(self, output_chars: int) -> None:
-        """Emit :class:`LLMFullResponseEndFrame` at the THINKING → SPEAKING boundary.
-
-        v0.32.3 Phase 3.B.1 — closes audit gap P0.B2. Pre-fix the End
-        frame was defined in :mod:`_frame_types` but had zero emit
-        sites; dashboards never saw the THINKING-span close so LLM-
-        side latency couldn't be rendered without correlating against
-        the LLM router's own logs.
-
-        Emit semantics:
-            * ``output_chars`` — rough character length of the LLM
-              response handed to TTS (full text for ``speak()``;
-              ``len(text_buffer)`` for ``flush_stream()``).
-            * ``elapsed_ms`` — clock-monotonic delta between the
-              matching :class:`LLMFullResponseStartFrame` (set by
-              ``_llm_thinking_start_monotonic`` at the THINKING entry)
-              and the End frame's emission. ``0`` when no THINKING
-              phase preceded the speak (proactive cogloop initiative).
-            * Suppressed entirely when ``_llm_thinking_start_monotonic``
-              is ``None`` to avoid emitting a misleading "End" frame
-              for a turn that had no observable "Start" — matches the
-              ring buffer's start-end-frame pairing contract that
-              dashboards rely on for the SPEAKING-after-THINKING span.
-
-        Once emitted, ``_llm_thinking_start_monotonic`` is cleared so
-        a follow-up speak/flush in the same turn doesn't double-emit.
-        The next THINKING entry resets the anchor for the next turn.
-        """
-        if self._llm_thinking_start_monotonic is None:
-            return
-        now_monotonic = time.monotonic()
-        elapsed_ms = max(
-            0,
-            int((now_monotonic - self._llm_thinking_start_monotonic) * 1000),
-        )
-        self._record_frame(
-            LLMFullResponseEndFrame(
-                frame_type="LLMFullResponseEnd",
-                timestamp_monotonic=now_monotonic,
-                output_chars=output_chars,
-                elapsed_ms=elapsed_ms,
-            ),
-        )
-        self._llm_thinking_start_monotonic = None
-
-    async def speak(self, text: str) -> None:
-        """Synthesize and play text (called by CogLoop.act).
-
-        Args:
-            text: Text to speak.
-        """
-        # v0.32.3 Phase 3.B.1 — emit the LLMFullResponseEndFrame BEFORE
-        # the SPEAKING transition so the frame ring buffer reflects
-        # THINKING-end → SPEAKING-start in temporal order. Helper is a
-        # no-op when no preceding THINKING phase fired (proactive
-        # cogloop speak), preserving the start-end pairing contract.
-        self._emit_llm_full_response_end_frame(output_chars=len(text))
-        self._state = VoicePipelineState.SPEAKING
-        # Step 13 frame emission — TTS speak boundary. Per-chunk
-        # OutputAudioRawFrame frames will be emitted as chunks land
-        # in the output queue (subsequent commit). Here we record
-        # the speak entry as a chunk_index=0 marker so the
-        # frame_history reflects the full SPEAKING span.
-        self._record_frame(
-            OutputAudioRawFrame(
-                frame_type="OutputAudioRaw",
-                timestamp_monotonic=time.monotonic(),
-                chunk_index=0,
-                pcm_bytes=0,
-                sample_rate=0,
-                synthesis_health="speak_started",
-            ),
-        )
-        if self._self_feedback_gate is not None:
-            self._self_feedback_gate.on_tts_start()
-        # External proactive ``speak`` (e.g. cognitive layer's
-        # initiative) without a preceding wake/recording mints its
-        # own trace id so dashboards still get a per-turn span set;
-        # an existing id from the wake → STT → think chain is
-        # preserved (single logical utterance).
-        utterance_id = self._current_utterance_id or self._mint_new_utterance_id()
-        await self._emit(
-            TTSStartedEvent(
-                mind_id=self._config.mind_id,
-                utterance_id=utterance_id,
-            )
-        )
-
-        try:
-            chunk = await self._synthesize_tracked(text)
-            await self._output.play_immediate(chunk)
-        except (VoiceError, RuntimeError, OSError) as exc:
-            # TTS backends (Piper, Kokoro, cloud) share the same
-            # failure profile as STT — typed subsystem errors, ONNX
-            # runtime failures, and I/O. Emit a pipeline error event
-            # so the cognitive loop knows the utterance didn't speak.
-            logger.error(
-                "TTS failed",
-                error=str(exc),
-                exc_info=True,
-                **{"voice.utterance_id": utterance_id},
-            )
-            await self._emit(
-                PipelineErrorEvent(
-                    mind_id=self._config.mind_id,
-                    error=f"TTS failed: {exc}",
-                    utterance_id=utterance_id,
-                )
-            )
-        finally:
-            self._state = VoicePipelineState.IDLE
-            if self._self_feedback_gate is not None:
-                self._self_feedback_gate.on_tts_end()
-            await self._emit(
-                TTSCompletedEvent(
-                    mind_id=self._config.mind_id,
-                    utterance_id=utterance_id,
-                )
-            )
-            self._clear_utterance_id()
-
-    async def stream_text(self, text_chunk: str) -> None:
-        """Stream text from LLM to TTS for speculative synthesis.
-
-        Called by CogLoop as LLM tokens arrive.  Accumulates text and
-        synthesizes at sentence boundaries (Jarvis Illusion §3).
-
-        Args:
-            text_chunk: Partial LLM output text.
-        """
-        if self._state != VoicePipelineState.SPEAKING:
-            self._state = VoicePipelineState.SPEAKING
-            if self._self_feedback_gate is not None:
-                self._self_feedback_gate.on_tts_start()
-            # Streaming path mints a trace id only when the cognitive
-            # layer fed text without a preceding wake/STT chain. The
-            # common path is wake → STT → THINKING → stream_text,
-            # where ``_current_utterance_id`` is already set from
-            # the wake-word mint.
-            utterance_id = self._current_utterance_id or self._mint_new_utterance_id()
-            await self._emit(
-                TTSStartedEvent(
-                    mind_id=self._config.mind_id,
-                    utterance_id=utterance_id,
-                )
-            )
-
-        # Cancel filler if still pending
-        if not self._first_token_event.is_set():
-            self._first_token_event.set()
-
-        self._text_buffer += text_chunk
-        segments = split_at_boundaries(self._text_buffer)
-
-        # Synthesize all complete segments
-        for segment in segments[:-1]:
-            try:
-                chunk = await self._synthesize_tracked(segment)
-                await self._output.enqueue(chunk)
-                # T1.39 — observe the spectral-centroid drift on every
-                # successfully-emitted chunk. The DSP runs in a worker
-                # thread (CLAUDE.md anti-pattern #14 — keep CPU-bound
-                # work off the asyncio loop, even sub-millisecond
-                # bursts). On drift the WARN + PipelineErrorEvent
-                # mirror the T1.36 / T1.19 / T1.20 pattern; no
-                # automatic fallback (operator-disruptive without
-                # explicit opt-in). Skipped entirely when the gate is
-                # disabled so resource-constrained deployments pay
-                # zero DSP cost.
-                await self._observe_speaker_drift(chunk)
-                # Mission Phase 1 / T1.21 — successful segment resets
-                # the consecutive-failure counter so a transient
-                # hiccup mid-stream doesn't poison the rest of the
-                # response. Inlined here (rather than in a try-else
-                # clause) because the try block also has an
-                # ``except asyncio.CancelledError`` clause and Python
-                # forbids ``else`` between ``except`` clauses.
-                # v0.31.7 T3.5 (LOW.4) — guard with the failure-counter
-                # lock so a future parallel stream_text caller can't
-                # race the read+write across awaits.
-                async with self._tts_segment_failure_lock:
-                    self._consecutive_tts_segment_failures = 0
-            except (VoiceError, RuntimeError, OSError) as exc:
-                # Per-segment resilience during streaming: skip the
-                # bad segment, keep speaking the rest. Traceback
-                # preserved so persistent TTS failures don't hide.
-                logger.warning(
-                    "Stream TTS failed",
-                    error=str(exc),
-                    exc_info=True,
-                )
-                # Mission Phase 1 / T1.21 — track consecutive failures
-                # and abort the stream when the TTS backend is wedged
-                # (model corrupt, runtime OOM, infinite-loop bug).
-                # Pre-T1.21 the loop kept iterating forever burning
-                # compute on every incoming LLM segment with no
-                # audible output. ``_consecutive_tts_segment_failures``
-                # resets on the first successful segment below.
-                # v0.31.7 T3.5 (LOW.4) — guard increment + threshold
-                # check with the failure-counter lock so a future
-                # parallel stream_text caller can't race the read+write.
-                async with self._tts_segment_failure_lock:
-                    self._consecutive_tts_segment_failures += 1
-                    threshold_crossed = (
-                        self._consecutive_tts_segment_failures
-                        >= _CONSECUTIVE_TTS_FAILURE_THRESHOLD
-                    )
-                if threshold_crossed:
-                    buffered_chars = len(self._text_buffer)
-                    self._text_buffer = ""
-                    logger.error(
-                        "voice.tts.stream_aborted_consecutive_failures",
-                        **{
-                            "voice.mind_id": self._config.mind_id,
-                            "voice.consecutive_failures": (self._consecutive_tts_segment_failures),
-                            "voice.threshold": _CONSECUTIVE_TTS_FAILURE_THRESHOLD,
-                            "voice.last_error": str(exc)[:200],
-                            "voice.last_error_type": type(exc).__name__,
-                            "voice.buffered_text_chars_dropped": buffered_chars,
-                            "voice.action_required": (
-                                "TTS backend produced consecutive errors. "
-                                "Check the engine state (Piper model file "
-                                "integrity, Kokoro ONNX session, or cloud "
-                                "endpoint reachability via `sovyx doctor "
-                                "voice`). Stream aborted to release the "
-                                "cognitive layer; the next utterance will "
-                                "rebuild from a clean state."
-                            ),
-                        },
-                    )
-                    await self._emit(
-                        PipelineErrorEvent(
-                            mind_id=self._config.mind_id,
-                            error=(
-                                f"stream_aborted_consecutive_failures "
-                                f"(count={self._consecutive_tts_segment_failures}, "
-                                f"last={type(exc).__name__})"
-                            ),
-                            utterance_id=self._current_utterance_id,
-                        )
-                    )
-                    # Reset counter so the next stream_text call
-                    # starts clean — the abort already broke the
-                    # current stream's contract with the caller.
-                    # v0.31.7 T3.5 (LOW.4) — same lock as above.
-                    async with self._tts_segment_failure_lock:
-                        self._consecutive_tts_segment_failures = 0
-                    return
-            except asyncio.CancelledError:
-                # T1 barge-in cancelled this segment via
-                # cancel_speech_chain. Stop iterating and let the
-                # next turn re-establish the LLM stream — the
-                # remaining segments belong to a discarded utterance.
-                #
-                # Mission Phase 1 / T1.15 — clear ``_text_buffer``
-                # directly in this handler. Pre-T1.15 the cleanup was
-                # assumed via cancel_speech_chain step 5, but this
-                # path can be reached without the chain running
-                # (cognitive-layer task cancellation, event-loop
-                # shutdown). Clearing locally makes the cleanup
-                # invariant hold regardless of which cancel source
-                # fired. ``cancel_speech_chain`` step 5 stays as the
-                # belt-and-suspenders cleanup for paths that don't
-                # touch ``stream_text`` at all.
-                buffered_chars = len(self._text_buffer)
-                self._text_buffer = ""
-                logger.info(
-                    "voice.tts.stream_text_cancelled",
-                    mind_id=self._config.mind_id,
-                    buffered_text_chars=buffered_chars,
-                )
-                return
-
-        # Keep incomplete segment in buffer
-        self._text_buffer = segments[-1] if segments else ""
-
-    async def flush_stream(self) -> None:
-        """Flush remaining buffered text to TTS.
-
-        Call when the LLM stream ends to synthesize the last segment.
-
-        T1.34 — every cancellation path in this method now interrupts
-        the output queue before exiting. Pre-T1.34 the
-        ``except asyncio.CancelledError`` in the synthesize block
-        cleared the text buffer but left any audio already enqueued by
-        prior chunks of the streaming session sitting in the output
-        queue, and a cancellation landing on the final
-        ``await self._output.drain()`` likewise leaked queued audio.
-        ``cancel_speech_chain`` always interrupts the output queue at
-        step 1 BEFORE it cancels in-flight tasks (step 2), so the
-        normal barge-in path was already covered transitively. T1.34
-        closes the off-path cases — asyncio loop teardown during
-        daemon shutdown, an external task cancelling the flush via
-        ``task.cancel()`` without going through ``cancel_speech_chain``
-        — by making the interrupt explicit here. Belt + suspenders;
-        ``interrupt()`` is idempotent so the upstream
-        ``cancel_speech_chain`` path is unaffected.
-
-        v0.32.3 Phase 3.B.1 — emit :class:`LLMFullResponseEndFrame`
-        on entry. This is the canonical "LLM done generating" signal
-        for the streaming path: ``stream_text`` is called per-chunk
-        and can't tell which chunk is the last, so the cognitive
-        bridge invokes ``flush_stream`` once the LLM router signals
-        completion. The frame's ``output_chars`` reports the residual
-        buffer length (the chunks already synthesised landed in the
-        per-chunk ``OutputAudioRawFrame`` ring); dashboards correlate
-        the End frame's ``elapsed_ms`` with the matching Start frame
-        to render LLM-side latency.
-        """
-        # v0.32.3 Phase 3.B.1 — close the THINKING-span observability
-        # by emitting the matching End frame even if the residual
-        # buffer is empty (LLM streamed to clean sentence boundaries).
-        # Helper is a no-op when no THINKING phase preceded
-        # (proactive flush from cogloop initiative).
-        self._emit_llm_full_response_end_frame(
-            output_chars=len(self._text_buffer),
-        )
-        if self._text_buffer.strip():
-            try:
-                chunk = await self._synthesize_tracked(self._text_buffer)
-                await self._output.enqueue(chunk)
-            except asyncio.CancelledError:
-                # T1: cancelled by cancel_speech_chain mid-flush —
-                # discard the tail (the user already barged in) and
-                # let the next turn rebuild from a clean buffer.
-                self._text_buffer = ""
-                # T1.34 — clear any audio already enqueued during this
-                # flush_stream call so the next utterance starts with
-                # an empty output queue. ``interrupt()`` is idempotent
-                # against the cancel_speech_chain step-1 interrupt that
-                # routed us here in the barge-in case; on off-path
-                # cancellations (loop teardown, direct task.cancel())
-                # this is the ONLY interrupt that runs.
-                with contextlib.suppress(Exception):
-                    self._output.interrupt()
-                logger.info(
-                    "voice.tts.flush_cancelled",
-                    mind_id=self._config.mind_id,
-                )
-                return
-            except (VoiceError, RuntimeError, OSError) as exc:
-                # Final-segment flush — losing this tail means the
-                # user hears an abrupt cut, but the loop advances.
-                # Traceback on warning so a broken TTS config surfaces.
-                logger.warning(
-                    "Flush TTS failed",
-                    error=str(exc),
-                    exc_info=True,
-                )
-        self._text_buffer = ""
-
-        # Drain all queued audio
-        try:
-            await self._output.drain()
-        except asyncio.CancelledError:
-            # T1.34 — drain was cancelled mid-flight. Clear remaining
-            # audio (drain WAITS for playback to finish; it does not
-            # itself empty the queue, so a cancel here leaves the
-            # queue non-empty). Interrupt + re-raise so the cancellation
-            # still propagates to the caller.
-            with contextlib.suppress(Exception):
-                self._output.interrupt()
-            raise
-
-        completed_utterance_id = self._current_utterance_id
-        self._state = VoicePipelineState.IDLE
-        if self._self_feedback_gate is not None:
-            self._self_feedback_gate.on_tts_end()
-        await self._emit(
-            TTSCompletedEvent(
-                mind_id=self._config.mind_id,
-                utterance_id=completed_utterance_id,
-            )
-        )
-        self._clear_utterance_id()
-
-    async def start_thinking(self) -> None:
-        """Start the thinking phase — initiate filler timer.
-
-        Call this when CogLoop begins processing (before LLM tokens arrive).
-        If the LLM doesn't respond within ``filler_delay_ms``, a filler
-        phrase is played.
-
-        v0.31.7 T3.1 (M4) — cancels any previous ``_filler_task`` BEFORE
-        spawning the new one. Pre-T3.1 a rapid double-call (proactive
-        cogloop initiative racing a wake-driven turn) overwrote the
-        attribute without cancelling the prior task; the orphan kept
-        running and its ``play_filler_after_delay`` could enqueue audio
-        during the next turn. ``_cancel_filler`` is idempotent — safe
-        to call when no task is in flight.
-        """
-        self._state = VoicePipelineState.THINKING
-        self._first_token_event.clear()
-
-        # v0.31.7 T3.1 — guard against a rapid second start_thinking
-        # before the prior filler completed. The cancel is sync + cheap
-        # (just task.cancel()); the cancelled task drains on the next
-        # event loop tick.
-        self._cancel_filler()
-
-        if self._config.fillers_enabled:
-            self._filler_task = spawn(
-                self._jarvis.play_filler_after_delay(self._output, self._first_token_event),
-                name="voice-pipeline-filler",
-            )
+    # SPEECH STREAMING extracted to _speech_streaming_mixin.py
+    # _emit_llm_full_response_end_frame + speak + stream_text +
+    # flush_stream + start_thinking (5 methods) now live on
+    # SpeechStreamingMixin, mounted via the multi-mixin host above.
+    # Methods stay accessible via instance dispatch through MRO. The
+    # mixin makes 7 cross-mixin calls (record_frame + mint/clear
+    # utterance + emit + synthesize_tracked + observe_speaker_drift +
+    # cancel_filler), all forward-declared in its TYPE_CHECKING block
+    # so MRO resolves to FrameRecording / UtteranceIdentity /
+    # TtsCancelChain mixins at runtime. Anti-pattern #16 / #32 case
+    # (b) Phase 5.F.27.
 
     # -- Internal helpers ----------------------------------------------------
 
