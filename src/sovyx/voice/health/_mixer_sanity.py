@@ -29,35 +29,17 @@ See V2 Master Plan Part C.1 (placement), C.2 (state machine), E.1
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import contextvars
 import sys
-import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Protocol, TypeAlias
 
 from sovyx.observability.logging import get_logger
 from sovyx.voice.health._half_heal_recovery import (
-    clear_wal as _clear_half_heal_wal,
-)
-from sovyx.voice.health._half_heal_recovery import (
     recover_if_present as _recover_half_heal_if_present,
 )
 from sovyx.voice.health._linux_mixer_apply import (
-    apply_mixer_preset as _default_apply_mixer_preset,
-)
-from sovyx.voice.health._linux_mixer_apply import (
     restore_mixer_snapshot as _default_restore_mixer_snapshot,
-)
-from sovyx.voice.health._linux_mixer_probe import (
-    enumerate_alsa_mixer_snapshots as _default_mixer_probe,
-)
-from sovyx.voice.health.contract import (
-    Diagnosis,
-    MixerControlRole,
-    MixerSanityDecision,
-    MixerSanityResult,
-    MixerValidationMetrics,
 )
 
 if TYPE_CHECKING:
@@ -74,8 +56,11 @@ if TYPE_CHECKING:
         HardwareContext,
         MixerApplySnapshot,
         MixerCardSnapshot,
+        MixerControlRole,
         MixerControlSnapshot,
         MixerPresetSpec,
+        MixerSanityResult,
+        MixerValidationMetrics,
     )
 
 logger = get_logger(__name__)
@@ -500,212 +485,11 @@ async def check_and_maybe_heal(
         _L25_INSIDE.reset(token)
 
 
-def _reentrant_result() -> MixerSanityResult:
-    """Terminal record for a blocked recursive entry.
-
-    Shape mirrors :func:`_defer_platform_result` — zero side-effects,
-    explicit error token so telemetry + dashboard can surface the
-    guard firing as a distinct event from "real" L2.5 failures.
-    """
-    return MixerSanityResult(
-        decision=MixerSanityDecision.ERROR,
-        diagnosis_before=Diagnosis.UNKNOWN,
-        diagnosis_after=None,
-        regime="unknown",
-        matched_kb_profile=None,
-        kb_match_score=0.0,
-        user_customization_score=0.0,
-        cards_probed=(),
-        controls_modified=(),
-        rollback_snapshot=None,
-        probe_duration_ms=0,
-        apply_duration_ms=None,
-        validation_passed=None,
-        validation_metrics=None,
-        remediation=None,
-        error="MIXER_SANITY_REENTRANT_GUARD",
-    )
-
-
-async def _check_and_maybe_heal_impl(
-    endpoint: CandidateEndpoint,
-    hw: HardwareContext,
-    *,
-    kb_lookup: MixerKBLookup,
-    role_resolver: MixerControlRoleResolver,
-    validation_probe_fn: ValidationProbeFn,
-    tuning: VoiceTuningConfig,
-    mixer_probe_fn: MixerProbeFn | None = None,
-    mixer_apply_fn: MixerApplyFn | None = None,
-    mixer_restore_fn: MixerRestoreFn | None = None,
-    persist_fn: PersistFn | None = None,
-    telemetry: _TelemetryProto | None = None,
-    combo_store: ComboStore | None = None,
-    capture_overrides: CaptureOverrides | None = None,
-    half_heal_wal_path: Path | None = None,
-) -> MixerSanityResult:
-    """Actual state-machine body. Callers must acquire ``_get_l25_lock()``
-    and set the reentrancy contextvar before invoking this — the
-    public entry point :func:`check_and_maybe_heal` does both."""
-
-    ctx = _OrchestratorContext(
-        endpoint=endpoint,
-        hw=hw,
-        tuning=tuning,
-        start_time_s=time.monotonic(),
-        mixer_probe_fn=mixer_probe_fn if mixer_probe_fn is not None else _default_mixer_probe,
-        mixer_apply_fn=mixer_apply_fn
-        if mixer_apply_fn is not None
-        else _default_apply_mixer_preset,
-        mixer_restore_fn=mixer_restore_fn
-        if mixer_restore_fn is not None
-        else _default_restore_mixer_snapshot,
-        kb_lookup=kb_lookup,
-        role_resolver=role_resolver,
-        validation_probe_fn=validation_probe_fn,
-        persist_fn=persist_fn if persist_fn is not None else default_persist_via_alsactl,
-        telemetry=telemetry if telemetry is not None else _NoopTelemetry(),
-        telemetry_was_provided=telemetry is not None,
-        combo_store=combo_store,
-        capture_overrides=capture_overrides,
-        half_heal_wal_path=half_heal_wal_path,
-    )
-
-    orchestrator = _SanityOrchestrator(ctx)
-    # Paranoid-QA R2 CRITICAL #3 — preserve the originating
-    # ``CancelledError`` across telemetry recording. A naked ``raise``
-    # inside the ``except asyncio.CancelledError`` handler skips the
-    # build_result + record_mixer_sanity_outcome that sits after this
-    # try/except, so the shutdown cascade drops the partial L2.5
-    # outcome. Instead we stash the exception, let telemetry record,
-    # then re-raise below.
-    cancel_exc: BaseException | None = None
-    try:
-        await orchestrator.run()
-    except asyncio.CancelledError as exc:
-        cancel_exc = exc
-        # Paranoid-QA R4 HIGH-2: skip rollback when validation had
-        # already passed. A cancel during ``_step_persist`` fires
-        # AFTER apply+validate have succeeded — the mixer is in a
-        # good state, only the ``alsactl store`` persistence was
-        # interrupted. Rolling back now would drop the user from a
-        # validated-healthy mixer back to the pre-apply (broken)
-        # state purely because the persist subprocess got
-        # interrupted. The persist is recoverable on next boot
-        # (``alsactl restore`` loads the last stored state; the
-        # kernel still holds the live apply).
-        #
-        # Skip rollback iff (a) validation passed AND (b) apply
-        # committed. Otherwise fall through to the best-effort
-        # rollback — a cancel during apply / validate MUST still
-        # revert since the mixer is in a partial-apply or
-        # invalid-validate state.
-        skip_rollback = ctx.validation_passed is True and ctx.apply_snapshot is not None
-        if not skip_rollback:
-            # Best-effort rollback. If the caller double-cancels
-            # and rollback itself raises CancelledError, we still
-            # want to reach the telemetry recorder — swallow here
-            # and re-raise the *original* below.
-            with contextlib.suppress(asyncio.CancelledError):
-                await orchestrator.rollback_if_needed()
-        else:
-            logger.info(
-                "mixer_sanity_cancel_during_persist_retained_heal",
-                endpoint_guid=endpoint.endpoint_guid,
-                note=(
-                    "cancel fired after validation passed — mixer "
-                    "is in a healthy state, skipping rollback; the "
-                    "persist subprocess was interrupted but apply "
-                    "+ validation already committed"
-                ),
-            )
-        ctx.decision = MixerSanityDecision.ERROR
-        ctx.error_token = "MIXER_SANITY_CANCELLED"
-    except Exception as exc:  # noqa: BLE001 — "Exception" not "BaseException" post-QA
-        # Paranoid-QA CRITICAL #1 / HIGH #1: narrowed from BaseException
-        # so KeyboardInterrupt / SystemExit propagate to the caller.
-        # CancelledError is a direct BaseException subclass (Python 3.8+
-        # moved it off Exception) so this ``except Exception`` correctly
-        # does NOT catch Cancelled / KeyboardInterrupt / SystemExit.
-        logger.exception(
-            "mixer_sanity_unexpected_error",
-            endpoint_guid=endpoint.endpoint_guid,
-            error_type=type(exc).__name__,
-        )
-        await orchestrator.rollback_if_needed()
-        ctx.decision = MixerSanityDecision.ERROR
-        ctx.error_token = "MIXER_SANITY_UNEXPECTED_ERROR"
-
-    result = orchestrator.build_result()
-    # ── Late-bind telemetry (Paranoid-QA CRITICAL #9 + R2 CRITICAL #4) ──
-    #
-    # The module-level singleton is consulted only when the caller did
-    # NOT explicitly inject a telemetry. An explicit
-    # ``_NoopTelemetry()`` injection (common in tests) must survive
-    # this branch — isinstance() alone can't tell "default noop" from
-    # "explicit noop", hence the ``telemetry_was_provided`` sentinel.
-    final_telemetry: _TelemetryProto = ctx.telemetry
-    if not ctx.telemetry_was_provided:
-        from sovyx.voice.health._telemetry import (  # noqa: PLC0415 — late-bound singleton lookup
-            get_telemetry,
-        )
-
-        late = get_telemetry()
-        if late is not None:
-            final_telemetry = late
-    # Telemetry recording MUST NOT shadow the real exit. A broken
-    # recorder (network down, serialization bug, clock skew) should
-    # log and move on — the orchestrator's result is authoritative.
-    try:
-        final_telemetry.record_mixer_sanity_outcome(
-            decision=result.decision.value,
-            matched_profile=result.matched_kb_profile,
-            score=result.kb_match_score,
-            is_user_contributed=(ctx.kb_match is not None and ctx.kb_match.is_user_contributed),
-        )
-    except Exception:  # noqa: BLE001 — never let telemetry mask a real outcome
-        logger.exception(
-            "mixer_sanity_telemetry_record_failed",
-            endpoint_guid=endpoint.endpoint_guid,
-            decision=result.decision.value,
-        )
-
-    # Paranoid-QA R2 HIGH #3 — clear the half-heal WAL on every
-    # terminal transition (success, rollback, error, cancel). By
-    # the time we reach here, either apply committed fully +
-    # persist ran (HEALED), or rollback ran (ROLLED_BACK / ERROR),
-    # or we never applied at all (SKIPPED / DEFERRED). In all
-    # cases the WAL is stale and must be cleared so the next
-    # cascade doesn't attempt a spurious recovery. The
-    # ``clear_wal`` helper is idempotent and never raises.
-    #
-    # Paranoid-QA R3 CRIT-3 amendment: preserve the WAL when
-    # ``rollback_failed`` is True. In that path the in-process
-    # restore raised — the mixer is stuck in the applied state
-    # and the NEXT boot's ``recover_if_present`` needs the WAL on
-    # disk to retry the restore via a fresh ``restore_fn``. If we
-    # cleared the WAL here, the stuck-mixer would persist until
-    # the user manually intervenes.
-    if ctx.half_heal_wal_path is not None and not ctx.rollback_failed:
-        _clear_half_heal_wal(ctx.half_heal_wal_path)
-    elif ctx.rollback_failed and ctx.half_heal_wal_path is not None:
-        logger.warning(
-            "mixer_sanity_wal_preserved_for_next_boot_recovery",
-            endpoint_guid=endpoint.endpoint_guid,
-            wal_path=str(ctx.half_heal_wal_path),
-            note=(
-                "rollback_fn raised during in-process restore; WAL "
-                "retained so the next cascade's recovery path retries "
-                "the restore via a fresh restore_fn"
-            ),
-        )
-
-    if cancel_exc is not None:
-        raise cancel_exc
-    return result
-
-
-
+# Phase 5.F.15 god-file split: _reentrant_result + _check_and_maybe_heal_impl
+# (~205 LOC) extracted to _mixer_sanity_orchestrator.py (their natural home —
+# they instantiate _OrchestratorContext + _SanityOrchestrator). Re-exported
+# here so the public entry point check_and_maybe_heal continues to call
+# _check_and_maybe_heal_impl via parent's module namespace.
 # Phase 5.F.12 god-file split: 4 pure helpers (~85 LOC) extracted
 # to _mixer_sanity_helpers.py. Re-exported here so the in-class
 # call sites resolve via standard module-namespace lookup.
@@ -723,6 +507,10 @@ from sovyx.voice.health._mixer_sanity_helpers import (  # noqa: E402  F401
     _classify_regime_heuristically,
     _defer_platform_result,
     _diagnosis_for_regime,
+)
+from sovyx.voice.health._mixer_sanity_orchestrator import (  # noqa: E402  F401
+    _check_and_maybe_heal_impl,
+    _reentrant_result,
 )
 
 # Phase 5.F.8 god-file split: default-persist (alsactl + systemd unit
