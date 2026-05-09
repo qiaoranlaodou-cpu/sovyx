@@ -28,7 +28,6 @@ from __future__ import annotations
 
 from sovyx.observability.metrics import get_metrics
 
-
 # ── Phase 7 / T7.1 — wake-word latency profile ─────────────────────────
 
 

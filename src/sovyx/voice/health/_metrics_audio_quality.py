@@ -27,7 +27,6 @@ from __future__ import annotations
 
 from sovyx.observability.metrics import get_metrics
 
-
 # ── Stable name constants (test-friendly) ───────────────────────────
 # The OTel instrument names. Tests assert on these so a typo in the
 # registry definition fails loudly. Names are immutable — any rename
