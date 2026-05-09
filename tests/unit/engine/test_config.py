@@ -1004,20 +1004,17 @@ class TestVoiceTuningT128Migration:
         assert cfg.pipeline_vad_inference_timeout_seconds == 0.5
 
 
-class TestDeprecatedMixerOverridesWarning:
-    """Mission §9.1.1 / Gap 1b — deprecation surface for the four
-    ``linux_mixer_*_fraction`` knobs scheduled for removal in v0.24.0.
+class TestDeprecatedMixerKnobsRemovedFromConfig:
+    """Phase 5.C v0.32.6 — the four ``linux_mixer_*_fraction`` knobs
+    were removed from :class:`VoiceTuningConfig`; their values now
+    live as module-level constants in ``voice/health/_linux_mixer_apply.py``.
 
-    The contract: a stock install (no overrides) emits ZERO WARNs; an
-    operator who set a non-default value via env or constructor kwarg
-    gets ONE structured WARN per non-default knob, AND the function
-    returns the canonical roster-order tuple of triggered fields so
-    dashboards can render the "deprecated knobs in use" badge
-    deterministically. Tests assert on the public return contract +
-    a spy on the structlog ``logger.warning`` invocation count, which
-    is invariant across the structlog → stdlib bridge configuration
-    state (caplog under the project's structlog setup is sensitive to
-    import order and processor configuration; the spy is not).
+    Regression contract: stale env overrides MUST be silently
+    ignored (pydantic-settings ``extra="ignore"``) so operator's
+    legacy YAML or shell rc continues to boot. The
+    ``warn_on_deprecated_mixer_overrides`` helper + the
+    ``_DEPRECATED_MIXER_FRACTIONS`` roster MUST be gone (no
+    re-export, no public surface remains).
     """
 
     @staticmethod
@@ -1026,144 +1023,67 @@ class TestDeprecatedMixerOverridesWarning:
             if key.startswith("SOVYX_TUNING__VOICE__"):
                 monkeypatch.delenv(key, raising=False)
 
-    def test_default_install_emits_no_warns(
+    def test_deprecated_fields_no_longer_declared(
         self,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """A fresh install with no env / yaml overrides emits zero
-        deprecation WARNs — operators must not see noise."""
-        from unittest.mock import MagicMock, patch
-
-        from sovyx.engine import config as config_mod
-        from sovyx.engine.config import VoiceTuningConfig, warn_on_deprecated_mixer_overrides
+        """The four removed fields MUST NOT appear on
+        :class:`VoiceTuningConfig` model fields."""
+        from sovyx.engine.config import VoiceTuningConfig
 
         self._clear_voice_env(monkeypatch)
-        spy = MagicMock()
-        with patch.object(config_mod, "get_logger", return_value=spy, create=True):
-            triggered = warn_on_deprecated_mixer_overrides(VoiceTuningConfig())
-        assert triggered == ()
-        spy.warning.assert_not_called()
-
-    def test_single_override_emits_single_warn(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        """Setting ONE non-default value triggers one WARN naming
-        only that field. Other defaulted fields stay silent."""
-        from unittest.mock import MagicMock, patch
-
-        from sovyx.engine.config import VoiceTuningConfig, warn_on_deprecated_mixer_overrides
-        from sovyx.observability import logging as logging_mod
-
-        self._clear_voice_env(monkeypatch)
-        cfg = VoiceTuningConfig(linux_mixer_capture_reset_fraction=0.7)
-        spy = MagicMock()
-        with patch.object(logging_mod, "get_logger", return_value=spy):
-            triggered = warn_on_deprecated_mixer_overrides(cfg)
-        assert triggered == ("linux_mixer_capture_reset_fraction",)
-        assert spy.warning.call_count == 1
-        # The structured event name + key fields are passed as kwargs
-        # to ``logger.warning(event_name, **labels)``.
-        call = spy.warning.call_args
-        assert call.args[0] == "voice.config.deprecated_mixer_fraction_in_use"
-        kwargs = call.kwargs
-        assert kwargs["voice.config.field"] == "linux_mixer_capture_reset_fraction"
-        # T1.51 — removal target bumped from v0.24.0 to v0.27.0 (Phase 4).
-        # Three deprecation surfaces share this target:
-        # 1. ``voice.config.deprecated_mixer_fraction_in_use`` (this WARN,
-        #    on the config-knob side).
-        # 2. ``voice.deprecation.legacy_mixer_band_aid_call`` (function-
-        #    level WARN at ``_linux_mixer_apply.py::_emit_legacy_band_aid_warning``).
-        # 3. ``voice.mixer.alsa_band_aid_used`` (bypass-strategy WARN at
-        #    ``_linux_alsa_mixer.py``).
-        # All three MUST stay aligned for operator dashboards to render
-        # a coherent deprecation roadmap.
-        assert kwargs["voice.config.removal_target"] == "v0.27.0"
-        assert "v0.27.0" in str(kwargs["voice.action_required"])
-
-    def test_all_four_overrides_emit_four_warns(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        """All four knobs flipped → four WARNs, one per knob, all on
-        the same stable event name."""
-        from unittest.mock import MagicMock, patch
-
-        from sovyx.engine.config import VoiceTuningConfig, warn_on_deprecated_mixer_overrides
-        from sovyx.observability import logging as logging_mod
-
-        self._clear_voice_env(monkeypatch)
-        cfg = VoiceTuningConfig(
-            linux_mixer_boost_reset_fraction=0.1,
-            linux_mixer_capture_reset_fraction=0.7,
-            linux_mixer_capture_attenuation_fix_fraction=0.6,
-            linux_mixer_boost_attenuation_fix_fraction=0.5,
-        )
-        spy = MagicMock()
-        with patch.object(logging_mod, "get_logger", return_value=spy):
-            triggered = warn_on_deprecated_mixer_overrides(cfg)
-        assert set(triggered) == {
+        field_names = set(VoiceTuningConfig.model_fields)
+        for removed in (
             "linux_mixer_boost_reset_fraction",
             "linux_mixer_capture_reset_fraction",
             "linux_mixer_capture_attenuation_fix_fraction",
             "linux_mixer_boost_attenuation_fix_fraction",
-        }
-        assert spy.warning.call_count == 4  # noqa: PLR2004
-        # Every WARN uses the canonical event name.
-        for call in spy.warning.call_args_list:
-            assert call.args[0] == "voice.config.deprecated_mixer_fraction_in_use"
-        # The set of fields emitted matches the set of triggered fields.
-        emitted_fields = {call.kwargs["voice.config.field"] for call in spy.warning.call_args_list}
-        assert emitted_fields == set(triggered)
+        ):
+            assert removed not in field_names, (
+                f"{removed} was removed in Phase 5.C v0.32.6 — re-adding it "
+                "would resurrect a deprecated tunability surface that has been "
+                "replaced by KB profile authorship + AGC2 closed-loop."
+            )
 
-    def test_env_override_to_default_value_does_not_warn(
+    def test_warn_helper_and_roster_no_longer_exported(
         self,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """Operator explicitly sets the default value via env → no WARN.
-        ``isclose`` comparison guards against YAML 0.50 vs python 0.5
-        round-trip false positives."""
-        from unittest.mock import MagicMock, patch
+        """``warn_on_deprecated_mixer_overrides`` and
+        ``_DEPRECATED_MIXER_FRACTIONS`` MUST be gone from
+        ``sovyx.engine.config``. Re-exporting them would invite a
+        re-introduction of the deprecated surface."""
+        from sovyx.engine import config as config_mod
 
-        from sovyx.engine.config import VoiceTuningConfig, warn_on_deprecated_mixer_overrides
-        from sovyx.observability import logging as logging_mod
+        self._clear_voice_env(monkeypatch)
+        assert not hasattr(config_mod, "warn_on_deprecated_mixer_overrides")
+        assert not hasattr(config_mod, "_DEPRECATED_MIXER_FRACTIONS")
+
+    def test_stale_env_override_is_silently_ignored(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Operator's pre-existing
+        ``SOVYX_TUNING__VOICE__LINUX_MIXER_*_FRACTION`` env vars MUST
+        not raise — pydantic-settings ``extra="ignore"`` drops them
+        silently. (The values are now module constants in
+        ``voice/health/_linux_mixer_apply.py``; tunability moves to
+        KB profile authorship.)"""
+        from sovyx.engine.config import VoiceTuningConfig
 
         self._clear_voice_env(monkeypatch)
         monkeypatch.setenv(
             "SOVYX_TUNING__VOICE__LINUX_MIXER_CAPTURE_RESET_FRACTION",
-            "0.5",
+            "0.7",
         )
+        monkeypatch.setenv(
+            "SOVYX_TUNING__VOICE__LINUX_MIXER_BOOST_RESET_FRACTION",
+            "0.2",
+        )
+        # Must not raise — pydantic-settings extra="ignore" silently
+        # drops unknown env keys.
         cfg = VoiceTuningConfig()
-        spy = MagicMock()
-        with patch.object(logging_mod, "get_logger", return_value=spy):
-            triggered = warn_on_deprecated_mixer_overrides(cfg)
-        assert triggered == ()
-        spy.warning.assert_not_called()
-
-    def test_returned_tuple_is_stable_for_dashboard(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        """Dashboard surfaces (e.g. a 'deprecated knobs in use' badge)
-        rely on the returned tuple — ensure the order matches the
-        deprecation roster declaration order so the UI can render
-        deterministically."""
-        from sovyx.engine.config import (
-            _DEPRECATED_MIXER_FRACTIONS,
-            VoiceTuningConfig,
-            warn_on_deprecated_mixer_overrides,
-        )
-
-        self._clear_voice_env(monkeypatch)
-        cfg = VoiceTuningConfig(
-            linux_mixer_boost_reset_fraction=0.1,
-            linux_mixer_capture_reset_fraction=0.7,
-            linux_mixer_capture_attenuation_fix_fraction=0.6,
-            linux_mixer_boost_attenuation_fix_fraction=0.5,
-        )
-        triggered = warn_on_deprecated_mixer_overrides(cfg)
-        roster_order = tuple(name for name, _ in _DEPRECATED_MIXER_FRACTIONS)
-        assert triggered == roster_order
+        assert cfg is not None
 
 
 class TestVoiceTuningParanoidMissionFlags:

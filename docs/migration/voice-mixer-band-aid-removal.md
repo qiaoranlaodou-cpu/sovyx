@@ -1,15 +1,21 @@
-# Voice Mixer Band-Aid Removal — Migration Guide (v0.23.0 → v0.24.0)
+# Voice Mixer Band-Aid Removal — Migration Guide
 
 This guide documents the deprecation + removal path for the legacy
 ALSA mixer band-aid functions and their associated config knobs.
 
-> **TL;DR:** The four `linux_mixer_*_fraction` config knobs and the two
-> functions `apply_mixer_reset` / `apply_mixer_boost_up` are
-> **deprecated in v0.23.0** and **scheduled for removal in v0.24.0**.
-> The L2.5 KB cascade (`apply_mixer_preset`) + the AGC2 closed-loop
-> (Layer 4) replace them. Operators using the legacy path see one
-> structured WARN per invocation; CI / dashboards can attribute the
-> WARN count to drive cleanup before v0.24.0 lands.
+> **TL;DR:** The four `linux_mixer_*_fraction` operator-tunable config
+> knobs were **removed in v0.32.6**; their values now live as module-
+> level constants in `voice/health/_linux_mixer_apply.py`
+> (`_BOOST_RESET_FRACTION = 0.0`, `_CAPTURE_RESET_FRACTION = 0.5`,
+> `_BOOST_ATTENUATION_FIX_FRACTION = 0.33`, `_CAPTURE_ATTENUATION_FIX_FRACTION = 0.5`).
+> Stale `SOVYX_TUNING__VOICE__LINUX_MIXER_*_FRACTION` env overrides
+> are silently ignored by pydantic-settings (`extra="ignore"`).
+> The two underlying functions `apply_mixer_reset` /
+> `apply_mixer_boost_up` remain active (they are the production fix
+> path for `sovyx doctor voice --fix --yes` + the dashboard wizard +
+> calibration R10), and continue to emit a per-invocation WARN that
+> tracks adoption of the L2.5 KB cascade (`apply_mixer_preset`) +
+> AGC2 closed-loop (Layer 4) replacement path.
 
 ## Why deprecation, why now
 
@@ -18,12 +24,16 @@ hardcoded "fraction of max" functions:
 
 - `apply_mixer_reset(card, controls, tuning)` — REDUCES boost +
   capture controls when the codec is saturated. Driven by
-  `tuning.linux_mixer_capture_reset_fraction` (default 0.5) +
-  `tuning.linux_mixer_boost_reset_fraction` (default 0.0).
+  `_CAPTURE_RESET_FRACTION = 0.5` + `_BOOST_RESET_FRACTION = 0.0`
+  (module-level constants since v0.32.6; previously
+  `tuning.linux_mixer_capture_reset_fraction` /
+  `tuning.linux_mixer_boost_reset_fraction`).
 - `apply_mixer_boost_up(card, controls, tuning)` — INCREASES boost +
   capture controls when the codec is attenuated. Driven by
-  `tuning.linux_mixer_capture_attenuation_fix_fraction` (default 0.5)
-  + `tuning.linux_mixer_boost_attenuation_fix_fraction` (default 0.33).
+  `_CAPTURE_ATTENUATION_FIX_FRACTION = 0.5` +
+  `_BOOST_ATTENUATION_FIX_FRACTION = 0.33` (module-level constants since
+  v0.32.6; previously `tuning.linux_mixer_capture_attenuation_fix_fraction` /
+  `tuning.linux_mixer_boost_attenuation_fix_fraction`).
 
 The fractions were tuned on ONE pilot host (the VAIO VJFE69F11X-B0221H
 with the Conexant SN6180 codec). Mission
@@ -57,20 +67,27 @@ The two functions emit a structured WARN at every invocation:
 }
 ```
 
-### Config knobs
+### Config knobs (REMOVED v0.32.6)
 
-The four `linux_mixer_*_fraction` fields on
-`VoiceTuningConfig` are deprecated. Setting them to non-default values
-emits a structured WARN at boot via
-`engine/config.warn_on_deprecated_mixer_overrides`:
+The four `linux_mixer_*_fraction` operator-tunable fields on
+`VoiceTuningConfig` were **removed in v0.32.6** after 9 minor cycles
+of WARN-only soak (deprecated v0.23.0, original removal target v0.27.0):
 
-- `linux_mixer_boost_reset_fraction` (default 0.0)
-- `linux_mixer_capture_reset_fraction` (default 0.5)
-- `linux_mixer_capture_attenuation_fix_fraction` (default 0.5)
-- `linux_mixer_boost_attenuation_fix_fraction` (default 0.33)
+- `linux_mixer_boost_reset_fraction` → `_BOOST_RESET_FRACTION = 0.0`
+- `linux_mixer_capture_reset_fraction` → `_CAPTURE_RESET_FRACTION = 0.5`
+- `linux_mixer_capture_attenuation_fix_fraction` → `_CAPTURE_ATTENUATION_FIX_FRACTION = 0.5`
+- `linux_mixer_boost_attenuation_fix_fraction` → `_BOOST_ATTENUATION_FIX_FRACTION = 0.33`
 
-The env-var equivalents
-(`SOVYX_TUNING__VOICE__LINUX_MIXER_*`) are also deprecated.
+Stale env overrides
+(`SOVYX_TUNING__VOICE__LINUX_MIXER_*_FRACTION`) are silently ignored
+by pydantic-settings (`extra="ignore"`) — they do not raise, but they
+also do not affect runtime. Operators who need codec-specific tuning
+should ship a KB profile (Layer 3) rather than override fractions
+globally; see `docs/contributing/voice-mixer-kb-profiles.md`.
+
+The boot-time WARN function `warn_on_deprecated_mixer_overrides` and
+its companion roster `_DEPRECATED_MIXER_FRACTIONS` were removed in
+the same patch.
 
 ## How to migrate
 
@@ -119,8 +136,8 @@ covered by a shipped KB profile OR AGC2 Layer-4 alone is sufficient):
 
 1. Stop calling `apply_mixer_reset` + `apply_mixer_boost_up` from
    your code.
-2. Set the four fraction config fields back to their defaults
-   (or remove them entirely from your YAML / env).
+2. (v0.32.6+: no operator action needed for the config knobs — they
+   no longer exist; any stale env vars are silently dropped.)
 3. Confirm via the WARN count: `grep voice.deprecation.legacy_mixer_band_aid_call`
    in your structured log should return zero results across the soak
    window.
@@ -149,24 +166,30 @@ post-v0.23.0):
 3. Open a GitHub issue with the profile_id + the operator's amixer
    dump triplet (before / after / capture wav)
 
-## Removal in v0.24.0
+## Removal status
 
-When v0.24.0 ships:
+**v0.32.6 (Phase 5.C foundation+cleanup):**
 
-1. The two deprecated functions are deleted from `_linux_mixer_apply.py`
-2. The four config knobs are removed from `VoiceTuningConfig`
-3. The deprecation WARN surface is removed
-4. Any test or config still referencing the deleted names fails loud
-   (no silent silent-shim)
+1. ✅ The four config knobs are removed from `VoiceTuningConfig`
+   (their values are now module-level constants in
+   `voice/health/_linux_mixer_apply.py`).
+2. ✅ The deprecation WARN surface
+   (`warn_on_deprecated_mixer_overrides` + `_DEPRECATED_MIXER_FRACTIONS`
+   roster + `voice.config.deprecated_mixer_fraction_in_use` event) is removed.
+3. ✅ The factory boot-time WARN call site is removed from
+   `voice/factory/__init__.py`.
+4. ❌ The two deprecated functions `apply_mixer_reset` /
+   `apply_mixer_boost_up` are **NOT yet removed** — they are the
+   production fix path for `sovyx doctor voice --fix --yes`, the
+   dashboard wizard, and calibration rule R10. The per-invocation
+   WARN (`voice.deprecation.legacy_mixer_band_aid_call`) continues to
+   fire so dashboards can attribute the call-site graph and drive
+   adoption of the L2.5 KB cascade replacement.
 
-This corresponds to mission §9.1.1 acceptance criterion: "zero hits"
-for `apply_mixer_reset` / `apply_mixer_boost_up` /
-`linux_mixer_*_fraction` in `src/sovyx/`.
-
-The release notes for v0.24.0 will state the deletion explicitly + link
-back to this migration guide. Pilot data from B7 (Windows), C5 (macOS),
-and E3 (3-OS) gates the v0.24.0 release; the deprecated path stays
-callable until pilots are green.
+The release notes for v0.32.6 cite this migration guide. Functions
+will be removed only after KB cascade adoption reaches zero
+`voice.deprecation.legacy_mixer_band_aid_call` events across one full
+minor cycle of pilot soak.
 
 ## Reference
 

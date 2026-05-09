@@ -612,15 +612,13 @@ async def create_voice_pipeline(
     _maybe_log_alsa_ucm_status()
     await _maybe_log_recent_audio_etw_events()
     await _maybe_log_macos_diagnostics()
-    # Mission §9.1.1 / Gap 1b — boot-time deprecation surface for the
-    # four ``linux_mixer_*_fraction`` knobs scheduled for removal in
-    # v0.24.0. A stock install with no overrides emits nothing; an
-    # operator who set a non-default value via YAML or env gets ONE
-    # structured WARN per non-default knob so they have a full minor-
-    # version cycle to migrate to the L2.5 KB-driven preset cascade.
-    from sovyx.engine.config import warn_on_deprecated_mixer_overrides
-
-    warn_on_deprecated_mixer_overrides()
+    # Phase 5.C v0.32.6 — the four ``linux_mixer_*_fraction`` operator
+    # knobs were promoted to module-level constants in
+    # ``voice/health/_linux_mixer_apply.py`` and removed from
+    # ``VoiceTuningConfig``. The boot-time deprecation WARN that fired
+    # here is gone; stale ``SOVYX_TUNING__VOICE__LINUX_MIXER_*_FRACTION``
+    # env overrides are silently dropped by pydantic-settings
+    # ``extra="ignore"``. See ``docs/migration/voice-mixer-band-aid-removal.md``.
 
     # Ring 1 (Hardware/OS Isolation): capability dispatch + APO bypass +
     # PipeWire/UCM detection + KB profile loader + AGC2 fallback +

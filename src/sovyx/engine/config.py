@@ -1502,30 +1502,20 @@ class VoiceTuningConfig(BaseSettings):
     # in an unknown state. Enabled by default because the mutation is
     # 100 % reversible and the subprocess cost is ~50 ms.
     linux_alsa_mixer_reset_enabled: bool = True
-    # Fraction of ``max_raw`` to set Boost-class controls to on apply.
-    # ``0.0`` = zero out, which is almost always the right answer for
-    # laptop-internal mics: a +36 dB ``Internal Mic Boost`` is never
-    # correct for a normal-distance speaker — it was shipped at max by
-    # default to save Skype calls in the Windows XP era, and the
-    # default never changed.
-    #
-    # **Deprecated since v0.23.0** (Mission §9.1.1, Gap 1) — scheduled
-    # for removal in v0.27.0 (Phase 4 — AEC + audio quality), bumped
-    # from v0.24.0 per T1.51 because the bypass-coordinator wire-up
-    # gating Phase 2 + 3 must land first. Until then this fraction
-    # continues to drive the legacy ``LinuxALSAMixerResetBypass``
-    # band-aid; a non-default value surfaces a one-time WARN at boot
-    # via :func:`sovyx.engine.config.warn_on_deprecated_mixer_overrides`.
-    linux_mixer_boost_reset_fraction: float = 0.0
-    # Fraction of ``max_raw`` to set Capture-class controls to on apply.
-    # ``0.5`` ≈ 0 dB for most codecs with the 0..80 / -40..+30 dB range
-    # observed on HDA Intel / Realtek / SN6180 parts. Never ``0.0`` —
-    # that would mute the mic and a subsequent probe would classify the
-    # endpoint as DRIVER_SILENT rather than HEALTHY.
-    #
-    # **Deprecated since v0.23.0** (Mission §9.1.1, Gap 1). See
-    # ``linux_mixer_boost_reset_fraction`` for the deprecation rationale.
-    linux_mixer_capture_reset_fraction: float = 0.5
+    # ── Removed Phase 5.C v0.32.6 ─────────────────────────────────
+    # The four ``linux_mixer_*_fraction`` knobs (boost/capture reset
+    # + boost/capture attenuation fix) were deprecated since v0.23.0
+    # with WARN-only telemetry, scheduled for removal in v0.27.0,
+    # and removed in v0.32.6 — 9 minor cycles past target. The
+    # underlying values are now module-level constants in
+    # ``voice/health/_linux_mixer_apply.py`` (``_BOOST_RESET_FRACTION``,
+    # ``_CAPTURE_RESET_FRACTION``, ``_BOOST_ATTENUATION_FIX_FRACTION``,
+    # ``_CAPTURE_ATTENUATION_FIX_FRACTION``); operator tunability now
+    # routes through KB profile authorship (Layer 3) and AGC2
+    # closed-loop digital gain (Layer 4) per
+    # ``docs/migration/voice-mixer-band-aid-removal.md``. Stale
+    # ``SOVYX_TUNING__VOICE__LINUX_MIXER_*_FRACTION`` env overrides
+    # are silently ignored by pydantic-settings (``extra="ignore"``).
     # Saturation-detection threshold — a control is at saturation risk
     # when ``current_raw > max_raw * ratio`` AND the control name matches
     # one of the boost / capture patterns. ``0.5`` catches the VAIO case
@@ -1539,41 +1529,6 @@ class VoiceTuningConfig(BaseSettings):
     # ``Capture`` each at 60 %, individually under the ratio gate but
     # summing to clipping territory).
     linux_mixer_aggregated_boost_db_ceiling: float = 18.0
-    # Fraction targets for the ATTENUATION fix path (`sovyx doctor voice
-    # --fix` on attenuated cards — capture+boost both well below VAD
-    # operating range). Distinct from `*_reset_fraction` which REDUCES
-    # gain on saturated cards.
-    #
-    # Defaults are deliberately AT the saturation_ratio_ceiling (0.5)
-    # for capture and BELOW it for boost — the saturation check uses
-    # strict ``>`` so a control at exactly 0.5 ratio does NOT trigger
-    # saturation_risk. This keeps the apply path strictly inside the
-    # "neither attenuated nor saturated" window and prevents the
-    # oscillation observed on the second pilot run (v0.22.3): defaults
-    # of 0.75/0.66 lifted attenuated controls past the saturation
-    # ceiling, flipping the regime — fix detected attenuation, applied
-    # boost, re-probe now reports saturation, deaf-detection still
-    # triggered with a CLIPPED signal instead of a SILENT one.
-    #
-    # Pilot evidence (VAIO VJFE69F11X-B0221H, SN6180 codec):
-    # Mic Boost 0/3, Capture 40/80, Internal Mic Boost 1/3 → aggregated
-    # -22 dB, Silero max_prob ~ 0. With current defaults:
-    # Capture 40 → 40 (at 0.5 ratio = no-op); Mic Boost 0 → 1 (1/3 =
-    # +12 dB); Internal Mic Boost 1 → 1 (no-op). Aggregated swing:
-    # -22 dB → -10 dB. Above VAD floor, well below saturation ceiling.
-    #
-    # **Deprecated since v0.23.0** (Mission §9.1.1, Gap 1) — scheduled
-    # for removal in v0.27.0 (Phase 4 — AEC + audio quality), bumped
-    # from v0.24.0 per T1.51. The attenuation regime is increasingly
-    # handled by the in-process AGC2 closed-loop digital gain
-    # (Layer 4 of the Linux mixer cascade), which recovers below-VAD-
-    # floor signals without mutating the OS-level mixer. The KB
-    # preset cascade (Layer 3) covers card-specific overrides for
-    # codecs where AGC2 alone is insufficient. A non-default value
-    # surfaces a one-time WARN at boot via
-    # :func:`sovyx.engine.config.warn_on_deprecated_mixer_overrides`.
-    linux_mixer_capture_attenuation_fix_fraction: float = 0.5
-    linux_mixer_boost_attenuation_fix_fraction: float = 0.33
     # Strategy #2 — ``LinuxPipeWireDirectBypass`` (linux.pipewire_direct).
     # Rebinds the capture stream to the raw ALSA ``hw:X,Y`` node,
     # bypassing PipeWire / PulseAudio session-manager DSP entirely.
@@ -3014,108 +2969,6 @@ def load_engine_config(
             f"Configuration validation failed: {exc}",
             context={"fields": str(yaml_data.keys())},
         ) from exc
-
-
-_DEPRECATED_MIXER_FRACTIONS: tuple[tuple[str, float], ...] = (
-    ("linux_mixer_boost_reset_fraction", 0.0),
-    ("linux_mixer_capture_reset_fraction", 0.5),
-    ("linux_mixer_capture_attenuation_fix_fraction", 0.5),
-    ("linux_mixer_boost_attenuation_fix_fraction", 0.33),
-)
-"""Mission §9.1.1 / Gap 1 deprecation roster — name + default value.
-
-The four hardcoded mixer fractions that drive the legacy
-``LinuxALSAMixerResetBypass`` band-aid. Scheduled for removal in
-v0.27.0 (Phase 4 — AEC + audio quality), bumped from v0.24.0 per
-T1.51, once the L2.5 KB-driven preset cascade (Layer 3) + in-process
-AGC2 (Layer 4) replace both the saturation and attenuation regimes
-AND the bypass-coordinator wire-up gating Phase 2 + 3 has soaked
-through one minor-version cycle.
-
-Until then the fractions remain settable via
-``SOVYX_TUNING__VOICE__LINUX_MIXER_*_FRACTION`` env vars per the
-migration plan §8 (deprecation warning only, no behaviour change).
-``warn_on_deprecated_mixer_overrides`` consults this roster at boot
-to fire one structured WARN per non-default override.
-"""
-
-
-def warn_on_deprecated_mixer_overrides(
-    tuning: VoiceTuningConfig | None = None,
-) -> tuple[str, ...]:
-    """Emit one boot-time WARN per non-default deprecated mixer fraction.
-
-    Mission §9.1.1 / Gap 1b — the four ``linux_mixer_*_fraction`` knobs
-    are scheduled for removal in v0.27.0 (bumped from v0.24.0 per
-    T1.51). Operators who set them via YAML or
-    ``SOVYX_TUNING__VOICE__LINUX_MIXER_*_FRACTION`` env vars get a
-    structured WARN at boot so they have multiple minor-version
-    cycles to migrate to the L2.5 KB-driven preset cascade
-    (Layer 3) + in-process AGC2 (Layer 4) replacement path.
-
-    The WARN is opt-in by virtue of the operator having set a
-    non-default value — a stock install with no overrides emits
-    nothing. The migration plan §8 contract is "deprecation warnings
-    only, no behaviour change" until v0.27.0.
-
-    Args:
-        tuning: Pre-instantiated :class:`VoiceTuningConfig` (tests
-            inject a stub). ``None`` builds a fresh instance, which
-            picks up live env overrides via pydantic-settings.
-
-    Returns:
-        Tuple of the field names that triggered a WARN. Useful for
-        tests + dashboard surfaces that want to render the
-        "deprecated knobs in use" badge without re-walking the
-        config.
-    """
-    from sovyx.observability.logging import get_logger
-
-    logger = get_logger(__name__)
-    cfg = tuning if tuning is not None else VoiceTuningConfig()
-    deprecated_in_use: list[str] = []
-    for field_name, default_value in _DEPRECATED_MIXER_FRACTIONS:
-        actual = getattr(cfg, field_name, default_value)
-        # Use math.isclose so a YAML 0.50 vs python 0.5 round-trip
-        # doesn't trigger a false positive — the comparison is for
-        # "operator deliberately changed it", not bit-exact identity.
-        from math import isclose
-
-        if isclose(float(actual), float(default_value), rel_tol=0.0, abs_tol=1e-9):
-            continue
-        deprecated_in_use.append(field_name)
-        logger.warning(
-            "voice.config.deprecated_mixer_fraction_in_use",
-            **{
-                "voice.config.field": field_name,
-                "voice.config.value": float(actual),
-                "voice.config.default": float(default_value),
-                # T1.51 — removal target bumped from v0.24.0 to v0.27.0
-                # (Phase 4) per
-                # ``MISSION-voice-final-skype-grade-2026.md``: the
-                # bypass-coordinator wire-up gating Phase 2 + 3 must
-                # land first; until then the legacy fractions remain
-                # functional but emit this WARN. Aligned with the
-                # function-level deprecation WARN in
-                # ``voice/health/_linux_mixer_apply.py`` and the
-                # bypass-strategy WARN in
-                # ``voice/health/bypass/_linux_alsa_mixer.py``.
-                "voice.config.removal_target": "v0.27.0",
-                "voice.action_required": (
-                    f"{field_name} is deprecated and scheduled for "
-                    "removal in v0.27.0 (Phase 4 — AEC + audio quality). "
-                    "The L2.5 KB-driven preset cascade (Layer 3) + "
-                    "in-process AGC2 (Layer 4) replace both the "
-                    "saturation and attenuation regimes the legacy "
-                    "fractions targeted. To silence this warning, unset "
-                    "the env override (SOVYX_TUNING__VOICE__"
-                    f"{field_name.upper()}) and let the new cascade "
-                    "drive remediation. KB profile contribution: see "
-                    "docs/contributing/voice-mixer-kb-profiles.md."
-                ),
-            },
-        )
-    return tuple(deprecated_in_use)
 
 
 def _migrate_legacy_log_format(data: dict[str, Any]) -> None:
