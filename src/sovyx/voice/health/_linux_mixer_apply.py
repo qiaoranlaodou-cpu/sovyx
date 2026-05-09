@@ -61,15 +61,51 @@ logger = get_logger(__name__)
 _CAPTURE_NAME_TOKENS: tuple[str, ...] = ("capture",)
 """Substrings (case-insensitive) that identify a capture-path control.
 
-A control whose lowered name contains any of these tokens is treated as
-a capture-gain (e.g. ``"Capture"``, ``"Digital Capture Volume"``) and
-reset to :attr:`VoiceTuningConfig.linux_mixer_capture_reset_fraction`
-of its raw range. Every other boost-class control
-(``"Internal Mic Boost"``, ``"Line Boost"``) is reset to
-:attr:`VoiceTuningConfig.linux_mixer_boost_reset_fraction` — which
-defaults to ``0.0`` (mute the boost entirely; only the capture gain
-remains active).
+A control whose lowered name contains any of these tokens is treated
+as a capture-gain (e.g. ``"Capture"``, ``"Digital Capture Volume"``)
+and reset to :data:`_CAPTURE_RESET_FRACTION` of its raw range. Every
+other boost-class control (``"Internal Mic Boost"``, ``"Line Boost"``)
+is reset to :data:`_BOOST_RESET_FRACTION` — which defaults to ``0.0``
+(mute the boost entirely; only the capture gain remains active).
 """
+
+
+# ── Mixer fraction constants (Phase 5.C v0.32.6 — promoted from
+#    deprecated VoiceTuningConfig knobs to module-level internals).
+# ──────────────────────────────────────────────────────────────
+# Deprecated since v0.23.0, scheduled for removal in v0.27.0; soaked
+# through 9 minor cycles with WARN-only telemetry. Operators with
+# overrides have had ample notice. The L2.5 KB-driven preset cascade
+# (Layer 3) + in-process AGC2 closed-loop digital gain (Layer 4)
+# replace both regimes; tunability moves to KB profile authorship,
+# not env-var operator overrides. See
+# ``docs/migration/voice-mixer-band-aid-removal.md``.
+
+_BOOST_RESET_FRACTION: float = 0.0
+"""Fraction of raw range applied by :func:`apply_mixer_reset` to
+non-capture boost-class controls (Mic Boost, Internal Mic Boost,
+Line Boost). ``0.0`` mutes the boost entirely so only the capture
+gain remains active — the safer floor for SATURATION regime."""
+
+_CAPTURE_RESET_FRACTION: float = 0.5
+"""Fraction of raw range applied by :func:`apply_mixer_reset` to
+capture-path controls. Midpoint reset is the empirically-derived
+operating point for Silero VAD across the validated codec matrix
+(see ``docs-internal/plans/linux-alsa-mixer-saturation-fix.md`` §2.3.4)."""
+
+_BOOST_ATTENUATION_FIX_FRACTION: float = 0.33
+"""Fraction of raw range applied by :func:`apply_mixer_boost_up` to
+boost-class controls. ``0.33`` (~one-third of raw span) lifts an
+attenuated boost (e.g. Mic Boost=0/3) to the lower-validated VAD
+operating point without overdriving (Mic Boost=2/3 is the empirical
+sweet-spot from the VAIO pilot — see :func:`apply_mixer_boost_up`)."""
+
+_CAPTURE_ATTENUATION_FIX_FRACTION: float = 0.5
+"""Fraction of raw range applied by :func:`apply_mixer_boost_up` to
+capture-path controls in the ATTENUATION regime. ``0.5`` matches
+:data:`_CAPTURE_RESET_FRACTION` so attenuation-fix and saturation-reset
+both converge on the same midpoint — operating at one validated
+target eliminates a reason-for-divergence between the two regimes."""
 
 
 # Stable :class:`BypassApplyError.reason` tokens emitted by this module.
@@ -141,9 +177,8 @@ async def apply_mixer_reset(
 
     Each control in ``controls_to_reset`` is set to
     ``int(max_raw * fraction)`` where ``fraction`` is
-    :attr:`VoiceTuningConfig.linux_mixer_capture_reset_fraction` for
-    capture-path controls (name contains ``"capture"``) and
-    :attr:`VoiceTuningConfig.linux_mixer_boost_reset_fraction` for every
+    :data:`_CAPTURE_RESET_FRACTION` for capture-path controls (name
+    contains ``"capture"``) and :data:`_BOOST_RESET_FRACTION` for every
     other boost-class control.
 
     Atomicity model: the function records every successful mutation's
@@ -181,8 +216,11 @@ async def apply_mixer_reset(
         raise BypassApplyError(msg, reason=REASON_NO_CONTROLS)
 
     timeout_s = tuning.linux_mixer_subprocess_timeout_s
-    boost_fraction = tuning.linux_mixer_boost_reset_fraction
-    capture_fraction = tuning.linux_mixer_capture_reset_fraction
+    # Phase 5.C v0.32.6: promoted from deprecated VoiceTuningConfig
+    # knobs to module-level constants — tunability moves to KB
+    # profile authorship + AGC2 closed-loop, not env-var overrides.
+    boost_fraction = _BOOST_RESET_FRACTION
+    capture_fraction = _CAPTURE_RESET_FRACTION
 
     rollback_log: list[tuple[str, int]] = []
     applied_log: list[tuple[str, int]] = []
@@ -234,10 +272,8 @@ async def apply_mixer_boost_up(
     (capture+boost both well below VAD operating range, e.g. user reset
     GNOME volume to 0 % or pulseaudio default-source-volume reset).
     Sets each control to ``int(min_raw + span * fraction)`` where
-    ``fraction`` is
-    :attr:`VoiceTuningConfig.linux_mixer_capture_attenuation_fix_fraction`
-    for capture-path controls and
-    :attr:`VoiceTuningConfig.linux_mixer_boost_attenuation_fix_fraction`
+    ``fraction`` is :data:`_CAPTURE_ATTENUATION_FIX_FRACTION` for
+    capture-path controls and :data:`_BOOST_ATTENUATION_FIX_FRACTION`
     for every other boost-class control.
 
     Pilot evidence (VAIO VJFE69F11X-B0221H, SN6180, 2026-04-25):
@@ -270,8 +306,11 @@ async def apply_mixer_boost_up(
         raise BypassApplyError(msg, reason=REASON_NO_CONTROLS)
 
     timeout_s = tuning.linux_mixer_subprocess_timeout_s
-    boost_fraction = tuning.linux_mixer_boost_attenuation_fix_fraction
-    capture_fraction = tuning.linux_mixer_capture_attenuation_fix_fraction
+    # Phase 5.C v0.32.6: promoted from deprecated VoiceTuningConfig
+    # knobs to module-level constants — see _BOOST_RESET_FRACTION
+    # rationale at the head of the module.
+    boost_fraction = _BOOST_ATTENUATION_FIX_FRACTION
+    capture_fraction = _CAPTURE_ATTENUATION_FIX_FRACTION
 
     rollback_log: list[tuple[str, int]] = []
     applied_log: list[tuple[str, int]] = []
