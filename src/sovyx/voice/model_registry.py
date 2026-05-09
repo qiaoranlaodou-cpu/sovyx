@@ -91,6 +91,57 @@ _KOKORO_VOICES_URLS: tuple[str, ...] = (
 )
 
 
+# Piper TTS voices — published by rhasspy/piper-voices on HuggingFace.
+# Each voice ships a paired ``.onnx`` model + ``.onnx.json`` config.
+# Sovyx ships SHA validation OFF by default for Piper because the
+# upstream repo doesn't publish per-file checksums alongside the
+# binaries — operators relying on HF HTTPS as the trust boundary
+# is the same posture HuggingFace Hub itself ships with. Operators
+# wanting stricter validation can override SHAs via
+# ``EngineConfig.tuning.voice.piper_voice_sha256_overrides``.
+_PIPER_HF_BASE = "https://huggingface.co/rhasspy/piper-voices/resolve/main"
+
+
+def _piper_voice_urls(voice: str, lang: str, region: str, quality: str) -> tuple[str, ...]:
+    """Build the canonical (HF + Sovyx mirror) URL pair for a Piper voice."""
+    voice_id = f"{lang}_{region}-{voice}-{quality}"
+    return (
+        f"{_PIPER_HF_BASE}/{lang}/{lang}_{region}/{voice}/{quality}/{voice_id}.onnx",
+        f"https://github.com/sovyx-ai/sovyx/releases/download/voice-models-v1/{voice_id}.onnx",
+    )
+
+
+def _piper_voice_config_urls(voice: str, lang: str, region: str, quality: str) -> tuple[str, ...]:
+    """Companion ``.onnx.json`` config URLs (mirrors paired with the model)."""
+    voice_id = f"{lang}_{region}-{voice}-{quality}"
+    return (
+        f"{_PIPER_HF_BASE}/{lang}/{lang}_{region}/{voice}/{quality}/{voice_id}.onnx.json",
+        f"https://github.com/sovyx-ai/sovyx/releases/download/voice-models-v1/{voice_id}.onnx.json",
+    )
+
+
+# Curated default catalog. The wizard / factory pick from this list when
+# ``MindConfig.voice_id`` resolves to a Piper voice. The full catalog is
+# 100+ voices on HF — Sovyx ships a small recommended subset and falls
+# back to a fresh HF lookup if an unknown voice is requested (issue #38
+# stops at the curated subset; arbitrary HF voices come in a follow-up).
+_PIPER_VOICES: tuple[tuple[str, str, str, str], ...] = (
+    # (voice_name, lang, region, quality)
+    ("lessac", "en", "US", "medium"),
+    ("amy", "en", "US", "medium"),
+    ("ryan", "en", "US", "high"),
+    ("alan", "en", "GB", "medium"),
+    ("faber", "pt", "BR", "medium"),
+    ("davefx", "es", "ES", "medium"),
+    ("sharvard", "es", "MX", "medium"),
+)
+
+
+def _piper_voice_id(voice: str, lang: str, region: str, quality: str) -> str:
+    """Canonical voice identifier — ``en_US-lessac-medium`` style."""
+    return f"{lang}_{region}-{voice}-{quality}"
+
+
 VOICE_MODELS: dict[str, VoiceModelInfo] = {
     "silero-vad-v5": VoiceModelInfo(
         name="silero-vad-v5",
@@ -128,7 +179,26 @@ VOICE_MODELS: dict[str, VoiceModelInfo] = {
         sha256="bca610b8308e8d99f32e6fe4197e7ec01679264efed0cac9140fe9c29f1fbf7d",
         description="Kokoro voice style vectors (26 voices)",
     ),
+    # Piper voices — auto-built from _PIPER_VOICES so adding a voice to
+    # the catalog is a one-line tuple addition (no per-voice copy here).
+    **{
+        f"piper-{_piper_voice_id(v, lang, region, q)}": VoiceModelInfo(
+            name=f"piper-{_piper_voice_id(v, lang, region, q)}",
+            category="tts",
+            size_mb=63.0,
+            urls=_piper_voice_urls(v, lang, region, q),
+            filename=f"{_piper_voice_id(v, lang, region, q)}.onnx",
+            sha256="",  # See _PIPER_HF_BASE comment for trust posture.
+            description=f"Piper voice {_piper_voice_id(v, lang, region, q)}",
+        )
+        for (v, lang, region, q) in _PIPER_VOICES
+    },
 }
+
+
+def list_piper_voices() -> list[str]:
+    """Return the curated list of Piper voice IDs (issue #38)."""
+    return [_piper_voice_id(v, lang, region, q) for (v, lang, region, q) in _PIPER_VOICES]
 
 
 def get_default_model_dir() -> Path:
@@ -285,6 +355,80 @@ async def ensure_silero_vad(
     )
 
 
+async def ensure_piper_model(
+    voice: str | None = None,
+    model_dir: Path | None = None,
+    *,
+    on_attempt: Callable[[DownloadAttempt], None] | None = None,
+) -> Path:
+    """Ensure a Piper TTS voice (model + config) exists on disk.
+
+    Issue #38 — Sovyx previously required operators to manually drop
+    Piper voices into ``{model_dir}/piper/``. This brings Piper to
+    parity with Silero VAD and Kokoro TTS auto-download.
+
+    Args:
+        voice: Voice identifier in ``{lang}_{REGION}-{voice}-{quality}``
+            format (e.g. ``"en_US-lessac-medium"``). Defaults to
+            ``EngineConfig.tuning.voice.piper_default_voice``. Voices
+            outside the curated catalog raise ``ValueError`` —
+            extending the catalog is a one-line addition to
+            ``_PIPER_VOICES``.
+        model_dir: Cache directory. Defaults to
+            ``~/.sovyx/models/voice/piper/``.
+        on_attempt: Optional hook receiving each mirror attempt.
+
+    Returns:
+        Path to the ``piper/`` directory containing both the
+        ``{voice}.onnx`` model and the ``{voice}.onnx.json`` config.
+
+    Raises:
+        ValueError: If *voice* isn't in the curated catalog.
+        ModelDownloadError: If every mirror exhausts retries.
+    """
+    target_voice = voice or _VoiceTuning().piper_default_voice
+    catalog_id = f"piper-{target_voice}"
+    if catalog_id not in VOICE_MODELS:
+        msg = (
+            f"Unknown Piper voice {target_voice!r}. Curated catalog: "
+            f"{', '.join(list_piper_voices())}"
+        )
+        raise ValueError(msg)
+
+    model_info = VOICE_MODELS[catalog_id]
+    target_dir = (model_dir or get_default_model_dir()) / "piper"
+    target_dir.mkdir(parents=True, exist_ok=True)
+
+    downloader = _build_downloader(target_dir, on_attempt=on_attempt)
+
+    # Model (.onnx) — the bulk of the bytes.
+    await downloader.ensure_model(
+        filename=model_info.filename,
+        url=model_info.urls[0],
+        expected_sha256=model_info.sha256,
+        mirror_urls=model_info.urls[1:],
+    )
+
+    # Companion config (.onnx.json) — small but required by PiperTTS
+    # at runtime for sample rate, phoneme map, speaker IDs, etc.
+    config_filename = f"{target_voice}.onnx.json"
+    config_urls = _piper_voice_config_urls(
+        *next(
+            (v, lang, region, q)
+            for (v, lang, region, q) in _PIPER_VOICES
+            if _piper_voice_id(v, lang, region, q) == target_voice
+        )
+    )
+    await downloader.ensure_model(
+        filename=config_filename,
+        url=config_urls[0],
+        expected_sha256="",  # See _PIPER_HF_BASE comment.
+        mirror_urls=config_urls[1:],
+    )
+
+    return target_dir
+
+
 async def ensure_kokoro_tts(
     model_dir: Path | None = None,
     *,
@@ -325,7 +469,9 @@ __all__ = [
     "check_voice_deps",
     "detect_tts_engine",
     "ensure_kokoro_tts",
+    "ensure_piper_model",
     "ensure_silero_vad",
     "get_default_model_dir",
     "get_models_for_tier",
+    "list_piper_voices",
 ]

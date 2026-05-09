@@ -143,6 +143,7 @@ async def _auto_resume_voice_pipeline(
         wake_word_enabled=getattr(mind_config, "wake_word_enabled", False),
         input_device_name=mind_config.voice_input_device_name or None,
         input_device_host_api=mind_config.voice_input_device_host_api or None,
+        tts_engine_preference=getattr(mind_config, "voice_tts_engine", "auto"),
         event_bus=event_bus,
         on_perception=on_perception_cb,
         # ``allow_inoperative_capture=True``: even if the mic isn't

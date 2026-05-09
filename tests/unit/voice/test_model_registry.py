@@ -20,9 +20,11 @@ from sovyx.voice.model_registry import (
     check_voice_deps,
     detect_tts_engine,
     ensure_kokoro_tts,
+    ensure_piper_model,
     ensure_silero_vad,
     get_default_model_dir,
     get_models_for_tier,
+    list_piper_voices,
 )
 
 if TYPE_CHECKING:
@@ -101,11 +103,23 @@ class TestVoiceModels:
         assert len(info.urls) >= 2
 
     def test_all_downloadable_models_pin_checksum(self) -> None:
-        """Every downloadable model has a SHA-256 pin — catches drift."""
+        """Every downloadable model has a SHA-256 pin — catches drift.
+
+        Piper voices are exempted because rhasspy/piper-voices doesn't
+        publish per-file checksums (issue #38) — the trust posture is
+        HF HTTPS, same as HuggingFace Hub itself ships. Operators
+        wanting strict validation can override SHAs via the tuning
+        config; the policy below catches drift on Sovyx-owned mirrors.
+        """
         for info in VOICE_MODELS.values():
-            if info.download_available:
-                assert info.sha256, f"{info.name} missing SHA-256 pin"
-                assert len(info.sha256) == 64, f"{info.name} SHA-256 wrong length"
+            if not info.download_available:
+                continue
+            if info.name.startswith("piper-"):
+                # Empty SHA is intentional for upstream-controlled
+                # Piper assets — see _PIPER_HF_BASE comment.
+                continue
+            assert info.sha256, f"{info.name} missing SHA-256 pin"
+            assert len(info.sha256) == 64, f"{info.name} SHA-256 wrong length"
 
 
 class TestMirrorURLTables:
@@ -302,6 +316,75 @@ class TestEnsureKokoroTTS:
         # Both assets materialise after the atomic .tmp → final rename.
         assert (kokoro_dir / "kokoro-v1.0.int8.onnx").exists()
         assert (kokoro_dir / "voices-v1.0.bin").exists()
+
+
+class TestEnsurePiperModel:
+    """Issue #38 — Piper TTS auto-download (model + companion config)."""
+
+    @pytest.mark.asyncio()
+    async def test_downloads_default_voice_model_and_config(self, tmp_path: Path) -> None:
+        async def fake_download(
+            url: str,
+            dest: Path,
+            callback: Any = None,
+            headers: dict[str, str] | None = None,
+        ) -> None:
+            dest.write_bytes(b"payload")
+
+        with (
+            patch.object(ModelDownloader, "_download", staticmethod(fake_download)),
+            patch.object(ModelDownloader, "_verify_checksum", return_value=True),
+        ):
+            result = await ensure_piper_model(model_dir=tmp_path)
+
+        piper_dir = tmp_path / "piper"
+        assert result == piper_dir
+        # Default voice resolves from VoiceTuningConfig — both onnx and
+        # the companion .onnx.json config land on disk.
+        assert (piper_dir / "en_US-lessac-medium.onnx").exists()
+        assert (piper_dir / "en_US-lessac-medium.onnx.json").exists()
+
+    @pytest.mark.asyncio()
+    async def test_explicit_voice_routes_through_catalog(self, tmp_path: Path) -> None:
+        async def fake_download(
+            url: str,
+            dest: Path,
+            callback: Any = None,
+            headers: dict[str, str] | None = None,
+        ) -> None:
+            dest.write_bytes(b"payload")
+
+        with (
+            patch.object(ModelDownloader, "_download", staticmethod(fake_download)),
+            patch.object(ModelDownloader, "_verify_checksum", return_value=True),
+        ):
+            await ensure_piper_model(voice="pt_BR-faber-medium", model_dir=tmp_path)
+
+        piper_dir = tmp_path / "piper"
+        assert (piper_dir / "pt_BR-faber-medium.onnx").exists()
+        assert (piper_dir / "pt_BR-faber-medium.onnx.json").exists()
+
+    @pytest.mark.asyncio()
+    async def test_unknown_voice_raises(self, tmp_path: Path) -> None:
+        with pytest.raises(ValueError, match="Curated catalog"):
+            await ensure_piper_model(voice="xx_XX-fake-medium", model_dir=tmp_path)
+
+    def test_list_piper_voices_includes_default(self) -> None:
+        voices = list_piper_voices()
+        assert "en_US-lessac-medium" in voices
+        # Multi-language coverage check — pt_BR + es_ES at minimum.
+        langs = {v.split("_")[0] for v in voices}
+        assert {"en", "pt", "es"}.issubset(langs)
+
+    def test_voice_models_registers_piper_entries(self) -> None:
+        # Each curated voice gets a ``piper-{voice_id}`` entry keyed off
+        # _PIPER_VOICES so adding a voice is one tuple line.
+        assert "piper-en_US-lessac-medium" in VOICE_MODELS
+        info = VOICE_MODELS["piper-en_US-lessac-medium"]
+        assert info.category == "tts"
+        # SHA defaults to empty (HF HTTPS as trust boundary, no per-file
+        # checksum from upstream). Operators can override via tuning.
+        assert info.sha256 == ""
 
 
 class TestOnAttemptHook:

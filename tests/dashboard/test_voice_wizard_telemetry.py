@@ -206,3 +206,52 @@ class TestDiscriminatedUnion:
             json={"event": "drift", "step": "devices", "duration_ms": 1},
         )
         assert response.status_code == 422  # noqa: PLR2004
+
+
+class TestListTtsEngines:
+    """GET /api/voice/wizard/tts-engines — issue #39 engine availability."""
+
+    def test_requires_auth(self) -> None:
+        app = create_app(token=_TOKEN)
+        client = TestClient(app)
+        response = client.get("/api/voice/wizard/tts-engines")
+        assert response.status_code == 401  # noqa: PLR2004
+
+    def test_always_offers_auto(self) -> None:
+        client = _client()
+        response = client.get("/api/voice/wizard/tts-engines")
+        assert response.status_code == 200  # noqa: PLR2004
+        body = response.json()
+        # Auto is unconditional — it's the default that downgrades
+        # gracefully via detect_tts_engine.
+        assert "auto" in body["available"]
+        assert body["default"] in {"auto", "piper", "kokoro"}
+
+    def test_offers_piper_when_importable(self) -> None:
+        import sys
+        from types import ModuleType
+
+        # Both engines installed → both surface as choices.
+        piper = ModuleType("piper_phonemize")
+        kokoro = ModuleType("kokoro_onnx")
+        with patch.dict(sys.modules, {"piper_phonemize": piper, "kokoro_onnx": kokoro}):
+            client = _client()
+            response = client.get("/api/voice/wizard/tts-engines")
+
+        body = response.json()
+        assert "auto" in body["available"]
+        assert "piper" in body["available"]
+        assert "kokoro" in body["available"]
+        # detect_tts_engine prefers piper when both are present.
+        assert body["default"] == "piper"
+
+    def test_only_auto_when_neither_installed(self) -> None:
+        import sys
+
+        with patch.dict(sys.modules, {"piper_phonemize": None, "kokoro_onnx": None}):
+            client = _client()
+            response = client.get("/api/voice/wizard/tts-engines")
+
+        body = response.json()
+        assert body["available"] == ["auto"]
+        assert body["default"] == "auto"

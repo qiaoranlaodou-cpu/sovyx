@@ -996,6 +996,14 @@ class VoiceTuningConfig(BaseSettings):
     # retry/backoff semantics. 15-min cooldown mirrors the brain tier.
     model_download_cooldown_seconds: int = 900
 
+    # Issue #38 — Piper TTS auto-download. The factory ensures the
+    # default voice on first use; missing voices trigger a download
+    # via the same mirror-aware downloader Silero/Kokoro use. The voice
+    # ID format is ``{lang}_{REGION}-{voice}-{quality}`` (e.g.
+    # ``en_US-lessac-medium``) — see ``voice/model_registry.py`` for
+    # the curated catalog.
+    piper_default_voice: str = "en_US-lessac-medium"
+
     # ── Voice Capture Health Lifecycle (VCHL) — see ADR-voice-capture-health-lifecycle.md.
     # Probe thresholds (ADR §4.3). Hard timeout per probe is 5 s — anything
     # longer blocks the cascade behind a misbehaving driver.

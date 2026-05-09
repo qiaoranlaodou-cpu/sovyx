@@ -519,6 +519,13 @@ class MindConfig(BaseModel):
     # in ``voice.input_device`` is kept as a legacy fallback only.
     voice_input_device_name: str = ""
     voice_input_device_host_api: str = ""
+    # Issue #39 — operator preference for the TTS engine. ``"auto"``
+    # (default) keeps the legacy detect-tts-engine flow (Piper > Kokoro);
+    # ``"piper"`` or ``"kokoro"`` pin the engine when both are installed.
+    # The factory falls through to auto if the requested engine isn't
+    # importable so a mistyped mind.yaml never prevents voice from
+    # booting — it just downgrades the choice with a warning.
+    voice_tts_engine: Literal["auto", "piper", "kokoro"] = "auto"
     timezone: str = "UTC"
     template: str = "assistant"
     user_name: str = ""

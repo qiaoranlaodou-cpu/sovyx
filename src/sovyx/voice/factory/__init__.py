@@ -67,6 +67,7 @@ from sovyx.voice.factory._validate import (
 from sovyx.voice.model_registry import (
     detect_tts_engine,
     ensure_kokoro_tts,
+    ensure_piper_model,
     ensure_silero_vad,
     get_default_model_dir,
 )
@@ -550,6 +551,7 @@ async def create_voice_pipeline(
     input_device_host_api: str | None = None,
     output_device: int | str | None = None,  # noqa: ARG001 — reserved for future TTS routing
     allow_inoperative_capture: bool = False,
+    tts_engine_preference: str = "auto",
 ) -> VoiceBundle:
     """Create a fully initialized VoicePipeline with all components.
 
@@ -668,9 +670,52 @@ async def create_voice_pipeline(
         **{"voice.ring": 4, "voice.ring_name": "decode_validation"},
     )
 
-    # ── 3. TTS (Piper > Kokoro > error) ──────────────────────
-    tts_engine = detect_tts_engine()
-    logger.info("voice_factory_creating_tts", engine=tts_engine)
+    # ── 3. TTS (operator preference > auto-detect > error) ──
+    detected_engine = detect_tts_engine()
+    pref = tts_engine_preference.lower().strip() or "auto"
+    if pref in {"piper", "kokoro"}:
+        # Operator pinned an engine in mind.yaml. Honour it when the
+        # engine is actually importable; fall through to detection
+        # otherwise so a misconfigured mind.yaml never prevents voice
+        # from booting (issue #39).
+        if pref == "piper" and detected_engine in {"piper", "kokoro"}:
+            # piper is preferred when available — detect_tts_engine
+            # already returns piper if importable. If detect returns
+            # kokoro, piper isn't importable; use kokoro with a warn.
+            if detected_engine == "kokoro":
+                logger.warning(
+                    "voice_factory_tts_preference_unavailable",
+                    requested="piper",
+                    falling_back_to="kokoro",
+                    reason="piper-tts not installed",
+                )
+                tts_engine = "kokoro"
+            else:
+                tts_engine = "piper"
+        elif pref == "kokoro" and detected_engine in {"piper", "kokoro"}:
+            # Force kokoro — but only if it's importable. If detect
+            # said piper, that means kokoro_onnx isn't importable.
+            try:
+                __import__("kokoro_onnx")
+                tts_engine = "kokoro"
+            except ImportError:
+                logger.warning(
+                    "voice_factory_tts_preference_unavailable",
+                    requested="kokoro",
+                    falling_back_to=detected_engine,
+                    reason="kokoro-onnx not installed",
+                )
+                tts_engine = detected_engine
+        else:
+            tts_engine = detected_engine
+    else:
+        tts_engine = detected_engine
+    logger.info(
+        "voice_factory_creating_tts",
+        engine=tts_engine,
+        preference=pref,
+        detected=detected_engine,
+    )
     if tts_engine == "piper":
         if voice_id:
             # Piper voices are baked into the ONNX model file — a per-call
@@ -681,6 +726,10 @@ async def create_voice_pipeline(
                 voice_id=voice_id,
                 reason="piper has fixed voices per model; install kokoro-onnx for catalog voices",
             )
+        # Issue #38 — ensure the default Piper voice is on disk before
+        # instantiation. Mirror-aware downloader (Silero/Kokoro pattern);
+        # idempotent fast-path on cache hit.
+        await ensure_piper_model(model_dir=models_dir)
         tts = await asyncio.to_thread(lambda: _create_piper_tts(models_dir))
     elif tts_engine == "kokoro":
         await ensure_kokoro_tts(models_dir)

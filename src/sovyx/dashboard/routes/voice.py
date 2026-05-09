@@ -2163,6 +2163,16 @@ async def enable_voice(request: Request) -> VoiceEnableResponse | JSONResponse:
         raw_language if isinstance(raw_language, str) and raw_language else None
     )
 
+    # Issue #39 — operator's TTS engine preference. Restricted to the
+    # known set so a misconfigured wizard payload can't slip arbitrary
+    # values into mind.yaml.
+    raw_tts_engine = body.get("tts_engine")
+    request_tts_engine: str | None = (
+        raw_tts_engine
+        if isinstance(raw_tts_engine, str) and raw_tts_engine in {"auto", "piper", "kokoro"}
+        else None
+    )
+
     if request_voice_id is not None or request_language is not None:
         from sovyx.voice import voice_catalog
 
@@ -2268,6 +2278,7 @@ async def enable_voice(request: Request) -> VoiceEnableResponse | JSONResponse:
             request_voice_id=request_voice_id,
             request_language=request_language,
             tts_engine=tts_engine,
+            request_tts_engine=request_tts_engine,
         )
 
 
@@ -2282,6 +2293,7 @@ async def _enable_voice_locked(
     request_voice_id: str | None,
     request_language: str | None,
     tts_engine: str,
+    request_tts_engine: str | None = None,
 ) -> VoiceEnableResponse | JSONResponse:
     """Body of :func:`enable_voice` executed under ``_ENABLE_LOCKS``.
 
@@ -2486,6 +2498,7 @@ async def _enable_voice_locked(
     mind_wake_word_enabled = False
     mind_device_name = ""
     mind_device_host_api = ""
+    mind_tts_engine = "auto"
     mind_config_obj = getattr(request.app.state, "mind_config", None)
     if mind_config_obj is not None:
         mind_language = getattr(mind_config_obj, "language", "en") or "en"
@@ -2493,9 +2506,13 @@ async def _enable_voice_locked(
         mind_device_name = getattr(mind_config_obj, "voice_input_device_name", "") or ""
         mind_device_host_api = getattr(mind_config_obj, "voice_input_device_host_api", "") or ""
         mind_wake_word_enabled = bool(getattr(mind_config_obj, "wake_word_enabled", False))
+        mind_tts_engine = getattr(mind_config_obj, "voice_tts_engine", "auto") or "auto"
 
     effective_language = request_language or mind_language
     effective_voice_id = request_voice_id if request_voice_id is not None else mind_voice_id
+    effective_tts_engine = (
+        request_tts_engine if request_tts_engine is not None else mind_tts_engine
+    )
     # Prefer stable (name, host_api) over index. Request > MindConfig > index-only.
     effective_device_name = input_device_name or mind_device_name or None
     effective_device_host_api = input_device_host_api or mind_device_host_api or None
@@ -2519,6 +2536,7 @@ async def _enable_voice_locked(
             input_device_name=effective_device_name,
             input_device_host_api=effective_device_host_api,
             output_device=output_device,
+            tts_engine_preference=effective_tts_engine,
         )
     except VoiceFactoryError as exc:
         return JSONResponse(
@@ -2779,6 +2797,8 @@ async def _enable_voice_locked(
             await editor.set_scalar(mind_yaml_path, "voice_id", request_voice_id)
         if request_language is not None:
             await editor.set_scalar(mind_yaml_path, "language", request_language)
+        if request_tts_engine is not None:
+            await editor.set_scalar(mind_yaml_path, "voice_tts_engine", request_tts_engine)
         if persisted_device_name:
             await editor.set_scalar(
                 mind_yaml_path,
@@ -2799,6 +2819,9 @@ async def _enable_voice_locked(
         if request_language is not None:
             with contextlib.suppress(Exception):
                 mind_config_obj.language = request_language
+        if request_tts_engine is not None:
+            with contextlib.suppress(Exception):
+                mind_config_obj.voice_tts_engine = request_tts_engine
         if persisted_device_name:
             with contextlib.suppress(Exception):
                 mind_config_obj.voice_input_device_name = persisted_device_name

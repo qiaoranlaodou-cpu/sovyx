@@ -862,6 +862,47 @@ async def emit_wizard_telemetry(
         )
 
 
+# ── TTS engine availability (issue #39) ────────────────────────────
+
+
+class WizardTtsEnginesResponse(BaseModel):
+    """Engines the operator can choose from in mind.yaml.
+
+    ``available`` lists the engines whose Python package is importable
+    on this host. ``default`` is the auto-detected pick (Piper >
+    Kokoro), used when ``MindConfig.voice_tts_engine`` is ``"auto"``.
+    """
+
+    available: list[str]
+    default: str
+
+
+@router.get("/tts-engines", response_model=WizardTtsEnginesResponse)
+async def list_tts_engines(_request: Request) -> WizardTtsEnginesResponse:
+    """List TTS engines available on this host.
+
+    The wizard / settings card surfaces this so the operator only sees
+    ``"piper"`` / ``"kokoro"`` as choices when both packages are
+    actually installed. ``"auto"`` is always offered (it's the default
+    that downgrades gracefully via ``detect_tts_engine``).
+    """
+    import contextlib  # noqa: PLC0415
+
+    available: list[str] = ["auto"]
+    with contextlib.suppress(ImportError):
+        __import__("piper_phonemize")
+        available.append("piper")
+    with contextlib.suppress(ImportError):
+        __import__("kokoro_onnx")
+        available.append("kokoro")
+
+    from sovyx.voice.model_registry import detect_tts_engine  # noqa: PLC0415
+
+    detected = detect_tts_engine()
+    default = detected if detected in {"piper", "kokoro"} else "auto"
+    return WizardTtsEnginesResponse(available=available, default=default)
+
+
 # ── Production recorder (lazy-bound to sounddevice) ─────────────────
 
 

@@ -57,6 +57,18 @@
     "fallbackGlobalDefault": "Cost estimates use a global-default rate for this model.",
     "fallbackBody": "Reports show ${{input}} / ${{output}} per 1M tokens — these are estimates, not authoritative rates from the provider. Add the model to the pricing table for exact tracking."
   },
+  "tts": {
+    "title": "TTS Engine",
+    "description": "Pick which voice engine generates speech. \"Auto\" prefers Piper when both are available.",
+    "save": "Save preference",
+    "saved": "TTS engine preference saved.",
+    "saveFailed": "Failed to save TTS engine preference.",
+    "engine": {
+      "auto": "Auto (recommended)",
+      "piper": "Piper",
+      "kokoro": "Kokoro"
+    }
+  },
   "mind": {
     "identity": "Mind Identity",
     "name": "Name",

@@ -56,6 +56,7 @@ import type {
 } from "@/types/api";
 import { cn } from "@/lib/utils";
 import { ProviderConfig } from "@/components/settings/provider-config";
+import { TtsEngineCard } from "@/components/settings/tts-engine-card";
 import { useResolvedMindId } from "@/hooks/use-resolved-mind-id";
 
 type LogLevel = Settings["log_level"];
@@ -785,6 +786,11 @@ export default function SettingsPage() {
       {/* ── LLM Provider Config (interactive) ── */}
       <ErrorBoundary name="section.settings.providers" variant="section">
         <ProviderConfig />
+      </ErrorBoundary>
+
+      {/* ── TTS engine preference (issue #39, hidden when no choice exists) ── */}
+      <ErrorBoundary name="section.settings.tts" variant="section">
+        <TtsEngineCard />
       </ErrorBoundary>
 
       {/* ── LLM Parameters + Brain Info (READ-ONLY, from /api/config) ── */}
