@@ -536,6 +536,121 @@ class VoiceHardwareDetectResponse(BaseModel):
     total_download_mb: float = 0.0
 
 
+# ── Phase 5.D group E — Typed responses for action family ──────────
+
+
+class VoiceCaptureExclusiveResponse(BaseModel):
+    """``POST /api/voice/capture-exclusive`` payload — persist + hot-apply
+    the WASAPI-exclusive capture flag.
+
+    ``applied_immediately`` reflects whether WASAPI actually granted
+    exclusive mode (post-v0.20.2 / Bug C — pre-v0.20.2 the field
+    only signalled "the restart code path ran"). ``verdict`` +
+    ``detail`` are populated when the orchestrator emits them so the
+    UI can surface a warning banner when the reopen landed in shared
+    mode (device held by another app, policy denied).
+    """
+
+    ok: bool = True
+    enabled: bool
+    persisted: bool = False
+    applied_immediately: bool = False
+    verdict: str | None = None
+    detail: str | None = None
+
+
+_LinuxMixerResetReason = Literal[
+    "not_linux",
+    "amixer_unavailable",
+    "no_snapshots",
+    "ambiguous_card",
+    "card_not_found",
+    "not_saturating",
+    "no_controls_to_reset",
+    "apply_failed",
+    "invalid_card_index",
+]
+"""Closed enum of failure reasons for ``POST /api/voice/linux-mixer-reset``.
+Adding new values requires a frontend i18n key + zod migration."""
+
+
+class VoiceLinuxMixerResetResponse(BaseModel):
+    """``POST /api/voice/linux-mixer-reset`` envelope — success + all failures.
+
+    Single envelope with ``ok`` + closed-enum ``reason`` for failures.
+    Success path populates ``card_index`` / ``card_id`` / ``card_longname``
+    + the applied / reverted control tuples; failure paths populate
+    ``reason`` + ``detail`` + (where applicable) ``card_index`` /
+    ``card_id`` / ``reason_code`` (BypassApplyError) /
+    ``candidate_card_indexes`` (ambiguous_card disambiguation).
+    """
+
+    ok: bool
+    reason: _LinuxMixerResetReason | None = None
+    reason_code: str | None = None
+    detail: str | None = None
+    card_index: int | None = None
+    card_id: str | None = None
+    card_longname: str | None = None
+    applied_controls: list[tuple[str, int]] | None = None
+    reverted_controls: list[tuple[str, int]] | None = None
+    candidate_card_indexes: list[int] | None = None
+
+
+class VoiceEnableResponse(BaseModel):
+    """``POST /api/voice/enable`` envelope — success + all error variants.
+
+    Phase 5.D group E pragmatic envelope: ``/enable`` is a 700+ LOC
+    orchestration endpoint with 6+ documented error variants
+    (missing_deps, voice/language validation, factory failure,
+    capture_inoperative, capture_silence, capture_device_contended)
+    each carrying its own diagnostic payload. Modelling each as a
+    discriminated union would multiply the OpenAPI spec without
+    improving operator/frontend ergonomics; the dashboard already
+    discriminates at use-time on ``error`` (the closed-enum-like
+    string), so a single envelope with all known fields optional is
+    the enterprise-grade compromise. ``model_config extra="allow"``
+    preserves forward-additive diagnostic fields.
+    """
+
+    model_config = {"extra": "allow"}
+
+    ok: bool
+    status: str | None = None
+    error: str | None = None
+    tts_engine: str | None = None
+    host_api: str | None = None
+    detail: str | None = None
+    # ``device`` may be either an integer PortAudio index (int) or a
+    # friendly device name (str) depending on which exception path
+    # populated it (CaptureSilenceError carries ``device: str``;
+    # CaptureInoperativeError carries ``device: int | str | None``).
+    device: int | str | None = None
+    reason: str | None = None
+    # ``attempts`` is the number of cascade attempts an inoperative
+    # capture made before giving up (CaptureInoperativeError.attempts).
+    # Wider Any tolerates future shape (e.g. list of attempt records).
+    attempts: Any = None
+    missing_deps: list[Any] | None = None
+    install_command: str | None = None
+    missing_models: list[Any] | None = None
+    observed_peak_rms_db: float | None = None
+    suggested_actions: list[Any] | None = None
+    contending_process_hint: str | None = None
+    alternative_devices: list[dict[str, Any]] | None = None
+
+
+class VoiceDisableResponse(BaseModel):
+    """``POST /api/voice/disable`` envelope — success + 503 no-mind-yaml.
+
+    Trivial shape: ``ok=True`` on success, ``ok=False, error=str`` on
+    503 (no mind.yaml path resolvable for the active mind).
+    """
+
+    ok: bool
+    error: str | None = None
+
+
 def _resolve_engine_config(request: Request) -> EngineConfig | None:
     """Pull EngineConfig from the FastAPI app state (best-effort)."""
     return getattr(request.app.state, "engine_config", None)
@@ -1232,9 +1347,7 @@ async def list_voice_catalog() -> VoiceCatalogResponse:
         recommended_voice,
     )
 
-    by_language: dict[str, list[VoiceCatalogEntry]] = {
-        lang: [] for lang in SUPPORTED_LANGUAGES
-    }
+    by_language: dict[str, list[VoiceCatalogEntry]] = {lang: [] for lang in SUPPORTED_LANGUAGES}
     for v in all_voices():
         by_language[v.language].append(
             VoiceCatalogEntry(
@@ -1500,8 +1613,8 @@ def _enumerate_alternative_devices() -> list[dict[str, object]]:
     return alternatives
 
 
-@router.post("/capture-exclusive")
-async def set_capture_exclusive(request: Request) -> JSONResponse:
+@router.post("/capture-exclusive", response_model=VoiceCaptureExclusiveResponse)
+async def set_capture_exclusive(request: Request) -> VoiceCaptureExclusiveResponse:
     """Persist + hot-apply the WASAPI-exclusive capture flag.
 
     Body: ``{"enabled": bool}`` (default ``True``).
@@ -1589,17 +1702,14 @@ async def set_capture_exclusive(request: Request) -> JSONResponse:
         applied_immediately=applied_immediately,
         verdict=restart_verdict,
     )
-    response: dict[str, object] = {
-        "ok": True,
-        "enabled": enabled,
-        "persisted": persisted,
-        "applied_immediately": applied_immediately,
-    }
-    if restart_verdict is not None:
-        response["verdict"] = restart_verdict
-    if restart_detail is not None:
-        response["detail"] = restart_detail
-    return JSONResponse(response)
+    return VoiceCaptureExclusiveResponse(
+        ok=True,
+        enabled=enabled,
+        persisted=persisted,
+        applied_immediately=applied_immediately,
+        verdict=restart_verdict,
+        detail=restart_detail,
+    )
 
 
 def _is_linux() -> bool:
@@ -1720,8 +1830,8 @@ async def linux_mixer_diagnostics(request: Request) -> VoiceLinuxMixerDiagnostic
     )
 
 
-@router.post("/linux-mixer-reset")
-async def linux_mixer_reset(request: Request) -> JSONResponse:
+@router.post("/linux-mixer-reset", response_model=VoiceLinuxMixerResetResponse)
+async def linux_mixer_reset(request: Request) -> VoiceLinuxMixerResetResponse:
     """Reset saturated ALSA gain controls on one card — user-initiated.
 
     Body (all fields optional)::
@@ -1769,23 +1879,19 @@ async def linux_mixer_reset(request: Request) -> JSONResponse:
     from sovyx.voice.health.bypass._strategy import BypassApplyError
 
     if not _is_linux():
-        return JSONResponse(
-            {
-                "ok": False,
-                "reason": "not_linux",
-                "detail": ("Linux ALSA mixer reset is only available on Linux hosts."),
-            }
+        return VoiceLinuxMixerResetResponse(
+            ok=False,
+            reason="not_linux",
+            detail="Linux ALSA mixer reset is only available on Linux hosts.",
         )
     if not _amixer_available():
-        return JSONResponse(
-            {
-                "ok": False,
-                "reason": "amixer_unavailable",
-                "detail": (
-                    "`amixer` not found on PATH — install the alsa-utils "
-                    "package to enable mixer remediation."
-                ),
-            }
+        return VoiceLinuxMixerResetResponse(
+            ok=False,
+            reason="amixer_unavailable",
+            detail=(
+                "`amixer` not found on PATH — install the alsa-utils "
+                "package to enable mixer remediation."
+            ),
         )
 
     try:
@@ -1802,25 +1908,21 @@ async def linux_mixer_reset(request: Request) -> JSONResponse:
         try:
             requested_card_index = int(raw_card_index)
         except (TypeError, ValueError):
-            return JSONResponse(
-                {
-                    "ok": False,
-                    "reason": "invalid_card_index",
-                    "detail": ("card_index must be an integer from /proc/asound/cards."),
-                }
+            return VoiceLinuxMixerResetResponse(
+                ok=False,
+                reason="invalid_card_index",
+                detail="card_index must be an integer from /proc/asound/cards.",
             )
 
     snapshots = await asyncio.to_thread(enumerate_alsa_mixer_snapshots)
     if not snapshots:
-        return JSONResponse(
-            {
-                "ok": False,
-                "reason": "no_snapshots",
-                "detail": (
-                    "amixer returned no cards — the audio subsystem may be "
-                    "unreachable or no card exposes a mixer."
-                ),
-            }
+        return VoiceLinuxMixerResetResponse(
+            ok=False,
+            reason="no_snapshots",
+            detail=(
+                "amixer returned no cards — the audio subsystem may be "
+                "unreachable or no card exposes a mixer."
+            ),
         )
 
     target = None
@@ -1830,54 +1932,42 @@ async def linux_mixer_reset(request: Request) -> JSONResponse:
                 target = snap
                 break
         if target is None:
-            return JSONResponse(
-                {
-                    "ok": False,
-                    "reason": "card_not_found",
-                    "detail": (
-                        f"No ALSA card with index {requested_card_index} was reported by amixer."
-                    ),
-                }
+            return VoiceLinuxMixerResetResponse(
+                ok=False,
+                reason="card_not_found",
+                detail=(f"No ALSA card with index {requested_card_index} was reported by amixer."),
             )
     else:
         saturating = [s for s in snapshots if s.saturation_warning]
         if not saturating:
-            return JSONResponse(
-                {
-                    "ok": False,
-                    "reason": "not_saturating",
-                    "detail": (
-                        "No ALSA card currently reports a saturation warning — nothing to reset."
-                    ),
-                }
+            return VoiceLinuxMixerResetResponse(
+                ok=False,
+                reason="not_saturating",
+                detail=("No ALSA card currently reports a saturation warning — nothing to reset."),
             )
         if len(saturating) > 1:
-            return JSONResponse(
-                {
-                    "ok": False,
-                    "reason": "ambiguous_card",
-                    "detail": (
-                        "Multiple cards report saturation — re-submit with an explicit card_index."
-                    ),
-                    "candidate_card_indexes": [s.card_index for s in saturating],
-                }
+            return VoiceLinuxMixerResetResponse(
+                ok=False,
+                reason="ambiguous_card",
+                detail=(
+                    "Multiple cards report saturation — re-submit with an explicit card_index."
+                ),
+                candidate_card_indexes=[s.card_index for s in saturating],
             )
         target = saturating[0]
 
     controls_to_reset = [c for c in target.controls if c.saturation_risk]
     if not controls_to_reset:
-        return JSONResponse(
-            {
-                "ok": False,
-                "reason": "no_controls_to_reset",
-                "detail": (
-                    f"Card {target.card_index} ({target.card_id}) has no "
-                    "individual control flagged as saturating — nothing to "
-                    "reset."
-                ),
-                "card_index": target.card_index,
-                "card_id": target.card_id,
-            }
+        return VoiceLinuxMixerResetResponse(
+            ok=False,
+            reason="no_controls_to_reset",
+            detail=(
+                f"Card {target.card_index} ({target.card_id}) has no "
+                "individual control flagged as saturating — nothing to "
+                "reset."
+            ),
+            card_index=target.card_index,
+            card_id=target.card_id,
         )
 
     tuning = VoiceTuningConfig()
@@ -1894,15 +1984,13 @@ async def linux_mixer_reset(request: Request) -> JSONResponse:
             reason=exc.reason,
             detail=str(exc),
         )
-        return JSONResponse(
-            {
-                "ok": False,
-                "reason": "apply_failed",
-                "reason_code": exc.reason,
-                "detail": str(exc),
-                "card_index": target.card_index,
-                "card_id": target.card_id,
-            }
+        return VoiceLinuxMixerResetResponse(
+            ok=False,
+            reason="apply_failed",
+            reason_code=exc.reason,
+            detail=str(exc),
+            card_index=target.card_index,
+            card_id=target.card_id,
         )
 
     logger.info(
@@ -1911,15 +1999,13 @@ async def linux_mixer_reset(request: Request) -> JSONResponse:
         controls_reset=[name for name, _ in result.applied_controls],
         controls_count=len(result.applied_controls),
     )
-    return JSONResponse(
-        {
-            "ok": True,
-            "card_index": result.card_index,
-            "card_id": target.card_id,
-            "card_longname": target.card_longname,
-            "applied_controls": [[name, raw] for name, raw in result.applied_controls],
-            "reverted_controls": [[name, raw] for name, raw in result.reverted_controls],
-        }
+    return VoiceLinuxMixerResetResponse(
+        ok=True,
+        card_index=result.card_index,
+        card_id=target.card_id,
+        card_longname=target.card_longname,
+        applied_controls=[(name, raw) for name, raw in result.applied_controls],
+        reverted_controls=[(name, raw) for name, raw in result.reverted_controls],
     )
 
 
@@ -2014,8 +2100,16 @@ async def hardware_detect(
     )
 
 
-@router.post("/enable")
-async def enable_voice(request: Request) -> JSONResponse:
+@router.post(
+    "/enable",
+    response_model=VoiceEnableResponse,
+    responses={
+        400: {"description": "Voice deps missing or audio devices unavailable"},
+        500: {"description": "Pipeline creation failed"},
+        503: {"description": "Capture inoperative / silent / contended"},
+    },
+)
+async def enable_voice(request: Request) -> VoiceEnableResponse | JSONResponse:
     """Enable the voice pipeline (hot-enable, no restart needed).
 
     Flow:
@@ -2066,20 +2160,22 @@ async def enable_voice(request: Request) -> JSONResponse:
 
         if request_voice_id is not None and voice_catalog.voice_info(request_voice_id) is None:
             return JSONResponse(
-                {"ok": False, "error": f"Unknown voice id: {request_voice_id}"},
+                VoiceEnableResponse(
+                    ok=False, error=f"Unknown voice id: {request_voice_id}"
+                ).model_dump(exclude_none=True),
                 status_code=400,
             )
         if request_language is not None:
             canonical = voice_catalog.normalize_language(request_language)
             if canonical not in voice_catalog.SUPPORTED_LANGUAGES:
                 return JSONResponse(
-                    {
-                        "ok": False,
-                        "error": (
+                    VoiceEnableResponse(
+                        ok=False,
+                        error=(
                             f"Unsupported language: {request_language!r}. "
                             f"Supported: {sorted(voice_catalog.SUPPORTED_LANGUAGES)}"
                         ),
-                    },
+                    ).model_dump(exclude_none=True),
                     status_code=400,
                 )
 
@@ -2090,24 +2186,24 @@ async def enable_voice(request: Request) -> JSONResponse:
     tts_engine = detect_tts_engine()
     if missing:
         return JSONResponse(
-            {
-                "ok": False,
-                "error": "missing_deps",
-                "missing_deps": missing,
-                "install_command": "pip install sovyx[voice]",
-            },
+            VoiceEnableResponse(
+                ok=False,
+                error="missing_deps",
+                missing_deps=missing,
+                install_command="pip install sovyx[voice]",
+            ).model_dump(exclude_none=True),
             status_code=400,
         )
     if tts_engine == "none":
         return JSONResponse(
-            {
-                "ok": False,
-                "error": "missing_deps",
-                "missing_deps": [
+            VoiceEnableResponse(
+                ok=False,
+                error="missing_deps",
+                missing_deps=[
                     {"module": "piper_phonemize or kokoro_onnx", "package": "piper-tts"}
                 ],
-                "install_command": "pip install piper-tts",
-            },
+                install_command="pip install piper-tts",
+            ).model_dump(exclude_none=True),
             status_code=400,
         )
 
@@ -2127,7 +2223,10 @@ async def enable_voice(request: Request) -> JSONResponse:
 
     if not audio_ok:
         return JSONResponse(
-            {"ok": False, "error": "No audio devices detected (microphone + speaker required)"},
+            VoiceEnableResponse(
+                ok=False,
+                error="No audio devices detected (microphone + speaker required)",
+            ).model_dump(exclude_none=True),
             status_code=400,
         )
 
@@ -2175,7 +2274,7 @@ async def _enable_voice_locked(
     request_voice_id: str | None,
     request_language: str | None,
     tts_engine: str,
-) -> JSONResponse:
+) -> VoiceEnableResponse | JSONResponse:
     """Body of :func:`enable_voice` executed under ``_ENABLE_LOCKS``.
 
     Split out as a separate coroutine so the lock-guarded section is a
@@ -2193,7 +2292,7 @@ async def _enable_voice_locked(
         from sovyx.voice.pipeline._orchestrator import VoicePipeline
 
         if registry.is_registered(VoicePipeline):
-            return JSONResponse({"ok": True, "status": "already_active"})
+            return VoiceEnableResponse(ok=True, status="already_active")
 
     # 3.5 v0.20.2 / Bug B + voice-linux-cascade-root-fix T8 — close AND
     # AWAIT any live voice_test meter sessions BEFORE the factory probes
@@ -2415,11 +2514,11 @@ async def _enable_voice_locked(
         )
     except VoiceFactoryError as exc:
         return JSONResponse(
-            {
-                "ok": False,
-                "error": str(exc),
-                "missing_models": exc.missing_models,
-            },
+            VoiceEnableResponse(
+                ok=False,
+                error=str(exc),
+                missing_models=exc.missing_models,
+            ).model_dump(exclude_none=True),
             status_code=400,
         )
     except CaptureInoperativeError as exc:
@@ -2436,21 +2535,23 @@ async def _enable_voice_locked(
             attempts=exc.attempts,
         )
         return JSONResponse(
-            {
-                "ok": False,
-                "error": "capture_inoperative",
-                "detail": str(exc),
-                "device": exc.device,
-                "host_api": exc.host_api,
-                "reason": exc.reason,
-                "attempts": exc.attempts,
-            },
+            VoiceEnableResponse(
+                ok=False,
+                error="capture_inoperative",
+                detail=str(exc),
+                device=exc.device,
+                host_api=exc.host_api,
+                reason=exc.reason,
+                attempts=exc.attempts,
+            ).model_dump(exclude_none=True),
             status_code=503,
         )
     except Exception as exc:  # noqa: BLE001
         logger.exception("voice_enable_failed")
         return JSONResponse(
-            {"ok": False, "error": f"Pipeline creation failed: {exc}"},
+            VoiceEnableResponse(ok=False, error=f"Pipeline creation failed: {exc}").model_dump(
+                exclude_none=True
+            ),
             status_code=500,
         )
 
@@ -2480,14 +2581,14 @@ async def _enable_voice_locked(
         with contextlib.suppress(Exception):
             await bundle.pipeline.stop()
         return JSONResponse(
-            {
-                "ok": False,
-                "error": "capture_silence",
-                "detail": str(exc),
-                "device": exc.device,
-                "host_api": exc.host_api,
-                "observed_peak_rms_db": exc.observed_peak_rms_db,
-            },
+            VoiceEnableResponse(
+                ok=False,
+                error="capture_silence",
+                detail=str(exc),
+                device=exc.device,
+                host_api=exc.host_api,
+                observed_peak_rms_db=exc.observed_peak_rms_db,
+            ).model_dump(exclude_none=True),
             status_code=503,
         )
     except CaptureDeviceContendedError as exc:
@@ -2506,16 +2607,16 @@ async def _enable_voice_locked(
             await bundle.pipeline.stop()
         alternatives = _enumerate_alternative_devices()
         return JSONResponse(
-            {
-                "ok": False,
-                "error": "capture_device_contended",
-                "detail": str(exc),
-                "device": exc.device,
-                "host_api": exc.host_api,
-                "suggested_actions": exc.suggested_actions,
-                "contending_process_hint": exc.contending_process_hint,
-                "alternative_devices": alternatives,
-            },
+            VoiceEnableResponse(
+                ok=False,
+                error="capture_device_contended",
+                detail=str(exc),
+                device=exc.device,
+                host_api=exc.host_api,
+                suggested_actions=exc.suggested_actions,
+                contending_process_hint=exc.contending_process_hint,
+                alternative_devices=alternatives,
+            ).model_dump(exclude_none=True),
             status_code=503,
         )
     except Exception as exc:  # noqa: BLE001
@@ -2523,7 +2624,9 @@ async def _enable_voice_locked(
         with contextlib.suppress(Exception):
             await bundle.pipeline.stop()
         return JSONResponse(
-            {"ok": False, "error": f"Audio capture failed to start: {exc}"},
+            VoiceEnableResponse(
+                ok=False, error=f"Audio capture failed to start: {exc}"
+            ).model_dump(exclude_none=True),
             status_code=500,
         )
 
@@ -2711,18 +2814,20 @@ async def _enable_voice_locked(
         voice_id=effective_voice_id or "<auto>",
         host_api=host_api_for_response or "unknown",
     )
-    return JSONResponse(
-        {
-            "ok": True,
-            "status": "active",
-            "tts_engine": tts_engine,
-            "host_api": host_api_for_response,
-        },
+    return VoiceEnableResponse(
+        ok=True,
+        status="active",
+        tts_engine=tts_engine,
+        host_api=host_api_for_response,
     )
 
 
-@router.post("/disable")
-async def disable_voice(request: Request) -> JSONResponse:
+@router.post(
+    "/disable",
+    response_model=VoiceDisableResponse,
+    responses={503: {"description": "No mind.yaml path resolvable"}},
+)
+async def disable_voice(request: Request) -> VoiceDisableResponse | JSONResponse:
     """Disable the voice pipeline (graceful shutdown).
 
     Order of operations:
@@ -2801,10 +2906,12 @@ async def disable_voice(request: Request) -> JSONResponse:
         # the operator just turned it off on).
         await editor.set_scalar(mind_yaml_path, "voice_enabled", False)
         logger.info("voice_disabled_via_wizard")
-        return JSONResponse({"ok": True})
+        return VoiceDisableResponse(ok=True)
 
     return JSONResponse(
-        {"ok": False, "error": "No mind.yaml path available"},
+        VoiceDisableResponse(ok=False, error="No mind.yaml path available").model_dump(
+            exclude_none=True
+        ),
         status_code=503,
     )
 
