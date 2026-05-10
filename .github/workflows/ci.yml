@@ -204,10 +204,20 @@ jobs:
       - name: Enforce explicit exception cause chains (PEP 3134)
         run: uv run python scripts/check_exception_chains.py
 
+  constant-time-token-gate:
+    name: Constant-Time Token Gate
+    runs-on: sovyx-4core
+    needs: exception-chain-gate
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-sovyx-python
+      - name: Refuse variable-time WS token compares (CWE-208 / F2-C02)
+        run: uv run python scripts/check_constant_time_token.py
+
   pii-leak-gate:
     name: PII Leak Gate
     runs-on: sovyx-4core
-    needs: exception-chain-gate
+    needs: constant-time-token-gate
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/setup-sovyx-python

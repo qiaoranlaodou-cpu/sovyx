@@ -32,6 +32,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import secrets
 import time
 from typing import Literal
 
@@ -281,7 +282,9 @@ async def stream_logs(websocket: WebSocket) -> None:
     """
     expected = getattr(websocket.app.state, "auth_token", None)
     provided = websocket.query_params.get("token")
-    if expected is not None and provided != expected:
+    if expected is not None and (
+        provided is None or not secrets.compare_digest(provided, expected)
+    ):
         await websocket.close(code=4401)
         return
 

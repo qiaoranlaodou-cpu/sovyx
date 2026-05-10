@@ -40,6 +40,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import secrets
 import sys
 from typing import TYPE_CHECKING
 
@@ -1067,7 +1068,7 @@ async def stream_calibration_job(
     the job reaches a terminal state.
     """
     expected_token = getattr(websocket.app.state, "auth_token", None)
-    if expected_token is None or token != expected_token:
+    if expected_token is None or not secrets.compare_digest(token, expected_token):
         logger.info(
             "voice.calibration.wizard.subscriber_rejected",
             job_id_hash=short_hash(job_id),

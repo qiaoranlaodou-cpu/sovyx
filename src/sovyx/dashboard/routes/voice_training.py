@@ -42,6 +42,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import secrets
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -844,7 +845,9 @@ async def stream_training_job(websocket: WebSocket, job_id: str) -> None:
     """
     expected = getattr(websocket.app.state, "auth_token", None)
     provided = websocket.query_params.get("token")
-    if expected is not None and provided != expected:
+    if expected is not None and (
+        provided is None or not secrets.compare_digest(provided, expected)
+    ):
         await websocket.close(code=4401)
         return
 
