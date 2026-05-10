@@ -43,6 +43,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import queue
 import secrets
 import sys
 import threading
@@ -1034,7 +1035,14 @@ class SoundDeviceWizardRecorder:
             defaults = [e for e in candidates if e.is_os_default]
             entry = defaults[0] if defaults else candidates[0]
 
-        captured_frames: list[npt.NDArray[np.int16]] = []
+        # Thread-safe FIFO so the PortAudio callback (driver thread)
+        # and the main coroutine (event loop thread) cannot race on
+        # the underlying buffer. ``list.append`` is atomic at the
+        # bytecode level but the backing-array resize is not — a
+        # resize crossing concurrently with a draining iteration could
+        # corrupt or crash. ``queue.Queue`` is documented thread-safe;
+        # the main coroutine drains after ``stream.stop()``.
+        captured_q: queue.Queue[npt.NDArray[np.int16]] = queue.Queue()
 
         def _callback(
             indata: npt.NDArray[np.int16],
@@ -1045,7 +1053,7 @@ class SoundDeviceWizardRecorder:
             # PortAudio reuses ``indata`` after the callback returns —
             # copy before storing.
             mono = indata[:, 0].copy() if indata.ndim > 1 else indata.copy()
-            captured_frames.append(np.asarray(mono, dtype=np.int16))
+            captured_q.put_nowait(np.asarray(mono, dtype=np.int16))
 
         try:
             stream, info = await open_input_stream(
@@ -1070,14 +1078,23 @@ class SoundDeviceWizardRecorder:
             # Run the stream long enough to collect ``duration_s`` of
             # audio. ``asyncio.sleep`` yields to other tasks; the
             # PortAudio callback fires from its own thread and
-            # accumulates into ``captured_frames`` without contending
-            # with this coroutine.
+            # accumulates into ``captured_q`` without contending with
+            # this coroutine.
             await asyncio.sleep(duration_s)
         finally:
             with contextlib.suppress(Exception):
                 await asyncio.to_thread(stream.stop)
             with contextlib.suppress(Exception):
                 await asyncio.to_thread(stream.close)
+
+        # Drain the thread-safe queue into a list now that the callback
+        # thread has been stopped (no more producers).
+        captured_frames: list[npt.NDArray[np.int16]] = []
+        while True:
+            try:
+                captured_frames.append(captured_q.get_nowait())
+            except queue.Empty:
+                break
 
         actual_rate = info.sample_rate
         target_samples = int(duration_s * actual_rate)
