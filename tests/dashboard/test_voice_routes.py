@@ -1292,9 +1292,9 @@ class TestOnPerceptionTurnCancellationRace:
             # Cleanup: cancel the inner shielded sleep so we don't
             # leak a task across tests.
             shield_target.cancel()
-            with contextlib.suppress(asyncio.CancelledError, BaseException):
+            with contextlib.suppress(asyncio.CancelledError):
                 await shield_target
-            with contextlib.suppress(asyncio.CancelledError, BaseException):
+            with contextlib.suppress(asyncio.CancelledError):
                 await stuck_task
 
 

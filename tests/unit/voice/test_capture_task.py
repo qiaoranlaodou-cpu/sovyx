@@ -484,7 +484,7 @@ class TestAudioCallbackChaosInjectionT633:
             consumer = task._consumer  # noqa: SLF001
             if consumer is not None:
                 consumer.cancel()
-                with contextlib.suppress(asyncio.CancelledError, BaseException):
+                with contextlib.suppress(asyncio.CancelledError):
                     await consumer
             # Drain the validation bootstrap so the chaos sequence
             # starts from an empty queue.
@@ -2085,7 +2085,7 @@ class TestUnderrunStormT629:
             consumer = task._consumer  # noqa: SLF001
             if consumer is not None:
                 consumer.cancel()
-                with contextlib.suppress(asyncio.CancelledError, BaseException):
+                with contextlib.suppress(asyncio.CancelledError):
                     await consumer
 
             status_underrun = MagicMock()
