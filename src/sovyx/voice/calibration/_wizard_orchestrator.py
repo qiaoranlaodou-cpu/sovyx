@@ -391,58 +391,71 @@ class WizardOrchestrator:
           in its ``finally:`` block. CancelledError is the expected
           terminator and exits cleanly.
         """
+        # Read on a worker thread so a slow filesystem (NFS, network
+        # share, encrypted volume) cannot stall the event loop for the
+        # full read latency. Anti-pattern #14: sync I/O in async def
+        # blocks every other coroutine. The exists()-then-read race is
+        # collapsed by catching FileNotFoundError inside the worker.
+        def _read_if_exists() -> str | None:
+            try:
+                return prompts_file.read_text(encoding="utf-8", errors="replace")
+            except FileNotFoundError:
+                return None
+
         sent_offset = 0
         while True:
             try:
-                if prompts_file.exists():
-                    raw = prompts_file.read_text(encoding="utf-8", errors="replace")
-                    lines = raw.splitlines()
-                    for line in lines[sent_offset:]:
-                        stripped = line.strip()
-                        if not stripped:
-                            continue
-                        try:
-                            prompt_data: dict[str, Any] = json.loads(stripped)
-                        except json.JSONDecodeError:
-                            logger.debug(
-                                "voice.calibration.wizard.capture_prompt_malformed",
-                                preview=stripped[:120],
-                            )
-                            continue
-                        current = state_holder["state"]
-                        # Build a fresh state with current_prompt in extras
-                        # so subscribers see the per-prompt update.
-                        new_extras = dict(current.extras)
-                        new_extras["current_prompt"] = prompt_data
-                        new_state = WizardJobState(
-                            job_id=current.job_id,
-                            mind_id=current.mind_id,
-                            status=current.status,
-                            progress=current.progress,
-                            current_stage_message=current.current_stage_message,
-                            created_at_utc=current.created_at_utc,
-                            updated_at_utc=self._now(),
-                            profile_path=current.profile_path,
-                            triage_winner_hid=current.triage_winner_hid,
-                            error_summary=current.error_summary,
-                            fallback_reason=current.fallback_reason,
-                            extras=new_extras,
+                raw = await asyncio.to_thread(_read_if_exists)
+                if raw is None:
+                    await asyncio.sleep(_PROMPTS_POLL_INTERVAL_S)
+                    continue
+                lines = raw.splitlines()
+                for line in lines[sent_offset:]:
+                    stripped = line.strip()
+                    if not stripped:
+                        continue
+                    try:
+                        prompt_data: dict[str, Any] = json.loads(stripped)
+                    except json.JSONDecodeError:
+                        logger.debug(
+                            "voice.calibration.wizard.capture_prompt_malformed",
+                            preview=stripped[:120],
                         )
-                        state_holder["state"] = new_state
-                        self._emit_state(new_state, tracker)
-                        prompt_type = prompt_data.get("type", "")
-                        # Closed-enum guard: only emit telemetry for the
-                        # documented prompt types so OTel cardinality
-                        # stays bounded.
-                        if prompt_type in ("speak", "silence"):
-                            logger.info(
-                                "voice.calibration.wizard.capture_prompt",
-                                job_id_hash=short_hash(current.job_id),
-                                mind_id_hash=short_hash(current.mind_id),
-                                prompt_type=prompt_type,
-                                phrase=str(prompt_data.get("phrase") or ""),
-                            )
-                    sent_offset = len(lines)
+                        continue
+                    current = state_holder["state"]
+                    # Build a fresh state with current_prompt in extras
+                    # so subscribers see the per-prompt update.
+                    new_extras = dict(current.extras)
+                    new_extras["current_prompt"] = prompt_data
+                    new_state = WizardJobState(
+                        job_id=current.job_id,
+                        mind_id=current.mind_id,
+                        status=current.status,
+                        progress=current.progress,
+                        current_stage_message=current.current_stage_message,
+                        created_at_utc=current.created_at_utc,
+                        updated_at_utc=self._now(),
+                        profile_path=current.profile_path,
+                        triage_winner_hid=current.triage_winner_hid,
+                        error_summary=current.error_summary,
+                        fallback_reason=current.fallback_reason,
+                        extras=new_extras,
+                    )
+                    state_holder["state"] = new_state
+                    self._emit_state(new_state, tracker)
+                    prompt_type = prompt_data.get("type", "")
+                    # Closed-enum guard: only emit telemetry for the
+                    # documented prompt types so OTel cardinality
+                    # stays bounded.
+                    if prompt_type in ("speak", "silence"):
+                        logger.info(
+                            "voice.calibration.wizard.capture_prompt",
+                            job_id_hash=short_hash(current.job_id),
+                            mind_id_hash=short_hash(current.mind_id),
+                            prompt_type=prompt_type,
+                            phrase=str(prompt_data.get("phrase") or ""),
+                        )
+                sent_offset = len(lines)
             except OSError as exc:
                 logger.debug(
                     "voice.calibration.wizard.capture_prompt_read_failed",
