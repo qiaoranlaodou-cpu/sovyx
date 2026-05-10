@@ -1098,3 +1098,141 @@ describe("OnboardingCompleteResponseSchema", () => {
     ).toThrow();
   });
 });
+
+// ── F2-H02 — VoiceStatusResponseSchema + VoiceModelsResponseSchema ──
+//
+// These two schemas mirror the backend ``VoiceStatusResponse`` and
+// ``VoiceModelsResponse`` Pydantic models in
+// ``src/sovyx/dashboard/routes/voice.py``. ``pages/voice.tsx`` now wires
+// them into ``api.get`` via ``{ schema }`` so backend response-shape
+// drift surfaces as a structured ``api.schema_mismatch`` warning instead
+// of silently degrading the UI.
+
+import {
+  VoiceModelsResponseSchema,
+  VoiceStatusResponseSchema,
+} from "./schemas";
+
+const SAMPLE_VOICE_STATUS = {
+  pipeline: { running: true, state: "idle", latency_ms: 42 },
+  capture: {
+    running: true,
+    input_device: "Built-in Microphone",
+    host_api: "WASAPI",
+    sample_rate: 16000,
+    frames_delivered: 1024,
+    last_rms_db: -32.5,
+  },
+  stt: { engine: "MoonshineSTT", model: "moonshine-tiny", state: "ready" },
+  tts: { engine: "PiperTTS", model: "en_US-lessac-medium", initialized: true },
+  wake_word: { enabled: true, phrase: "hey sovyx" },
+  vad: { enabled: true },
+  wyoming: { connected: false, endpoint: null },
+  hardware: { tier: "PI5", ram_mb: 4096 },
+  preflight_warnings: [],
+};
+
+const SAMPLE_VOICE_MODELS = {
+  detected_tier: "PI5",
+  active: {
+    stt_primary: "moonshine-tiny",
+    stt_streaming: "moonshine-tiny",
+    tts_primary: "piper-lessac",
+    tts_quality: "piper-lessac",
+    wake: "openwakeword",
+    vad: "silero-v5",
+  },
+  available_tiers: {
+    PI5: {
+      stt_primary: "moonshine-tiny",
+      stt_streaming: "moonshine-tiny",
+      tts_primary: "piper-lessac",
+      tts_quality: "piper-lessac",
+      wake: "openwakeword",
+      vad: "silero-v5",
+    },
+  },
+};
+
+describe("VoiceStatusResponseSchema (F2-H02)", () => {
+  it("parses the canonical /api/voice/status payload", () => {
+    const parsed = VoiceStatusResponseSchema.parse(SAMPLE_VOICE_STATUS);
+    expect(parsed.pipeline.running).toBe(true);
+    expect(parsed.capture?.last_rms_db).toBe(-32.5);
+    expect(parsed.hardware?.tier).toBe("PI5");
+  });
+
+  it("safeParse succeeds when an optional sub-block is dropped (vad)", () => {
+    // Backend dropping a sub-block (e.g. after a refactor) must not
+    // corrupt the UI — safeParse semantics: optional fields silently
+    // pass when missing, page continues to render.
+    const { vad: _vad, ...withoutVad } = SAMPLE_VOICE_STATUS;
+    const result = VoiceStatusResponseSchema.safeParse(withoutVad);
+    expect(result.success).toBe(true);
+  });
+
+  it("safeParse succeeds when capture sub-fields are unknown (passthrough)", () => {
+    // Backend's VoiceStatusCapture is `extra: allow` — new SLI
+    // fields must round-trip without rejection.
+    const drifted = {
+      ...SAMPLE_VOICE_STATUS,
+      capture: {
+        ...SAMPLE_VOICE_STATUS.capture,
+        future_sli_field: "ok",
+      },
+    };
+    const result = VoiceStatusResponseSchema.safeParse(drifted);
+    expect(result.success).toBe(true);
+  });
+
+  it("safeParse fails when pipeline.running has wrong type", () => {
+    const broken = {
+      ...SAMPLE_VOICE_STATUS,
+      pipeline: { running: "true", state: "idle" },
+    };
+    const result = VoiceStatusResponseSchema.safeParse(broken);
+    expect(result.success).toBe(false);
+  });
+
+  it("safeParse fails when pipeline block is missing entirely", () => {
+    const { pipeline: _pipeline, ...broken } = SAMPLE_VOICE_STATUS;
+    const result = VoiceStatusResponseSchema.safeParse(broken);
+    expect(result.success).toBe(false);
+  });
+});
+
+describe("VoiceModelsResponseSchema (F2-H02)", () => {
+  it("parses the canonical /api/voice/models payload", () => {
+    const parsed = VoiceModelsResponseSchema.parse(SAMPLE_VOICE_MODELS);
+    expect(parsed.detected_tier).toBe("PI5");
+    expect(parsed.active?.stt_primary).toBe("moonshine-tiny");
+  });
+
+  it("safeParse succeeds when active is null (no auto-selection yet)", () => {
+    const result = VoiceModelsResponseSchema.safeParse({
+      ...SAMPLE_VOICE_MODELS,
+      active: null,
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it("safeParse fails when an active selection field has wrong type", () => {
+    const broken = {
+      ...SAMPLE_VOICE_MODELS,
+      active: {
+        ...SAMPLE_VOICE_MODELS.active,
+        stt_primary: 42,
+      },
+    };
+    const result = VoiceModelsResponseSchema.safeParse(broken);
+    expect(result.success).toBe(false);
+  });
+
+  it("safeParse succeeds with empty available_tiers map", () => {
+    const result = VoiceModelsResponseSchema.safeParse({
+      ...SAMPLE_VOICE_MODELS,
+      available_tiers: {},
+    });
+    expect(result.success).toBe(true);
+  });
+});

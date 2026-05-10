@@ -27,6 +27,10 @@ import {
   RefreshCwIcon,
 } from "lucide-react";
 import { api, isAbortError } from "@/lib/api";
+import {
+  VoiceModelsResponseSchema,
+  VoiceStatusResponseSchema,
+} from "@/types/schemas";
 import { VoiceSetupModal } from "@/components/setup-wizard";
 import { LinuxMicGainCard } from "@/components/voice/linux-mic-gain-card";
 import { VoiceQualityPanel } from "@/components/voice/VoiceQualityPanel";
@@ -441,8 +445,14 @@ export default function VoicePage() {
     setError(null);
     try {
       const [s, m] = await Promise.all([
-        api.get<VoiceStatus>("/api/voice/status", { signal }),
-        api.get<VoiceModels>("/api/voice/models", { signal }),
+        api.get<VoiceStatus>("/api/voice/status", {
+          signal,
+          schema: VoiceStatusResponseSchema,
+        }),
+        api.get<VoiceModels>("/api/voice/models", {
+          signal,
+          schema: VoiceModelsResponseSchema,
+        }),
       ]);
       setStatus(s);
       setModels(m);

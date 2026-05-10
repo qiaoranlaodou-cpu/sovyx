@@ -1652,19 +1652,114 @@ export const GenerateSigningKeyResponseSchema = z.object({
   resolved_mind_id: z.string(),
 });
 
-/* ── Voice status receipt-check schema — v0.31.6 T3.1 ──
+/* ── Voice status — full mirror of /api/voice/status (F2-H02) ──
  *
- * Used by ``hooks/use-voice-running-verification.ts`` to confirm the
- * pipeline actually wired up after ``/api/voice/enable`` returned
- * ``ok: true`` (or after the calibration completion flow). Only the
- * single ``pipeline.running`` boolean is load-bearing for the receipt
- * check — every other ``/api/voice/status`` field is irrelevant here,
- * so the schema uses ``passthrough()`` to tolerate forward-compatible
- * additions without warning.
+ * Pre-F2-H02 this schema only validated ``pipeline.running`` (used
+ * by ``hooks/use-voice-running-verification.ts``); every other field
+ * was untyped at runtime, so backend response-shape drift on any
+ * other field went undetected and silently degraded ``pages/voice.tsx``.
+ * The comprehensive mirror below validates the full backend response
+ * (``src/sovyx/dashboard/routes/voice.py::VoiceStatusResponse``) at
+ * runtime so drift surfaces as a structured ``api.schema_mismatch``
+ * warning instead of a corrupted UI.
+ *
+ * Every nested block is wrapped in ``.optional()`` because backend
+ * tests + downstream consumers may legitimately omit blocks they
+ * don't populate (matches the backend's ``default_factory`` pattern
+ * — see ``VoiceStatusResponse`` docstring). The receipt-check use
+ * case (running=true/false) still validates because pipeline is
+ * required and ``running`` inside it is required.
+ *
+ * ``capture`` uses ``.passthrough()`` to mirror the backend's
+ * ``model_config = {"extra": "allow"}`` — capture-snapshot fields
+ * grow with new SLIs and the schema must not reject forward-additive
+ * shapes.
  */
+
+const VoiceStatusPipelineSchema = z.object({
+  running: z.boolean(),
+  state: z.string().optional(),
+  latency_ms: z.number().nullable().optional(),
+});
+
+const VoiceStatusCaptureSchema = z
+  .object({
+    running: z.boolean().optional(),
+    input_device: z.union([z.string(), z.number()]).nullable().optional(),
+    host_api: z.string().nullable().optional(),
+    sample_rate: z.number().nullable().optional(),
+    frames_delivered: z.number().optional(),
+    last_rms_db: z.number().nullable().optional(),
+  })
+  .passthrough();
+
+const VoiceStatusSTTSchema = z.object({
+  engine: z.string().nullable().optional(),
+  model: z.string().nullable().optional(),
+  state: z.string().nullable().optional(),
+});
+
+const VoiceStatusTTSSchema = z.object({
+  engine: z.string().nullable().optional(),
+  model: z.string().nullable().optional(),
+  initialized: z.boolean().optional(),
+});
+
+const VoiceStatusWakeWordSchema = z.object({
+  enabled: z.boolean().optional(),
+  phrase: z.string().nullable().optional(),
+});
+
+const VoiceStatusVADSchema = z.object({
+  enabled: z.boolean().optional(),
+});
+
+const VoiceStatusWyomingSchema = z.object({
+  connected: z.boolean().optional(),
+  endpoint: z.string().nullable().optional(),
+});
+
+const VoiceStatusHardwareSchema = z.object({
+  tier: z.string().nullable().optional(),
+  ram_mb: z.number().nullable().optional(),
+});
+
 export const VoiceStatusResponseSchema = z
   .object({
-    pipeline: z.object({ running: z.boolean() }),
+    pipeline: VoiceStatusPipelineSchema,
+    capture: VoiceStatusCaptureSchema.optional(),
+    stt: VoiceStatusSTTSchema.optional(),
+    tts: VoiceStatusTTSSchema.optional(),
+    wake_word: VoiceStatusWakeWordSchema.optional(),
+    vad: VoiceStatusVADSchema.optional(),
+    wyoming: VoiceStatusWyomingSchema.optional(),
+    hardware: VoiceStatusHardwareSchema.optional(),
+    preflight_warnings: z.array(z.record(z.string(), z.unknown())).optional(),
+  })
+  .passthrough();
+
+/* ── Voice models — full mirror of /api/voice/models (F2-H02) ──
+ *
+ * Mirrors ``VoiceModelsResponse`` + ``VoiceModelSelectionPayload`` in
+ * ``src/sovyx/dashboard/routes/voice.py``. Distinct from
+ * ``VoiceModelsStatusResponseSchema`` (which validates
+ * ``/api/voice/models/status`` — the disk-state endpoint).
+ */
+
+const VoiceModelSelectionPayloadSchema = z.object({
+  stt_primary: z.string(),
+  stt_streaming: z.string(),
+  tts_primary: z.string(),
+  tts_quality: z.string(),
+  wake: z.string(),
+  vad: z.string(),
+});
+
+export const VoiceModelsResponseSchema = z
+  .object({
+    detected_tier: z.string().nullable().optional(),
+    active: VoiceModelSelectionPayloadSchema.nullable().optional(),
+    available_tiers: z.record(z.string(), VoiceModelSelectionPayloadSchema).optional(),
   })
   .passthrough();
 
