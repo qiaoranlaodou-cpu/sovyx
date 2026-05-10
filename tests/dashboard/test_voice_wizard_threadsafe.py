@@ -37,8 +37,6 @@ import threading
 from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
-import pytest
-
 
 _FRAMES_PER_PRODUCER = 1_000
 _PRODUCERS = 4

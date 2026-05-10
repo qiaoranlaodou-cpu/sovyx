@@ -23,6 +23,7 @@ advance.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import time
 from pathlib import Path
 from typing import Any
@@ -35,7 +36,6 @@ from sovyx.voice.calibration import (
     WizardStatus,
 )
 from sovyx.voice.calibration import _wizard_orchestrator as wo
-
 
 _SLOW_READ_SECONDS = 0.20
 _SENTINEL_TICK_S = 0.01
@@ -121,14 +121,10 @@ class TestTailPromptsFileYieldsOnSlowFS:
         finally:
             sentinel_running = False
             tail_task.cancel()
-            try:
+            with contextlib.suppress(asyncio.CancelledError):
                 await tail_task
-            except asyncio.CancelledError:
-                pass
-            try:
+            with contextlib.suppress(asyncio.CancelledError):
                 await sentinel_task
-            except asyncio.CancelledError:
-                pass
 
         # During 0.5 s of wall time, with 10 ms sentinel sleeps and a
         # 200 ms blocking read on a worker thread, the sentinel must

@@ -391,6 +391,7 @@ class WizardOrchestrator:
           in its ``finally:`` block. CancelledError is the expected
           terminator and exits cleanly.
         """
+
         # Read on a worker thread so a slow filesystem (NFS, network
         # share, encrypted volume) cannot stall the event loop for the
         # full read latency. Anti-pattern #14: sync I/O in async def

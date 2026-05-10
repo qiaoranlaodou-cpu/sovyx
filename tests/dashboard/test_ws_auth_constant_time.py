@@ -109,11 +109,13 @@ class TestCalibrationWsRejectsMismatchShapes:
         tmp_path: Path,
     ) -> None:
         client = TestClient(_build_app(tmp_path))
-        with pytest.raises(WebSocketDisconnect) as exc_info:
-            with client.websocket_connect(
+        with (
+            pytest.raises(WebSocketDisconnect) as exc_info,
+            client.websocket_connect(
                 f"/api/voice/calibration/jobs/default/stream?token={wrong_token}",
-            ) as ws:
-                ws.receive_text()
+            ) as ws,
+        ):
+            ws.receive_text()
         assert exc_info.value.code == 1008, kind
 
 
@@ -135,11 +137,13 @@ class TestTrainingWsRejectsMismatchShapes:
         tmp_path: Path,
     ) -> None:
         client = TestClient(_build_app(tmp_path))
-        with pytest.raises(WebSocketDisconnect) as exc_info:
-            with client.websocket_connect(
+        with (
+            pytest.raises(WebSocketDisconnect) as exc_info,
+            client.websocket_connect(
                 f"/api/voice/training/jobs/default/stream?token={wrong_token}",
-            ) as ws:
-                ws.receive_text()
+            ) as ws,
+        ):
+            ws.receive_text()
         assert exc_info.value.code == 4401, kind
 
 
@@ -167,8 +171,7 @@ class TestAuthSourceUsesConstantTimeCompare:
             "secrets.compare_digest for token auth (F2-C02)."
         )
         assert " != expected" not in src, (
-            "voice_training.stream_training_job leaks variable-time "
-            "comparison on token (CWE-208)."
+            "voice_training.stream_training_job leaks variable-time comparison on token (CWE-208)."
         )
 
 
