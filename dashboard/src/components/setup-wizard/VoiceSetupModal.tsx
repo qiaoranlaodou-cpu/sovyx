@@ -23,6 +23,7 @@ import {
   PackageIcon,
   Volume2Icon,
 } from "lucide-react";
+import type { z } from "zod";
 import { api, ApiError } from "@/lib/api";
 import { useResolvedMindId } from "@/hooks/use-resolved-mind-id";
 import { verifyVoiceRunning } from "@/hooks/use-voice-running-verification";
@@ -36,25 +37,22 @@ import {
   DialogDescription,
   DialogFooter,
 } from "@/components/ui/dialog";
+import {
+  VoiceCaptureDeviceContendedErrorSchema,
+  VoiceEnableResponseSchema,
+} from "@/types/schemas";
+import {
+  DeviceContentionBanner,
+  type AlternativeDevice,
+  type CaptureDeviceContendedPayload,
+} from "@/components/voice/DeviceContentionBanner";
 import { HardwareDetection, type SelectedDevices } from "./HardwareDetection";
+
+type VoiceEnableResponse = z.infer<typeof VoiceEnableResponseSchema>;
 
 interface MissingDep {
   module: string;
   package: string;
-}
-
-interface EnableResponse {
-  ok: boolean;
-  status?: string;
-  error?: string;
-  detail?: string;
-  device?: number | string | null;
-  host_api?: string | null;
-  observed_peak_rms_db?: number;
-  missing_deps?: MissingDep[];
-  missing_models?: Array<{ name: string; install_command: string }>;
-  install_command?: string;
-  tts_engine?: string;
 }
 
 interface CaptureSilenceInfo {
@@ -86,6 +84,8 @@ export function VoiceSetupModal({ trigger, onEnabled }: VoiceSetupModalProps) {
   const [audioError, setAudioError] = useState(false);
   const [silenceInfo, setSilenceInfo] = useState<CaptureSilenceInfo | null>(null);
   const [enableError, setEnableError] = useState<string | null>(null);
+  const [contention, setContention] =
+    useState<CaptureDeviceContendedPayload | null>(null);
   const [copied, setCopied] = useState(false);
   const [devices, setDevices] = useState<SelectedDevices>({
     input_device: null,
@@ -96,81 +96,126 @@ export function VoiceSetupModal({ trigger, onEnabled }: VoiceSetupModalProps) {
     setDetected(true);
   }, []);
 
-  const handleEnable = useCallback(async () => {
-    setEnabling(true);
-    setDepsIssue(null);
-    setAudioError(false);
-    setSilenceInfo(null);
-    setEnableError(null);
+  const enableWithDevices = useCallback(
+    async (
+      devicesArg: SelectedDevices,
+      inputDeviceName: string | null,
+    ): Promise<void> => {
+      setEnabling(true);
+      setDepsIssue(null);
+      setAudioError(false);
+      setSilenceInfo(null);
+      setEnableError(null);
+      setContention(null);
 
-    try {
-      // v0.32.2 Phase 3.A Layer A — body wraps devices + explicit mind_id.
-      // The backend's ``/api/voice/enable`` accepts `input_device` /
-      // `output_device` at the top level alongside `mind_id`; spreading
-      // the existing `devices` object keeps backward compatibility.
-      const result = await api.post<EnableResponse>("/api/voice/enable", {
-        ...devices,
-        mind_id: mindId,
-      });
-      if (result.ok) {
-        // v0.31.6 T3.1 — backend ``ok: true`` only proves the enable
-        // request did not error; it does NOT prove the pipeline is
-        // actually running (mind.yaml write under contextlib.suppress
-        // can drop the persisted state silently). Poll /api/voice/status
-        // before declaring success + closing the modal so an operator
-        // doesn't see "Voice enabled!" toast immediately followed by a
-        // dead voice surface on the next page.
-        const verdict = await verifyVoiceRunning();
-        if (verdict.status !== "running") {
-          setEnableError(t(`setup.verify.${verdict.status}`));
-          setEnabling(false);
-          return;
+      try {
+        // F2-C01 (audit §3.A) — VoiceEnableResponseSchema validates the
+        // success payload + the structured-error envelope (which we read
+        // from ApiError.body in the catch). The schema is .passthrough()
+        // so forward-additive backend fields don't trip safeParse.
+        const body: Record<string, unknown> = {
+          ...devicesArg,
+          mind_id: mindId,
+        };
+        if (inputDeviceName) {
+          // Forward the device NAME so the backend persists
+          // ``voice_input_device_name`` on first-run; mirrors VoiceStep.tsx
+          // (anti-pattern #35 sibling — see v0.31.6 M2).
+          body.input_device_name = inputDeviceName;
         }
-        toast.success(
-          result.tts_engine
-            ? t("setupModal.toastEnabledWithEngine", { engine: result.tts_engine })
-            : t("setupModal.toastEnabled"),
+        const result = await api.post<VoiceEnableResponse>(
+          "/api/voice/enable",
+          body,
+          { schema: VoiceEnableResponseSchema },
         );
-        setOpen(false);
-        onEnabled?.();
-      }
-    } catch (err) {
-      if (err instanceof ApiError) {
-        try {
-          const body = JSON.parse(err.message) as EnableResponse;
-          if (body.error === "missing_deps" && body.missing_deps) {
-            setDepsIssue({
-              missing: body.missing_deps,
-              command: body.install_command ?? "pip install sovyx[voice]",
-            });
-          } else if (body.error === "capture_silence") {
-            setSilenceInfo({
-              detail: body.detail ?? t("setupModal.fallbackError.silenceFallback"),
-              device: body.device ?? null,
-              hostApi: body.host_api ?? null,
-              observedPeakRmsDb:
-                typeof body.observed_peak_rms_db === "number"
-                  ? body.observed_peak_rms_db
-                  : Number.NEGATIVE_INFINITY,
-            });
-          } else if (
-            typeof body.error === "string" &&
-            body.error.toLowerCase().includes("audio")
-          ) {
-            setAudioError(true);
-          } else {
-            setEnableError(body.error ?? t("setupModal.fallbackError.enableFailed"));
+        if (result.ok) {
+          // v0.31.6 T3.1 — backend ``ok: true`` only proves the enable
+          // request did not error; it does NOT prove the pipeline is
+          // actually running (mind.yaml write under contextlib.suppress
+          // can drop the persisted state silently). Poll /api/voice/status
+          // before declaring success + closing the modal.
+          const verdict = await verifyVoiceRunning();
+          if (verdict.status !== "running") {
+            setEnableError(t(`setup.verify.${verdict.status}`));
+            setEnabling(false);
+            return;
           }
-        } catch {
-          setEnableError(err.message || t("setupModal.fallbackError.genericFailure"));
+          toast.success(
+            result.tts_engine
+              ? t("setupModal.toastEnabledWithEngine", {
+                  engine: result.tts_engine,
+                })
+              : t("setupModal.toastEnabled"),
+          );
+          setOpen(false);
+          onEnabled?.();
         }
-      } else {
-        setEnableError(t("setupModal.fallbackError.genericFailure"));
+      } catch (err) {
+        if (err instanceof ApiError) {
+          // F2-C01 (audit §3.A) — read structured error from
+          // ``ApiError.body`` instead of re-parsing ``err.message``. The
+          // ESLint ``no-restricted-syntax`` guard added in W2.A3 forbids
+          // future ``JSON.parse(err.message)`` patterns.
+          const contentionParse =
+            VoiceCaptureDeviceContendedErrorSchema.safeParse(err.body);
+          if (contentionParse.success) {
+            setContention(contentionParse.data);
+          } else {
+            const errorBody = (err.body ?? {}) as VoiceEnableResponse;
+            if (errorBody.error === "missing_deps" && errorBody.missing_deps) {
+              setDepsIssue({
+                missing: errorBody.missing_deps as MissingDep[],
+                command:
+                  errorBody.install_command ?? "pip install sovyx[voice]",
+              });
+            } else if (errorBody.error === "capture_silence") {
+              setSilenceInfo({
+                detail:
+                  errorBody.detail ??
+                  t("setupModal.fallbackError.silenceFallback"),
+                device: errorBody.device ?? null,
+                hostApi: errorBody.host_api ?? null,
+                observedPeakRmsDb:
+                  typeof errorBody.observed_peak_rms_db === "number"
+                    ? errorBody.observed_peak_rms_db
+                    : Number.NEGATIVE_INFINITY,
+              });
+            } else if (
+              typeof errorBody.error === "string" &&
+              errorBody.error.toLowerCase().includes("audio")
+            ) {
+              setAudioError(true);
+            } else {
+              setEnableError(
+                errorBody.error ?? t("setupModal.fallbackError.enableFailed"),
+              );
+            }
+          }
+        } else {
+          setEnableError(t("setupModal.fallbackError.genericFailure"));
+        }
+      } finally {
+        setEnabling(false);
       }
-    } finally {
-      setEnabling(false);
-    }
-  }, [onEnabled, devices, mindId, t]);
+    },
+    [mindId, onEnabled, t],
+  );
+
+  const handleEnable = useCallback(async () => {
+    await enableWithDevices(devices, null);
+  }, [devices, enableWithDevices]);
+
+  const handleSelectAlternative = useCallback(
+    (device: AlternativeDevice) => {
+      const nextDevices: SelectedDevices = {
+        ...devices,
+        input_device: device.index,
+      };
+      setDevices(nextDevices);
+      void enableWithDevices(nextDevices, device.name);
+    },
+    [devices, enableWithDevices],
+  );
 
   const handleCopy = useCallback(
     (command: string) => {
@@ -201,6 +246,17 @@ export function VoiceSetupModal({ trigger, onEnabled }: VoiceSetupModalProps) {
 
         <div className="py-2 space-y-4">
           <HardwareDetection onDetected={handleDetected} onDeviceChange={setDevices} />
+
+          {/* F2-C01 (audit §3.A) — capture_device_contended banner. Takes
+              priority over the generic error panel so the operator sees
+              the actionable hint (which app is holding the mic + which
+              alternative devices are available) instead of "audio error". */}
+          {contention && (
+            <DeviceContentionBanner
+              payload={contention}
+              onSelectAlternative={enabling ? null : handleSelectAlternative}
+            />
+          )}
 
           {/* Dependency issue panel */}
           {depsIssue && (
@@ -313,7 +369,7 @@ export function VoiceSetupModal({ trigger, onEnabled }: VoiceSetupModalProps) {
           )}
 
           {/* Generic error */}
-          {enableError && !depsIssue && !audioError && !silenceInfo && (
+          {enableError && !depsIssue && !audioError && !silenceInfo && !contention && (
             <div className="flex items-center gap-2 rounded-[var(--svx-radius-md)] bg-[var(--svx-color-error)]/10 px-3 py-2.5 text-xs text-[var(--svx-color-error)]">
               <XCircleIcon className="size-3.5 shrink-0" />
               <span>{enableError}</span>
