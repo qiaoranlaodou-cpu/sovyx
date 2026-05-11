@@ -17,6 +17,7 @@ import asyncio
 import contextlib
 import secrets
 import time
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -34,6 +35,8 @@ from sovyx.voice.device_test._protocol import CloseReason, ErrorCode
 from sovyx.voice.device_test._source import AudioSourceError
 
 if TYPE_CHECKING:
+    from collections.abc import AsyncIterator
+
     from sovyx.voice.device_test._source import AudioInputSource
 
 logger = get_logger(__name__)
@@ -411,6 +414,58 @@ class SessionRegistry:
         self._force_close_grace_s = force_close_grace_s
         self._sessions: dict[str, list[TestSession]] = {}
         self._locks: LRULockDict[str] = LRULockDict(maxsize=2_048)
+        # v0.38.0 / F2-H01 — single-writer claim across the whole
+        # process. Used by the wizard recorder (and any future caller
+        # that needs an uninterrupted PortAudio window) to fence VU
+        # subscribes for the lifetime of a critical section, not just
+        # the close_all() call. See :meth:`acquire_exclusive`.
+        self.exclusive_lock = asyncio.Lock()
+
+    @asynccontextmanager
+    async def acquire_exclusive(
+        self,
+        *,
+        role: str,
+        ttl_s: float,
+    ) -> AsyncIterator[None]:
+        """Hold an exclusive PortAudio claim for the caller's lifetime.
+
+        Closes every live session BEFORE yielding, then keeps the lock
+        held while the caller runs. New WebSocket VU subscribes that
+        observe ``self.exclusive_lock.locked()`` reject themselves with
+        ``1013 recorder_busy`` instead of racing for the device.
+
+        v0.38.0 / F2-H01 closure (audit §3.C). Defensive ceiling on
+        the acquire: ``ttl_s + 1.0`` seconds — if the lock is still
+        held past that, something is wrong and the caller raises rather
+        than blocking the request handler indefinitely.
+
+        Args:
+            role: short label used in the timeout error and any future
+                telemetry. Examples: ``"wizard_test_record"``.
+            ttl_s: caller's expected critical-section duration. The
+                acquire deadline is ``ttl_s + 1.0`` seconds.
+
+        Raises:
+            RuntimeError: when the lock cannot be acquired within
+                ``ttl_s + 1.0`` seconds.
+        """
+        try:
+            await asyncio.wait_for(
+                self.exclusive_lock.acquire(),
+                timeout=ttl_s + 1.0,
+            )
+        except TimeoutError as exc:
+            msg = (
+                f"failed to acquire exclusive PortAudio lock for "
+                f"role={role!r} within {ttl_s + 1.0:.1f}s"
+            )
+            raise RuntimeError(msg) from exc
+        try:
+            await self.close_all()
+            yield
+        finally:
+            self.exclusive_lock.release()
 
     async def register(
         self,
