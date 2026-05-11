@@ -3231,21 +3231,35 @@ class TestPipelineHeartbeat:
         reset_for_tests()
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("de_flap", [2, 3, 5])
     async def test_snr_low_alert_does_not_fire_below_consecutive_threshold(
-        self, caplog: pytest.LogCaptureFixture
+        self, caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch, de_flap: int
     ) -> None:
-        """A single low-SNR heartbeat MUST NOT fire the alert
-        when the consecutive threshold is > 1 (de-flap contract)."""
+        """De-flap contract: ``(de_flap - 1)`` consecutive low heartbeats
+        MUST NOT fire the alert; only the de_flap-th does.
+
+        Pre-v0.38.0 (W3.D1, audit §3.N + F2-M06) this test relied on
+        the runtime-imported ``_SNR_LOW_ALERT_CONSECUTIVE_HEARTBEATS``
+        constant captured at IMPORT time and skipped itself when the
+        operator's tuning happened to be ``de_flap=1``. That left the
+        de-flap contract silently uncovered for the (rare) operator
+        running with de_flap=1. Fix: monkeypatch both the source
+        (``_heartbeat_mixin``) and re-export (``_orchestrator``)
+        modules to a deterministic value, then exercise the contract
+        end-to-end without depending on tuning state.
+        """
         from sovyx.voice.health._snr_heartbeat import (
             record_snr_sample,
             reset_for_tests,
         )
+        from sovyx.voice.pipeline import _heartbeat_mixin as hb_mod
         from sovyx.voice.pipeline import _orchestrator as orch_mod
 
-        # Skip on configurations where de-flap=1 (alert is
-        # immediate and this test premise doesn't apply).
-        if orch_mod._SNR_LOW_ALERT_CONSECUTIVE_HEARTBEATS <= 1:
-            pytest.skip("de-flap=1 makes a single low heartbeat trip the alert")
+        # Pin the de-flap so the test is deterministic regardless of
+        # SOVYX_TUNING__VOICE__VOICE_SNR_LOW_ALERT_CONSECUTIVE_HEARTBEATS
+        # in the environment.
+        monkeypatch.setattr(hb_mod, "_SNR_LOW_ALERT_CONSECUTIVE_HEARTBEATS", de_flap)
+        monkeypatch.setattr(orch_mod, "_SNR_LOW_ALERT_CONSECUTIVE_HEARTBEATS", de_flap)
 
         reset_for_tests()
         caplog.set_level(logging.INFO, logger=_ORCH_LOGGER)
@@ -3259,16 +3273,17 @@ class TestPipelineHeartbeat:
             is_speech=False, probability=0.1, state=VADState.SILENCE
         )
 
-        # One low-SNR heartbeat — counter goes to 1, alert NOT
-        # active.
-        for v in (2.0, 4.0, 6.0):
-            record_snr_sample(snr_db=v, mind_id="test-mind")
-        await pipeline.feed_frame(_silence_frame())
-        pipeline._emit_heartbeat(orch_mod._HEARTBEAT_INTERVAL_S + 1.0)
+        # Drive (de_flap - 1) low-SNR heartbeats — counter rises but
+        # alert MUST NOT fire yet.
+        for k in range(de_flap - 1):
+            for v in (2.0, 4.0, 6.0):
+                record_snr_sample(snr_db=v, mind_id="test-mind")
+            await pipeline.feed_frame(_silence_frame())
+            pipeline._emit_heartbeat(orch_mod._HEARTBEAT_INTERVAL_S * (k + 1) + 1.0)
 
         warns = _events_of(caplog, "voice_pipeline_snr_low_alert")
         assert warns == []
-        assert pipeline._snr_low_consecutive_heartbeats == 1
+        assert pipeline._snr_low_consecutive_heartbeats == de_flap - 1
         assert pipeline._snr_low_alert_active is False
 
         reset_for_tests()
