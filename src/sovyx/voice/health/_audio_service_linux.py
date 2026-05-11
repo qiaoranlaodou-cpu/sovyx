@@ -291,9 +291,20 @@ class LinuxAudioServiceMonitor:
                     # PipeWire systemctl reports active but ``pactl
                     # info`` is unresponsive — daemon isn't yet
                     # accepting client connections. Defer the UP emit
-                    # to the next poll. LENIENT default: INFO log + no
-                    # SLO alert. STRICT promotion (INFO → WARNING +
-                    # alert when firing > 3x in 60 s) lives in W2.C3.
+                    # to the next poll.
+                    #
+                    # TODO: STRICT flip pending operator telemetria
+                    # Promote this logger.info →
+                    # logger.warning("voice_audio_service_up_health_check_failed", ...)
+                    # AND add an SLO alert ("audio.service.up_gate_deferred")
+                    # that fires when ``voice_audio_service_up_health_check_failed``
+                    # is emitted > 3x in any 60 s window. Gate: 1 minor
+                    # cycle of v0.37.x telemetria on the operator's env
+                    # real (Sony VAIO + Mint + PipeWire + Razer USB)
+                    # confirming the gate trips on real restart cascades
+                    # without false-positive flapping. See §3.K flip step
+                    # + ``feedback_staged_adoption`` + skipped strict-mode
+                    # test in tests/integration/voice/test_pipewire_restart_resilience.py.
                     logger.info(
                         "voice_audio_service_up_health_check_failed",
                         platform="linux",

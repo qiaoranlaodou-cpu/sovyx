@@ -135,3 +135,39 @@ class TestUpGate:
         assert len(down_events) == 1, f"expected 1 DOWN event, got {events!r}"
         # Health check MUST NOT have been called on the DOWN path.
         health.assert_not_awaited()
+
+
+class TestStrictModePromotionPending:
+    """Placeholders for the STRICT-mode flip deferred to a later cycle.
+
+    Audit §3.K flip step + ``feedback_staged_adoption`` — the
+    LENIENT-to-STRICT promotion (INFO → WARNING + SLO alert when
+    ``voice_audio_service_up_health_check_failed`` fires > 3x in any
+    60 s window) is gated on operator telemetry from v0.37.x in the
+    real env (Sony VAIO + Mint + PipeWire + Razer USB). The test below
+    is INTENTIONALLY SKIPPED so the desired contract is visible in
+    source control; the future commit that promotes the flip unskips
+    + adjusts assertions.
+    """
+
+    @pytest.mark.skip(
+        reason=(
+            "STRICT flip pending v0.37.x telemetria — see "
+            "TODO at _audio_service_linux.py::_run UP gate. "
+            "Unskip when promoting INFO -> WARNING + adding SLO "
+            "alert per audit §3.K flip step."
+        ),
+    )
+    @pytest.mark.asyncio()
+    async def test_strict_mode_warns_on_repeated_gate_defer(self) -> None:
+        """Repeated gate defers in a 60 s window MUST log WARNING + alert."""
+        # When the flip lands, this test mocks _post_up_health_check to
+        # return False on 4+ consecutive calls within a synthetic 60 s
+        # window (using a frozen clock), then asserts:
+        #   * logger emitted "voice_audio_service_up_health_check_failed"
+        #     at WARNING level (not INFO).
+        #   * a parallel "audio.service.up_gate_deferred" SLO alert was
+        #     fired exactly once for the burst.
+        # The current LENIENT implementation only logs INFO and never
+        # alerts — that's the deliberate behaviour for v0.37.x.
+        raise AssertionError("placeholder for STRICT-mode promotion")
