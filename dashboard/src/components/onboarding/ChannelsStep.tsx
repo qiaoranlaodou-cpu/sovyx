@@ -53,12 +53,11 @@ export function ChannelsStep({ mindName, onConfigured, onSkip }: ChannelsStepPro
     } catch (err) {
       let msg = t("channels.telegramConnectionFailed");
       if (err instanceof ApiError) {
-        try {
-          const body = JSON.parse(err.message) as { error?: string };
-          msg = body.error ?? msg;
-        } catch {
-          msg = err.message;
-        }
+        // F2-C01 (audit §3.A) — ApiError.body already exposes the parsed
+        // JSON envelope; reading it directly avoids the manual JSON.parse
+        // pattern that silently drops fields when cast without validation.
+        const errorBody = err.body as { error?: string } | null;
+        msg = errorBody?.error ?? err.message ?? msg;
       }
       setResult({ ok: false, message: msg });
     } finally {

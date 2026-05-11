@@ -97,6 +97,29 @@ const MIND_ID_DEFAULT_RULES = {
         'Resolve via the useResolvedMindId() hook and pass the snapshot\'s ' +
         '``mindId`` to the request body instead of hardcoding the sentinel.',
     },
+    {
+      // ── v0.37.0 F2-C01 (audit §3.A) — block JSON.parse(*.message) ──
+      //
+      // Pre-fix, VoiceSetupModal manually re-parsed ApiError.message to
+      // get the structured 503 body — which silently dropped the
+      // ``contending_process_hint`` + ``alternative_devices`` fields
+      // because the parse was followed by ``as EnableResponse`` cast
+      // that didn't validate. ApiError.body already exposes the parsed
+      // JSON envelope; validate it through a zod schema (see
+      // ``VoiceCaptureDeviceContendedErrorSchema`` / ``VoiceEnableResponseSchema``).
+      //
+      // This rule blocks any future regression to the anti-pattern in
+      // production code. Tests may legitimately need to construct or
+      // assert against an err.message JSON payload — the test allowlist
+      // at the bottom of this file keeps them green.
+      selector:
+        'CallExpression[callee.type="MemberExpression"][callee.object.name="JSON"][callee.property.name="parse"][arguments.0.type="MemberExpression"][arguments.0.property.name="message"]',
+      message:
+        '`JSON.parse(*.message)` is forbidden in production code (F2-C01 / audit §3.A). ' +
+        'Read the structured body from ``ApiError.body`` and validate it via a zod ' +
+        'schema (see ``VoiceCaptureDeviceContendedErrorSchema`` in @/types/schemas). ' +
+        'Manual JSON.parse silently drops backend fields when the cast skips validation.',
+    },
   ],
 }
 

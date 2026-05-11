@@ -202,32 +202,30 @@ export function VoiceStep({
           if (err.status === 429) {
             setError(t("voice.errors.tooManyRequests"));
           } else {
-            try {
-              const parsed = JSON.parse(err.message) as Record<string, unknown>;
-              // T9 — capture_device_contended takes priority: render
-              // the chip banner instead of the generic error toast.
-              const contentionParse =
-                VoiceCaptureDeviceContendedErrorSchema.safeParse(parsed);
-              if (contentionParse.success) {
-                setContention(contentionParse.data);
+            // F2-C01 (audit §3.A) — read structured body from ApiError.body
+            // instead of re-parsing err.message; eliminates the silent-drop
+            // class blocked by eslint.config.js' JSON.parse(*.message) rule.
+            const contentionParse =
+              VoiceCaptureDeviceContendedErrorSchema.safeParse(err.body);
+            if (contentionParse.success) {
+              setContention(contentionParse.data);
+            } else if (err.body) {
+              const body = err.body as unknown as EnableResult;
+              if (body.error === "missing_deps" && body.missing_deps) {
+                setMissingDeps({
+                  deps: body.missing_deps,
+                  command:
+                    body.install_command ?? "pip install sovyx[voice]",
+                });
+              } else if (
+                typeof body.error === "string" &&
+                body.error.toLowerCase().includes("audio")
+              ) {
+                setError(t("voice.errors.noAudio"));
               } else {
-                const body = parsed as unknown as EnableResult;
-                if (body.error === "missing_deps" && body.missing_deps) {
-                  setMissingDeps({
-                    deps: body.missing_deps,
-                    command:
-                      body.install_command ?? "pip install sovyx[voice]",
-                  });
-                } else if (
-                  typeof body.error === "string" &&
-                  body.error.toLowerCase().includes("audio")
-                ) {
-                  setError(t("voice.errors.noAudio"));
-                } else {
-                  setError(body.error ?? t("voice.errors.enableFailed"));
-                }
+                setError(body.error ?? t("voice.errors.enableFailed"));
               }
-            } catch {
+            } else {
               setError(err.message || t("voice.errors.pipelineFailed"));
             }
           }
