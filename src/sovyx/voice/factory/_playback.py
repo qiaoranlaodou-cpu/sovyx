@@ -34,10 +34,24 @@ def _create_vad(model_path: Path) -> Any:  # noqa: ANN401
     return SileroVAD(model_path=model_path)
 
 
-def _create_piper_tts(model_dir: Path) -> Any:  # noqa: ANN401
-    from sovyx.voice.tts_piper import PiperTTS
+def _create_piper_tts(
+    model_dir: Path,
+    *,
+    voice: str | None = None,
+) -> Any:  # noqa: ANN401
+    """Instantiate :class:`PiperTTS` against a locale-resolved voice.
 
-    return PiperTTS(model_dir=model_dir / "piper")
+    F2-M03↑ (audit §3.F) — ``voice`` flows from
+    :func:`voice_catalog.recommended_piper_voice_for` so the Piper
+    instance loads the same ``.onnx`` file the factory just downloaded
+    for the mind's locale. ``None`` falls back to the hardcoded
+    :class:`PiperConfig` default (``en_US-lessac-medium``) for
+    backward compatibility with callers that haven't migrated.
+    """
+    from sovyx.voice.tts_piper import PiperConfig, PiperTTS
+
+    config = PiperConfig(voice=voice) if voice else None
+    return PiperTTS(model_dir=model_dir / "piper", config=config)
 
 
 def _create_kokoro_tts(

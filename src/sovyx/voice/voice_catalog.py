@@ -249,17 +249,20 @@ def all_voices() -> list[VoiceInfo]:
 # the tuning knob. That reads as "voice doesn't work" to a non-technical
 # user — the agent answers in the wrong language with bad pronunciation.
 #
-# Mapping is keyed by BCP-47 locale (hyphen + case-insensitive). The
-# canonical voice list comes from https://github.com/rhasspy/piper-voices.
-# We pick one quality default per supported region; the operator can
-# still override via ``EngineConfig.tuning.voice.piper_default_voice``.
+# Mapping is keyed by BCP-47 locale (hyphen + case-insensitive). Values
+# are constrained to the curated subset declared in
+# :data:`sovyx.voice.model_registry._PIPER_VOICES` — voices outside that
+# subset raise ``ValueError`` at ``ensure_piper_model(voice=…)`` time
+# (no URL / SHA known), so the helper MUST NOT return one. Extending
+# coverage requires adding a tuple to ``_PIPER_VOICES`` (with URL +
+# SHA) in the same commit.
 #
-# Unsupported locales (e.g. ``zh-CN``, ``ja-JP``) return ``None`` — the
-# caller in :mod:`sovyx.voice.factory` emits a structured WARN
-# (``voice.factory.piper_locale_unsupported``) and falls back to the
-# tuning-knob default. The warning is LENIENT for the v0.37.x cycle per
-# ``feedback_staged_adoption``; STRICT promotion (WARN → ERROR) is gated
-# on operator telemetry that the catalog covers the locales they
+# Unsupported locales (e.g. ``fr-FR``, ``de-DE``, ``zh-CN``) return
+# ``None`` — the caller in :mod:`sovyx.voice.factory` emits a structured
+# WARN (``voice.factory.piper_locale_unsupported``) and falls back to
+# the tuning-knob default. The warning is LENIENT for the v0.37.x cycle
+# per ``feedback_staged_adoption``; STRICT promotion (WARN → ERROR) is
+# gated on operator telemetry that the catalog covers the locales they
 # actually run.
 _PIPER_VOICES_BY_LANGUAGE: dict[str, str] = {
     "pt-br": "pt_BR-faber-medium",
@@ -267,13 +270,10 @@ _PIPER_VOICES_BY_LANGUAGE: dict[str, str] = {
     # phonetic gap is real but the alternative is English, which is
     # worse for a Portuguese speaker.
     "pt-pt": "pt_BR-faber-medium",
-    "es-es": "es_ES-mls_9972-low",
-    "es-mx": "es_MX-claude-high",
+    "es-es": "es_ES-davefx-medium",
+    "es-mx": "es_MX-sharvard-medium",
     "en-us": "en_US-lessac-medium",
-    "en-gb": "en_GB-alan-low",
-    "fr-fr": "fr_FR-siwis-medium",
-    "de-de": "de_DE-thorsten-medium",
-    "it-it": "it_IT-riccardo-x_low",
+    "en-gb": "en_GB-alan-medium",
 }
 
 

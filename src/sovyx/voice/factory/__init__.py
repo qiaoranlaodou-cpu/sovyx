@@ -33,6 +33,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from sovyx.observability.logging import get_logger
+from sovyx.voice import voice_catalog
 from sovyx.voice.factory._capture import (
     _build_bypass_strategies,
     _resolve_platform_key,
@@ -726,11 +727,43 @@ async def create_voice_pipeline(
                 voice_id=voice_id,
                 reason="piper has fixed voices per model; install kokoro-onnx for catalog voices",
             )
-        # Issue #38 — ensure the default Piper voice is on disk before
-        # instantiation. Mirror-aware downloader (Silero/Kokoro pattern);
-        # idempotent fast-path on cache hit.
-        await ensure_piper_model(model_dir=models_dir)
-        tts = await asyncio.to_thread(lambda: _create_piper_tts(models_dir))
+        # F2-M03↑ (audit §3.F) — derive the Piper voice from the spoken
+        # language instead of always defaulting to en_US-lessac-medium.
+        # Brazilian / Spanish minds now get a locale-matched voice; the
+        # operator can still override via
+        # ``EngineConfig.tuning.voice.piper_default_voice``.
+        #
+        # ``recommended_piper_voice_for`` returns ``None`` for locales
+        # outside the curated catalog (see
+        # :mod:`sovyx.voice.voice_catalog`). LENIENT default per
+        # ``feedback_staged_adoption``: emit a structured WARN + fall
+        # back to the tuning-knob default; the system stays functional
+        # with English while the operator surfaces the gap. STRICT
+        # promotion (WARN → ERROR) is deferred to a follow-up cycle
+        # gated on telemetry that the catalog covers the locales in use.
+        piper_voice = voice_catalog.recommended_piper_voice_for(language=language)
+        if piper_voice is None:
+            # Tuning is built once below at the ``_VoiceTuning()`` site
+            # for the wake-word + device blocks. Re-instantiating here
+            # is cheap (pydantic-settings, no IO) and keeps the Piper
+            # fallback co-located with its WARN site.
+            from sovyx.engine.config import VoiceTuningConfig  # noqa: PLC0415
+
+            piper_voice = VoiceTuningConfig().piper_default_voice
+            logger.warning(
+                "voice.factory.piper_locale_unsupported",
+                requested_language=language,
+                fallback_voice=piper_voice,
+            )
+        # Issue #38 — ensure the locale-matched Piper voice is on disk
+        # before instantiation. Mirror-aware downloader; idempotent
+        # fast-path on cache hit. The same ``piper_voice`` flows into
+        # ``_create_piper_tts`` so :class:`PiperTTS` loads the .onnx the
+        # factory just downloaded (not the hardcoded PiperConfig default).
+        await ensure_piper_model(model_dir=models_dir, voice=piper_voice)
+        tts = await asyncio.to_thread(
+            lambda: _create_piper_tts(models_dir, voice=piper_voice),
+        )
     elif tts_engine == "kokoro":
         await ensure_kokoro_tts(models_dir)
         tts = await asyncio.to_thread(
