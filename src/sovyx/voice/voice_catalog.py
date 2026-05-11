@@ -46,6 +46,7 @@ __all__ = [
     "all_voices",
     "language_for_voice",
     "normalize_language",
+    "recommended_piper_voice_for",
     "recommended_voice",
     "supported_languages",
     "voice_info",
@@ -237,3 +238,57 @@ def supported_languages() -> list[str]:
 def all_voices() -> list[VoiceInfo]:
     """Return the full voice catalog (stable order, all languages)."""
     return list(_KOKORO_VOICES)
+
+
+# ── F2-M03↑ (audit §3.F) — Piper voice locale catalog ────────────────
+#
+# Piper voices are baked into individual ONNX model files (one file per
+# voice). The factory previously hard-defaulted to ``en_US-lessac-medium``
+# regardless of the active mind's ``voice_language``, so Brazilian /
+# Spanish operators got an English voice unless they manually overrode
+# the tuning knob. That reads as "voice doesn't work" to a non-technical
+# user — the agent answers in the wrong language with bad pronunciation.
+#
+# Mapping is keyed by BCP-47 locale (hyphen + case-insensitive). The
+# canonical voice list comes from https://github.com/rhasspy/piper-voices.
+# We pick one quality default per supported region; the operator can
+# still override via ``EngineConfig.tuning.voice.piper_default_voice``.
+#
+# Unsupported locales (e.g. ``zh-CN``, ``ja-JP``) return ``None`` — the
+# caller in :mod:`sovyx.voice.factory` emits a structured WARN
+# (``voice.factory.piper_locale_unsupported``) and falls back to the
+# tuning-knob default. The warning is LENIENT for the v0.37.x cycle per
+# ``feedback_staged_adoption``; STRICT promotion (WARN → ERROR) is gated
+# on operator telemetry that the catalog covers the locales they
+# actually run.
+_PIPER_VOICES_BY_LANGUAGE: dict[str, str] = {
+    "pt-br": "pt_BR-faber-medium",
+    # No canonical PT_PT voice upstream → fall back to PT_BR. The
+    # phonetic gap is real but the alternative is English, which is
+    # worse for a Portuguese speaker.
+    "pt-pt": "pt_BR-faber-medium",
+    "es-es": "es_ES-mls_9972-low",
+    "es-mx": "es_MX-claude-high",
+    "en-us": "en_US-lessac-medium",
+    "en-gb": "en_GB-alan-low",
+    "fr-fr": "fr_FR-siwis-medium",
+    "de-de": "de_DE-thorsten-medium",
+    "it-it": "it_IT-riccardo-x_low",
+}
+
+
+def recommended_piper_voice_for(language: str) -> str | None:
+    """Return the catalog Piper voice id for ``language``, or ``None``.
+
+    BCP-47 input (``pt-BR``, ``en-US``, …) is normalised to lower-case
+    with hyphens before lookup so callers can pass any of ``pt-BR``,
+    ``pt_BR``, ``pt-br`` without breakage. Region tags are preserved
+    (unlike :func:`normalize_language`, which collapses ``es-MX`` to
+    ``es`` for Kokoro's region-agnostic Spanish bucket) because Piper
+    ships region-specific voices that sound markedly different.
+
+    Returns ``None`` when no Piper voice covers the locale — the caller
+    falls back to ``EngineConfig.tuning.voice.piper_default_voice``.
+    """
+    canonical = language.strip().lower().replace("_", "-")
+    return _PIPER_VOICES_BY_LANGUAGE.get(canonical)

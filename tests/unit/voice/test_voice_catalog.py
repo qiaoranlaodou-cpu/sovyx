@@ -228,6 +228,7 @@ class TestModuleExports:
             "all_voices",
             "language_for_voice",
             "normalize_language",
+            "recommended_piper_voice_for",
             "recommended_voice",
             "supported_languages",
             "voice_info",
