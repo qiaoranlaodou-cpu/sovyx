@@ -540,6 +540,16 @@ class TestLinuxAudioServiceMonitor:
             poll_interval_s=0.01,
             query=_query,
         )
+        # F2-H04 (audit §3.K) — UP emission is gated on
+        # ``_post_up_health_check`` (pactl info verify). Mock to True
+        # so this test continues to pin the aggregate state machine
+        # without coupling to the pactl subprocess gate (which has
+        # dedicated coverage in
+        # ``tests/unit/voice/health/test_audio_service_linux_post_up.py``
+        # and ``tests/integration/voice/test_pipewire_restart_resilience.py``).
+        from unittest.mock import AsyncMock
+
+        monitor._post_up_health_check = AsyncMock(return_value=True)  # type: ignore[method-assign]
         await monitor.start(_cb)
         # Drive enough real time for the state machine to walk the
         # sequence — 4 rounds × 10 ms interval + margin.

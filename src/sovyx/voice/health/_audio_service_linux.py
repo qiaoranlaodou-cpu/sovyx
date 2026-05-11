@@ -272,6 +272,13 @@ class LinuxAudioServiceMonitor:
         last_all_running: bool | None = None
         while self._started:
             current_all_running = await self._poll_aggregate()
+            # F2-H04 (audit §3.K) — when a transition fires, the UP
+            # case is GATED on ``_post_up_health_check`` (pactl info
+            # round-trip, 1 s ceiling). On gate-deferred we MUST NOT
+            # update ``last_all_running`` — otherwise the next poll
+            # round won't see the transition and the UP event is lost
+            # forever. ``deferred`` reset per iteration is intentional.
+            deferred = False
             if (
                 current_all_running is not None
                 and last_all_running is not None
@@ -280,35 +287,49 @@ class LinuxAudioServiceMonitor:
                 kind = (
                     AudioServiceEventKind.UP if current_all_running else AudioServiceEventKind.DOWN
                 )
-                logger.info(
-                    "voice_audio_service_transition",
-                    kind=kind.value,
-                    previous_running=last_all_running,
-                    current_running=current_all_running,
-                    platform="linux",
-                )
-                # Canonical log mirrors the Windows path so SLO
-                # dashboards can union-query the
-                # ``audio.service.restarted`` topic across platforms.
-                logger.warning(
-                    "audio.service.restarted",
-                    **{
-                        "voice.service": ",".join(sorted(self._services)),
-                        "voice.up": current_all_running,
-                        "voice.previous_running": last_all_running,
-                        "voice.platform": "linux",
-                    },
-                )
-                try:
-                    await on_event(AudioServiceEvent(kind=kind))
-                except asyncio.CancelledError:
-                    raise
-                except Exception:  # noqa: BLE001
-                    logger.warning(
-                        "voice_audio_service_dispatch_failed",
-                        exc_info=True,
+                if kind is AudioServiceEventKind.UP and not await self._post_up_health_check():
+                    # PipeWire systemctl reports active but ``pactl
+                    # info`` is unresponsive — daemon isn't yet
+                    # accepting client connections. Defer the UP emit
+                    # to the next poll. LENIENT default: INFO log + no
+                    # SLO alert. STRICT promotion (INFO → WARNING +
+                    # alert when firing > 3x in 60 s) lives in W2.C3.
+                    logger.info(
+                        "voice_audio_service_up_health_check_failed",
+                        platform="linux",
+                        retry_in_s=self._interval,
                     )
-            if current_all_running is not None:
+                    deferred = True
+                else:
+                    logger.info(
+                        "voice_audio_service_transition",
+                        kind=kind.value,
+                        previous_running=last_all_running,
+                        current_running=current_all_running,
+                        platform="linux",
+                    )
+                    # Canonical log mirrors the Windows path so SLO
+                    # dashboards can union-query the
+                    # ``audio.service.restarted`` topic across platforms.
+                    logger.warning(
+                        "audio.service.restarted",
+                        **{
+                            "voice.service": ",".join(sorted(self._services)),
+                            "voice.up": current_all_running,
+                            "voice.previous_running": last_all_running,
+                            "voice.platform": "linux",
+                        },
+                    )
+                    try:
+                        await on_event(AudioServiceEvent(kind=kind))
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception:  # noqa: BLE001
+                        logger.warning(
+                            "voice_audio_service_dispatch_failed",
+                            exc_info=True,
+                        )
+            if current_all_running is not None and not deferred:
                 last_all_running = current_all_running
             try:
                 await asyncio.sleep(self._interval)

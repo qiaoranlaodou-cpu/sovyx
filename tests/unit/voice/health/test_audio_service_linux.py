@@ -484,6 +484,18 @@ class TestAggregateTransitions:
             poll_interval_s=0.001,
             query=query,
         )
+        # F2-H04 (audit §3.K) — the production path now gates UP on
+        # ``_post_up_health_check`` (pactl info verify). Tests that
+        # spawn the real helper would fail on hosts without ``pactl``
+        # binary (Windows CI, lean containers). Mock to True so this
+        # unit test continues to pin the aggregate-state machine
+        # WITHOUT being coupled to the pactl subprocess gate (which
+        # has dedicated coverage in
+        # ``test_audio_service_linux_post_up.py`` +
+        # ``test_pipewire_restart_resilience.py``).
+        from unittest.mock import AsyncMock
+
+        monitor._post_up_health_check = AsyncMock(return_value=True)  # type: ignore[method-assign]
         await _drive_polls(
             monitor,
             capture,
