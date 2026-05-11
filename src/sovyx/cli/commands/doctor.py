@@ -1863,6 +1863,73 @@ def doctor_voice_capture_apo(
     raise typer.Exit(0 if result.status == DiagnosticStatus.PASS else 1)
 
 
+@doctor_app.command("piper_locale_match")
+def doctor_piper_locale_match(
+    language: str | None = typer.Option(
+        None,
+        "--language",
+        "-l",
+        help="BCP-47 locale to check (e.g. 'pt-BR', 'en-US'). When "
+        "omitted, falls back to 'en-US' so the probe is runnable "
+        "without an active mind context.",
+    ),
+    output_json: bool = typer.Option(
+        False,
+        "--json",
+        help="Emit the DiagnosticResult as a single JSON object on stdout.",
+    ),
+) -> None:
+    """Check whether a locale has a curated Piper voice (F2-M03↑ §3.F).
+
+    Surfaces gaps between the mind's spoken language and Sovyx's
+    curated Piper voice catalog. Useful before installing a mind for
+    a new locale, or after an upgrade that may have changed catalog
+    coverage.
+
+    LENIENT default per ``feedback_staged_adoption``:
+
+    * ``0`` — ``PASS`` (catalog hit; the factory will download +
+      load the locale-matched voice).
+    * ``1`` — ``WARN`` (no curated voice; the factory falls back to
+      ``tuning.piper_default_voice`` — English. Voice still works
+      but in the wrong language.).
+
+    STRICT promotion (WARN → FAIL) is deferred to a follow-up cycle
+    gated on operator telemetry — see the TODO in
+    :func:`sovyx.upgrade.doctor._check_piper_locale_match`.
+    """
+    from sovyx.upgrade.doctor import DiagnosticStatus, _check_piper_locale_match
+
+    result = _check_piper_locale_match(language=language)
+
+    if output_json:
+        print(json.dumps(result.to_dict(), ensure_ascii=False))
+    else:
+        console = Console()
+        status_style = {
+            DiagnosticStatus.PASS: "green",
+            DiagnosticStatus.WARN: "yellow",
+            DiagnosticStatus.FAIL: "red",
+        }[result.status]
+        marker = {
+            DiagnosticStatus.PASS: "✓",
+            DiagnosticStatus.WARN: "⚠",
+            DiagnosticStatus.FAIL: "✗",
+        }[result.status]
+        console.print(
+            f"[bold {status_style}]{marker} {result.check}: {result.status.value.upper()}[/]",
+        )
+        console.print(f"  {result.message}")
+        if result.fix_suggestion:
+            console.print(f"  [dim]fix:[/] {result.fix_suggestion}")
+        if result.details:
+            voice = result.details.get("piper_voice")
+            if voice:
+                console.print(f"  [dim]voice:[/] {voice}")
+
+    raise typer.Exit(0 if result.status == DiagnosticStatus.PASS else 1)
+
+
 @doctor_app.command("platform")
 def doctor_platform(
     output_json: bool = typer.Option(

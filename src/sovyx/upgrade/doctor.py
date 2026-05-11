@@ -933,6 +933,95 @@ def _check_voice_kernel_invalidated() -> DiagnosticResult:
     )
 
 
+def _check_piper_locale_match(language: str | None = None) -> DiagnosticResult:
+    """Verify the active mind's locale has a curated Piper voice.
+
+    F2-M03↑ (audit §3.F + §3.Q flip step) — surface gaps between the
+    operator's spoken language and Sovyx's curated Piper voice catalog.
+    Pre-fix the factory hard-defaulted to English regardless of locale;
+    post-fix it derives the voice from
+    :func:`voice_catalog.recommended_piper_voice_for` and falls back to
+    ``tuning.piper_default_voice`` (with a WARN) on misses. This probe
+    surfaces those misses as ``WARN`` so operators can decide whether
+    to extend the catalog or accept the English fallback.
+
+    LENIENT default per ``feedback_staged_adoption``: the probe emits
+    ``WARN`` (not ``FAIL``) when the catalog doesn't cover the locale.
+    STRICT promotion (WARN → FAIL) is deferred to a follow-up cycle
+    gated on operator telemetry — see the TODO note below.
+
+    Args:
+        language: BCP-47 locale to check (``pt-BR``, ``en-US`` …). When
+            ``None`` the function falls back to
+            :attr:`VoiceTuningConfig.piper_default_voice`'s implicit
+            locale (``en-us``) so the probe stays runnable without an
+            active mind context.
+
+    Returns:
+        Diagnostic result with the resolved Piper voice (or None) in
+        the details dict.
+
+    """
+    # TODO: STRICT flip pending operator telemetria
+    # Promote WARN → FAIL when the helper returns None (currently
+    # LENIENT). Also promote the matching
+    # ``voice.factory.piper_locale_unsupported`` logger.warning →
+    # logger.error at src/sovyx/voice/factory/__init__.py. Gate: 1
+    # minor cycle of v0.37.x telemetria confirming the catalog covers
+    # the locales operators actually run. See §3.F flip step +
+    # feedback_staged_adoption.
+    check_name = "piper_locale_match"
+    from sovyx.voice import voice_catalog
+    from sovyx.voice.voice_catalog import recommended_piper_voice_for
+
+    target_language = (language or "en-US").strip()
+    if not target_language:
+        target_language = "en-US"
+
+    piper_voice = recommended_piper_voice_for(target_language)
+    if piper_voice is not None:
+        return DiagnosticResult(
+            check=check_name,
+            status=DiagnosticStatus.PASS,
+            message=(
+                f"Locale {target_language!r} maps to Piper voice "
+                f"{piper_voice!r} (curated catalog hit)."
+            ),
+            details={
+                "language": target_language,
+                "piper_voice": piper_voice,
+                "lenient_mode": True,
+            },
+        )
+
+    # Sorted to keep the message deterministic across runs (dict
+    # iteration order is insertion-ordered in 3.7+ but the diagnostic
+    # surface should not depend on that).
+    supported = sorted(voice_catalog._PIPER_VOICES_BY_LANGUAGE)
+    return DiagnosticResult(
+        check=check_name,
+        status=DiagnosticStatus.WARN,
+        message=(
+            f"Locale {target_language!r} has no curated Piper voice. "
+            f"The factory falls back to tuning.piper_default_voice — "
+            f"voice stays functional but in English."
+        ),
+        fix_suggestion=(
+            "Either set MindConfig.language to a supported locale "
+            f"({', '.join(supported)}) OR extend "
+            "model_registry._PIPER_VOICES with a SHA-verified tuple "
+            "for the missing locale and re-add it to "
+            "voice_catalog._PIPER_VOICES_BY_LANGUAGE in the same commit."
+        ),
+        details={
+            "language": target_language,
+            "piper_voice": None,
+            "supported_locales": supported,
+            "lenient_mode": True,
+        },
+    )
+
+
 def _check_data_dir_writable(data_dir: Path) -> DiagnosticResult:
     """Check that the data directory exists and is writable.
 
