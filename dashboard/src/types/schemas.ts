@@ -927,6 +927,61 @@ export const VoiceCaptureDeviceContendedErrorSchema = z.object({
   alternative_devices: z.array(VoiceAlternativeDeviceSchema),
 });
 
+// ── F2-C01 (audit §3.A) — /api/voice/enable request + umbrella response ──
+//
+// Mirrors the backend Pydantic envelope at
+// ``src/sovyx/dashboard/routes/voice.py::VoiceEnableResponse`` field-by-field.
+// The backend declares ``model_config extra="allow"`` to keep the contract
+// forward-additive for new diagnostic fields; we use ``z.passthrough()`` so
+// undeclared keys survive ``safeParse`` without warnings.
+//
+// The 503 ``capture_device_contended`` branch carries
+// ``contending_process_hint`` + ``alternative_devices`` — the previously
+// dropped pair before F2-C01 was closed. VoiceSetupModal now imports the
+// inferred type directly and renders ``DeviceContentionBanner`` on that
+// payload.
+export const VoiceEnableMissingDepSchema = z.object({
+  module: z.string(),
+  package: z.string(),
+});
+
+export const VoiceEnableMissingModelSchema = z.object({
+  name: z.string(),
+  install_command: z.string(),
+});
+
+export const VoiceEnableRequestSchema = z.object({
+  mind_id: z.string().optional(),
+  input_device: z.union([z.number(), z.null()]).optional(),
+  output_device: z.union([z.number(), z.null()]).optional(),
+  input_device_name: z.union([z.string(), z.null()]).optional(),
+  input_device_host_api: z.union([z.string(), z.null()]).optional(),
+});
+
+export const VoiceEnableResponseSchema = z
+  .object({
+    ok: z.boolean(),
+    status: z.string().nullable().optional(),
+    error: z.string().nullable().optional(),
+    tts_engine: z.string().nullable().optional(),
+    host_api: z.string().nullable().optional(),
+    detail: z.string().nullable().optional(),
+    device: z.union([z.number(), z.string(), z.null()]).optional(),
+    reason: z.string().nullable().optional(),
+    attempts: z.unknown().optional(),
+    missing_deps: z.array(VoiceEnableMissingDepSchema).nullable().optional(),
+    install_command: z.string().nullable().optional(),
+    missing_models: z.array(VoiceEnableMissingModelSchema).nullable().optional(),
+    observed_peak_rms_db: z.number().nullable().optional(),
+    suggested_actions: z.array(z.string()).nullable().optional(),
+    contending_process_hint: z.string().nullable().optional(),
+    alternative_devices: z
+      .array(VoiceAlternativeDeviceSchema)
+      .nullable()
+      .optional(),
+  })
+  .passthrough();
+
 export const VoiceHealthPinResponseSchema = z.object({
   endpoint_guid: z.string(),
   pinned: z.boolean(),
