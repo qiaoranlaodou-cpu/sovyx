@@ -23,6 +23,12 @@ WS_CLOSE_PIPELINE_ACTIVE: Final[int] = 4009
 WS_CLOSE_DISABLED: Final[int] = 4010
 WS_CLOSE_REPLACED: Final[int] = 4012  # newer connection from same token
 WS_CLOSE_DEVICE_ERROR: Final[int] = 4020
+# v0.38.0 / F2-H01 — wizard recorder holds an exclusive PortAudio claim;
+# any concurrent VU subscribe is rejected with the standard RFC 6455
+# 1013 "Try Again Later" so the frontend can backoff + retry rather than
+# race the recorder for the device. See SessionRegistry.acquire_exclusive
+# and audit §3.C.
+WS_CLOSE_RECORDER_BUSY: Final[int] = 1013
 
 
 class FrameType(StrEnum):

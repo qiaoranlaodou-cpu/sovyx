@@ -455,12 +455,21 @@ class TestSessionRegistryHandoff:
         assert response.status_code == 200  # noqa: PLR2004
         assert response.json()["success"] is True
 
-    def test_handoff_failure_does_not_block_recorder(self) -> None:
-        """A stuck or buggy SessionRegistry MUST NOT prevent the
-        recorder from running. ``close_all`` is a best-effort handoff;
-        the recorder still gets a chance even when the handoff itself
-        raises. The improved ``open_input_stream`` opener will surface
-        a clearer error if the device is genuinely unreachable."""
+    def test_handoff_failure_blocks_recorder_under_exclusive_lock(self) -> None:
+        """v0.38.0 / F2-H01 — when ``close_all`` raises inside the
+        exclusive lock, the recorder MUST NOT proceed.
+
+        Pre-v0.38.0 the handoff was best-effort and the recorder ran
+        even if ``close_all`` raised. That left the same race window
+        open: a stuck registry meant some prior live-VU session might
+        STILL hold PortAudio when the recorder tried to open it,
+        producing the very ``paDeviceUnavailable`` HEAD ``5f5c60ca`` set
+        out to fix. ``acquire_exclusive`` now treats ``close_all`` as a
+        hard prerequisite for the lock window — failure surfaces as a
+        clear ``device_error`` response with the registry's exception,
+        rather than degrading to a confusing PortAudio race later. See
+        audit §3.C + ``device_test/_session.py::SessionRegistry``.
+        """
         from sovyx.voice.device_test import CloseReason, SessionRegistry
 
         class _BrokenRegistry(SessionRegistry):
@@ -482,12 +491,11 @@ class TestSessionRegistryHandoff:
             "/api/voice/wizard/test-record",
             json={"duration_seconds": 3.0},
         )
-        # Recorder still ran (success=True with the deterministic
-        # silence recorder's analysis, NOT the recorder-error path).
         assert response.status_code == 200  # noqa: PLR2004
         data = response.json()
-        assert data["success"] is True
-        assert data["diagnosis"] != "device_error"
+        assert data["success"] is False
+        assert data["diagnosis"] == "device_error"
+        assert "registry intentionally raises" in (data.get("error") or "")
 
 
 # ── T7.23 test-result by session_id ─────────────────────────────────

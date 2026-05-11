@@ -56,6 +56,7 @@ from sovyx.voice.device_test import (
     WS_CLOSE_DISABLED,
     WS_CLOSE_PIPELINE_ACTIVE,
     WS_CLOSE_RATE_LIMITED,
+    WS_CLOSE_RECORDER_BUSY,
     WS_CLOSE_UNAUTHORIZED,
     AudioSinkError,
     DeviceInfo,
@@ -340,6 +341,17 @@ async def websocket_input_meter(
         await websocket.close(code=WS_CLOSE_UNAUTHORIZED, reason="unauthorized")
         return
 
+    # v0.38.0 / F2-H01 — refuse new VU subscribes while a recorder
+    # holds the exclusive lock. The wizard's test-record window is
+    # ~3-4s; without this fence a concurrent WS connect could re-arm
+    # the SessionRegistry and steal PortAudio mid-recording (the very
+    # `paDeviceUnavailable` HEAD `5f5c60ca` set out to fix). See audit
+    # §3.C + acquire_exclusive in _session.py.
+    registry = _get_session_registry(websocket)
+    if registry.exclusive_lock.locked():
+        await websocket.close(code=WS_CLOSE_RECORDER_BUSY, reason="recorder_busy")
+        return
+
     tuning = _get_tuning(websocket)
     if not tuning.device_test_enabled:
         await websocket.close(code=WS_CLOSE_DISABLED, reason="disabled")
@@ -380,10 +392,10 @@ async def websocket_input_meter(
         ),
     )
 
-    registry = _get_session_registry(websocket)
     # v0.20.2 / Bug B — the registry now stops + wait_closed + force_close
     # any superseded sessions INSIDE register() before returning, so by
     # the time we call session.run() the mic is guaranteed free.
+    # (Registry already resolved above for the exclusive_lock fence.)
     await registry.register(token_key, session)
 
     logger.info(

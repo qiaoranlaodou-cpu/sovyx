@@ -604,51 +604,48 @@ async def post_wizard_test_record(
     # ``PaErrorCode -9985 (paDeviceUnavailable)`` on a Linux host
     # (Razer USB headset, hw:2,0). Each failure timestamp coincided
     # with an active ``voice_test_session_opened`` from the live
-    # ``HardwareDetection`` mic-test panel — i.e. the same daemon
-    # process was holding the mic via the live VU stream and the
-    # recorder couldn't open it a second time (ALSA exclusive open).
+    # ``HardwareDetection`` mic-test panel — the same daemon was
+    # holding the mic via the live VU stream and the recorder could
+    # not open it a second time (ALSA exclusive open).
     #
-    # The fix mirrors ``/api/voice/enable`` (voice.py:2317-2334) which
-    # uses the SAME primitive to release the mic before the
-    # production pipeline opens it. ``SessionRegistry.close_all`` is
-    # documented as the canonical pre-acquire handoff:
-    # ``device_test/_session.py:458``. Without this await, the next
-    # PortAudio open races the live session's ``stream.close`` and
-    # produces spurious ``-9985`` on the first candidate.
+    # v0.38.0 / F2-H01 — ``SessionRegistry.acquire_exclusive`` holds an
+    # asyncio lock for the recorder's ENTIRE lifetime (close_all + the
+    # PortAudio open + the capture window + cleanup), and the WS VU
+    # subscribe handler refuses new connections while that lock is
+    # held (``WS_CLOSE_RECORDER_BUSY`` / RFC 6455 1013). Pre-v0.38.0
+    # ``close_all`` released the device, then the asyncio loop yielded
+    # and a fresh WS could re-arm the registry before our call to
+    # ``recorder.record(...)`` re-opened PortAudio. See audit §3.C and
+    # ``device_test/_session.py::SessionRegistry.acquire_exclusive``.
     voice_test_registry = getattr(request.app.state, "voice_test_registry", None)
-    if voice_test_registry is not None:
-        from sovyx.voice.device_test import CloseReason, SessionRegistry  # noqa: PLC0415
+    from sovyx.voice.device_test import SessionRegistry  # noqa: PLC0415
 
+    duration_s = body.duration_seconds
+
+    async def _run_recorder() -> npt.NDArray[np.float32]:
+        return await asyncio.to_thread(
+            recorder.record,
+            duration_s=duration_s,
+            device_id=body.device_id,
+        )
+
+    try:
         if isinstance(voice_test_registry, SessionRegistry):
             logger.info(
                 "voice_wizard_test_record_session_handoff_begin",
                 session_id=session_id,
             )
-            try:
-                await voice_test_registry.close_all(reason=CloseReason.SERVER_SHUTDOWN)
-            except Exception as exc:  # noqa: BLE001
-                # Handoff is best-effort: even if a stuck session can't
-                # be closed, we still attempt the recorder. The
-                # ``open_input_stream`` opener now used by
-                # ``SoundDeviceWizardRecorder`` will surface a clearer
-                # error if the device is genuinely unreachable.
-                logger.warning(
-                    "voice_wizard_test_record_session_handoff_failed",
-                    session_id=session_id,
-                    error=str(exc),
-                )
-            else:
+            async with voice_test_registry.acquire_exclusive(
+                role="wizard_test_record",
+                ttl_s=duration_s + 0.5,
+            ):
                 logger.info(
                     "voice_wizard_test_record_session_handoff_done",
                     session_id=session_id,
                 )
-
-    try:
-        samples = await asyncio.to_thread(
-            recorder.record,
-            duration_s=body.duration_seconds,
-            device_id=body.device_id,
-        )
+                samples = await _run_recorder()
+        else:
+            samples = await _run_recorder()
     except Exception as exc:  # noqa: BLE001
         # T7.27 / T7.28 — translate raw OS error to operator-facing
         # plain-language guidance. Fallback path returns the raw
