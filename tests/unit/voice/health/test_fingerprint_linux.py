@@ -365,6 +365,89 @@ class TestUsbAudio:
         assert result == "{linux-usb-1D6B:0003-0-playback}"
 
 
+class TestUsbWalkDepthAndNameFallback:
+    """v0.38.0 / W3.G1 — F2-M10 (audit §3.P) closure.
+
+    The pre-fix walk limit (12) collapsed to a surrogate hash on
+    USB-through-hub topologies (Razer USB through a powered hub
+    nests 14-16 levels deep on Linux). The fix raises the walk limit
+    to 20 AND adds a regex name-based VID:PID fallback for paths
+    that still hit the limit. Tests pin both behaviours.
+    """
+
+    @pytest.mark.parametrize("depth", [5, 10, 15, 18])
+    def test_idvendor_walk_resolves_within_limit(self, tmp_path: Path, depth: int) -> None:
+        """Sysfs trees of depths 5/10/15/18 all resolve via the walk."""
+        from sovyx.voice.health._fingerprint_linux import _extract_usb_vid_pid
+
+        # Build a directory tree N levels deep with idVendor/idProduct
+        # at the ROOT and the resolve target at the leaf. The walker
+        # ascends from the leaf; at the depth-th parent it finds the
+        # files.
+        usb_root = tmp_path / "usb_root"
+        usb_root.mkdir()
+        (usb_root / "idVendor").write_text("1532", encoding="utf-8")
+        (usb_root / "idProduct").write_text("0543", encoding="utf-8")
+        leaf = usb_root
+        for i in range(depth):
+            leaf = leaf / f"hop{i}"
+            leaf.mkdir()
+        result = _extract_usb_vid_pid(leaf)
+        assert result == "1532:0543", f"depth {depth} should resolve"
+
+    def test_walk_limit_exceeded_falls_back_to_name_regex(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Walk hits the 20-level cap → name regex fallback fires + logs.
+
+        Uses a constructed (non-existent) path so the walker's
+        ``is_file()`` returns False on every iteration — exhausts the
+        walk, falls through to the regex fallback. Avoids Windows
+        MAX_PATH limits that block real-directory deep nesting.
+        """
+        from sovyx.voice.health._fingerprint_linux import _extract_usb_vid_pid
+
+        # 25 segments > _USB_ANCESTOR_WALK_LIMIT (20). Each segment
+        # carries the usb-VID_PID_ pattern so the regex fallback finds
+        # it on the resolved path.
+        deep_root = Path("/fake/sysfs")
+        for i in range(25):
+            deep_root = deep_root / f"usb-1532_0543_razer_hub_seg{i}"
+        caplog.set_level("INFO", logger="sovyx.voice.health._fingerprint_linux")
+        result = _extract_usb_vid_pid(deep_root)
+        assert result == "1532:0543", (
+            "regex name fallback must extract VID:PID when walk hits limit"
+        )
+        # Telemetry event MUST fire so operators can correlate
+        # surrogate-hash → fingerprint-stable transitions.
+        events = [
+            r.getMessage()
+            for r in caplog.records
+            if "voice_endpoint_fingerprint_usb_walk_limit_hit" in r.getMessage()
+        ]
+        assert events, "fallback hit MUST emit voice_endpoint_fingerprint_usb_walk_limit_hit"
+
+    def test_walk_limit_exceeded_without_name_match_returns_none(self) -> None:
+        """If neither the walk nor the regex match, return None (caller
+        falls through to surrogate hash)."""
+        from sovyx.voice.health._fingerprint_linux import _extract_usb_vid_pid
+
+        # 25 opaque segments — no idVendor file (path doesn't exist),
+        # no usb-VID_PID_ pattern in any segment. Walker exhausts +
+        # regex returns None.
+        deep_root = Path("/fake/sysfs")
+        for i in range(25):
+            deep_root = deep_root / f"opaque_segment{i}"
+        result = _extract_usb_vid_pid(deep_root)
+        assert result is None
+
+    def test_walk_limit_constant_is_20(self) -> None:
+        """The constant value pins the audit's 12 → 20 promotion."""
+        from sovyx.voice.health._fingerprint_linux import _USB_ANCESTOR_WALK_LIMIT
+
+        assert _USB_ANCESTOR_WALK_LIMIT == 20
+
+
 class TestMultipleCardsDistinctIdentity:
     """Multiple cards on the same system → distinct fingerprints."""
 

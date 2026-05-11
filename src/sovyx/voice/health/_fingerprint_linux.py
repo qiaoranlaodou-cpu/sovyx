@@ -458,15 +458,46 @@ def _read_bus_identity(
     return None
 
 
-_USB_ANCESTOR_WALK_LIMIT = 12
+_USB_ANCESTOR_WALK_LIMIT = 20
 """Safety cap on the parent-walk depth when searching for USB
 ``idVendor``/``idProduct`` files.
 
-Real sysfs USB device nodes are at most ~8 levels deep from the
+Real sysfs USB device nodes are typically ~8 levels deep from the
 sound-card ``device`` link (pci.../usb/port/device/interface/sound/cardN).
-12 gives headroom without letting a pathological path traverse to
-the filesystem root.
+v0.38.0 / W3.G1 raised this from 12 to 20 to accommodate USB
+through-hub topologies (operator's Razer USB through a powered hub
+hits 14-16 levels). When the walk still hits the limit without
+finding ``idVendor``, ``_extract_usb_vid_pid_from_name`` provides a
+regex-based fallback so the fingerprint stays stable rather than
+collapsing to a surrogate hash. See audit §3.P + F2-M10.
 """
+
+
+_USB_NAME_VID_PID_RE = re.compile(
+    r"usb-(?P<vid>[0-9a-fA-F]{4})_(?P<pid>[0-9a-fA-F]{4})_",
+)
+"""Match ``usb-VVVV_PPPP_<rest>`` segments commonly found in sysfs
+device names + udev-friendly device paths. The capture lets the
+fallback resolve VID:PID without a successful idVendor walk."""
+
+
+def _extract_usb_vid_pid_from_name(resolved: Path) -> str | None:
+    """Regex-based VID:PID inference from the path string.
+
+    Used as a fallback when ``_extract_usb_vid_pid`` walks the full
+    ``_USB_ANCESTOR_WALK_LIMIT`` without finding ``idVendor`` /
+    ``idProduct`` files. The match is constrained to lowercase or
+    uppercase 4-hex pairs immediately after a literal ``usb-``
+    segment to avoid collisions with PCI BDF substrings.
+    """
+    match = _USB_NAME_VID_PID_RE.search(str(resolved))
+    if match is None:
+        return None
+    vid = match.group("vid")
+    pid = match.group("pid")
+    if _is_hex4(vid) and _is_hex4(pid):
+        return f"{vid.upper()}:{pid.upper()}"
+    return None
 
 
 def _extract_usb_vid_pid(resolved: Path) -> str | None:
@@ -484,6 +515,15 @@ def _extract_usb_vid_pid(resolved: Path) -> str | None:
     Windows / Linux / macOS) — the production code path still
     starts at a ``/sys/class/sound/card<N>/device`` resolve target,
     which never escapes ``/sys`` within the walk limit.
+
+    v0.38.0 / W3.G1 — F2-M10 (audit §3.P). When the walk hits
+    ``_USB_ANCESTOR_WALK_LIMIT`` without finding the files (e.g.
+    Razer USB through a powered hub), the fallback regex
+    ``_extract_usb_vid_pid_from_name`` extracts VID:PID from the
+    path-string itself so the fingerprint stays stable across
+    USB port replugs. A telemetry event
+    ``voice_endpoint_fingerprint_usb_walk_limit_hit`` is emitted
+    whenever the fallback fires.
     """
     current: Path = resolved
     for _ in range(_USB_ANCESTOR_WALK_LIMIT):
@@ -502,6 +542,19 @@ def _extract_usb_vid_pid(resolved: Path) -> str | None:
         if parent == current:
             return None
         current = parent
+
+    # Walk hit the limit without finding the files. Try the
+    # regex-name fallback before giving up — preserves fingerprint
+    # stability for deeply-nested USB-through-hub topologies.
+    fallback = _extract_usb_vid_pid_from_name(resolved)
+    if fallback is not None:
+        logger.info(
+            "voice_endpoint_fingerprint_usb_walk_limit_hit",
+            walk_limit=_USB_ANCESTOR_WALK_LIMIT,
+            resolved_target=str(resolved),
+            fallback_vid_pid=fallback,
+        )
+        return fallback
     return None
 
 
