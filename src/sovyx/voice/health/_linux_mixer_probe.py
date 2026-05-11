@@ -135,7 +135,14 @@ def enumerate_alsa_mixer_snapshots() -> list[MixerCardSnapshot]:
     try:
         cards_text = _PROC_CARDS.read_text(encoding="utf-8", errors="replace")
     except OSError as exc:
-        logger.debug("linux_mixer_proc_cards_read_failed", detail=str(exc))
+        # v0.38.0 / W3.F1 — F2-M09 (audit). When /proc/asound/cards
+        # exists() succeeds but read fails (transient TOCTOU race
+        # between the .exists() probe at the top of the function and
+        # this read, e.g. from a mounted FS race or permission flip),
+        # DEBUG was the wrong level — operators investigating "no
+        # mixer detected" on a system that SHOULD have mixer cards
+        # missed the signal. Promoted to WARNING.
+        logger.warning("linux_mixer_proc_cards_read_failed", detail=str(exc))
         return []
 
     tuning = VoiceTuningConfig()
