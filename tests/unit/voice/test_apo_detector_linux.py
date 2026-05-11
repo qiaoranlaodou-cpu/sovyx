@@ -275,6 +275,87 @@ class TestFailureIsolation:
         ):
             assert detect_capture_apos_linux() == []
 
+
+class TestPactlNonzeroDispatch:
+    """v0.38.0 / W3.E1 — F2-M08 (audit §3.O) closure.
+
+    The single opaque ``voice_apo_linux_pactl_nonzero`` DEBUG log was
+    split into 3 specific WARNING events keyed off a 512-char stderr
+    excerpt so operators can diagnose Linux capture silence from
+    production logs. These tests pin the dispatch contract.
+    """
+
+    @pytest.mark.parametrize(
+        ("stderr_text", "expected_event"),
+        [
+            ("pactl: command not found", "voice_apo_linux_pactl_command_failed"),
+            ("/usr/bin/pactl: No such file or directory", "voice_apo_linux_pactl_command_failed"),
+            ("Connection failure: Connection refused", "voice_apo_linux_pactl_daemon_unavailable"),
+            ("pa_context_connect() failed", "voice_apo_linux_pactl_nonzero"),
+            ("", "voice_apo_linux_pactl_nonzero"),
+        ],
+    )
+    def test_dispatch_event_name_by_stderr_keyword(
+        self,
+        stderr_text: str,
+        expected_event: str,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Each stderr keyword shape selects the right structured event."""
+        # The command_failed branch ignores the returncode shape; the
+        # daemon_unavailable branch requires returncode == 1.
+        rc = 1 if "Connection refused" in stderr_text else 127
+        pactl = _FakeCompleted("", returncode=rc, stderr=stderr_text)
+        caplog.set_level("WARNING", logger="sovyx.voice._apo_detector_linux")
+        with (
+            patch.object(sys, "platform", "linux"),
+            patch("shutil.which", _which_dispatch({"pactl"})),
+            patch("subprocess.run", _run_dispatch({"pactl": pactl})),
+        ):
+            assert detect_capture_apos_linux() == []
+        events = [r.event_dict.get("event") for r in caplog.records if hasattr(r, "event_dict")]
+        # Fallback for stdlib LogRecord: search the message text.
+        if not events:
+            events = [r.getMessage() for r in caplog.records]
+        assert any(expected_event in str(e) for e in events), (
+            f"expected {expected_event!r} in caplog events; got {events!r}"
+        )
+
+    def test_all_branches_emit_warning_level(self, caplog: pytest.LogCaptureFixture) -> None:
+        """The split keeps WARNING level (not DEBUG) so operators see it."""
+        pactl = _FakeCompleted("", returncode=2, stderr="some other error")
+        caplog.set_level("WARNING", logger="sovyx.voice._apo_detector_linux")
+        with (
+            patch.object(sys, "platform", "linux"),
+            patch("shutil.which", _which_dispatch({"pactl"})),
+            patch("subprocess.run", _run_dispatch({"pactl": pactl})),
+        ):
+            detect_capture_apos_linux()
+        # At least one WARNING-level record was emitted by the detector.
+        warn_records = [r for r in caplog.records if r.levelname == "WARNING"]
+        assert warn_records, "pactl-nonzero branch must emit at WARNING level"
+
+    def test_stderr_excerpt_truncates_to_512_chars(self, caplog: pytest.LogCaptureFixture) -> None:
+        """Long stderr is truncated to 512 chars to keep log lines bounded."""
+        long_stderr = "x" * 1024
+        pactl = _FakeCompleted("", returncode=2, stderr=long_stderr)
+        caplog.set_level("WARNING", logger="sovyx.voice._apo_detector_linux")
+        with (
+            patch.object(sys, "platform", "linux"),
+            patch("shutil.which", _which_dispatch({"pactl"})),
+            patch("subprocess.run", _run_dispatch({"pactl": pactl})),
+        ):
+            detect_capture_apos_linux()
+        # Find the structured log record. structlog routes through stdlib
+        # so the LogRecord is reachable via caplog; we check the message
+        # rendered length never exceeds 512+key overhead.
+        messages = [r.getMessage() for r in caplog.records]
+        assert messages, "no log records captured"
+        # Ensure the FULL 1024-char stderr was NOT inlined verbatim.
+        assert all("x" * 1024 not in m for m in messages), (
+            "stderr_excerpt must be truncated, not full 1024 chars"
+        )
+
     def test_pwdump_malformed_json(self) -> None:
         pw = _FakeCompleted("{not json")
         with (

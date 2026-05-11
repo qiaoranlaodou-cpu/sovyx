@@ -202,11 +202,32 @@ def _probe_pulse_modules() -> tuple[list[str], list[str]]:
         logger.debug("voice_apo_linux_pactl_failed", detail=str(exc))
         return [], []
     if proc.returncode != 0:
-        logger.debug(
-            "voice_apo_linux_pactl_nonzero",
-            returncode=proc.returncode,
-            stderr=proc.stderr[:200] if proc.stderr else "",
-        )
+        # v0.38.0 / F2-M08 (audit §3.O) — split the single opaque DEBUG
+        # log into 3 specific WARNING events keyed off a 512-char stderr
+        # excerpt so operators investigating Linux capture silence get
+        # actionable signal from production logs instead of a swallowed
+        # debug line.
+        stderr_excerpt = (proc.stderr or "")[:512]
+        stderr_lower = stderr_excerpt.lower()
+        if "command not found" in stderr_lower or "no such file" in stderr_lower:
+            logger.warning(
+                "voice_apo_linux_pactl_command_failed",
+                returncode=proc.returncode,
+                stderr_excerpt=stderr_excerpt,
+            )
+        elif proc.returncode == 1 and "connection refused" in stderr_lower:
+            logger.warning(
+                "voice_apo_linux_pactl_daemon_unavailable",
+                returncode=proc.returncode,
+                stderr_excerpt=stderr_excerpt,
+                hint="PulseAudio/PipeWire daemon may not be running",
+            )
+        else:
+            logger.warning(
+                "voice_apo_linux_pactl_nonzero",
+                returncode=proc.returncode,
+                stderr_excerpt=stderr_excerpt,
+            )
         return [], []
 
     known: list[str] = []
