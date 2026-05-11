@@ -20,6 +20,7 @@ combination. This file pins:
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -29,6 +30,18 @@ from typer.testing import CliRunner
 from sovyx.cli.main import app
 
 runner = CliRunner()
+
+# v0.38.1 — typer's CLI on Linux CI renders flag tokens with ANSI bold
+# escape codes (`\x1b[1m-\x1b[0m\x1b[1m-calibrate\x1b[0m`), so a literal
+# `--calibrate` substring search misses on CI even when the rendered
+# text contains the flag. Strip ANSI before substring assertions.
+# Local Windows console disables ANSI by default, which masked this on
+# v0.38.0 (publish.yml run 25679658270).
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def _strip_ansi(text: str) -> str:
+    return _ANSI_RE.sub("", text)
 
 
 # ---------------------------------------------------------------------------
@@ -75,7 +88,7 @@ def test_doctor_voice_rejects_mutex_flag_pair(
         args.append("--calibrate")
     result = runner.invoke(app, args)
     assert result.exit_code != 0, f"expected non-zero exit for {args!r}, got 0"
-    combined = result.output + (result.stderr or "")
+    combined = _strip_ansi(result.output + (result.stderr or ""))
     assert needle.lower() in combined.lower(), (
         f"expected {needle!r} in error output for {args!r}; got: {combined!r}"
     )
@@ -89,7 +102,7 @@ def test_doctor_voice_inspect_modes_require_calibrate(flag: str) -> None:
     """Read-only inspect flags without --calibrate exit non-zero."""
     result = runner.invoke(app, ["doctor", "voice", flag])
     assert result.exit_code != 0
-    combined = result.output + (result.stderr or "")
+    combined = _strip_ansi(result.output + (result.stderr or ""))
     assert "--calibrate" in combined, f"error must reference --calibrate; got: {combined!r}"
 
 
@@ -124,7 +137,7 @@ def test_doctor_voice_calibrate_with_show_is_valid() -> None:
     # Either the patched dispatcher returns cleanly (exit 0) or it
     # falls through to a downstream early-exit; the load-bearing
     # assertion is "not flagged as mutex".
-    combined = result.output + (result.stderr or "")
+    combined = _strip_ansi(result.output + (result.stderr or ""))
     assert "mutually exclusive" not in combined.lower()
 
 
@@ -138,7 +151,7 @@ def test_doctor_voice_calibrate_with_evaluate_rules_is_valid() -> None:
             app,
             ["doctor", "voice", "--calibrate", "--evaluate-rules"],
         )
-    combined = result.output + (result.stderr or "")
+    combined = _strip_ansi(result.output + (result.stderr or ""))
     assert "mutually exclusive" not in combined.lower()
 
 
@@ -152,7 +165,7 @@ def test_doctor_voice_fix_with_dry_run_is_valid() -> None:
             app,
             ["doctor", "voice", "--fix", "--dry-run", "--yes"],
         )
-    combined = result.output + (result.stderr or "")
+    combined = _strip_ansi(result.output + (result.stderr or ""))
     assert "mutually exclusive" not in combined.lower()
 
 
