@@ -128,6 +128,9 @@ from sovyx.voice.capture._exceptions import (
 )
 from sovyx.voice.capture._helpers import _PEAK_DB_RE as _PEAK_DB_RE
 from sovyx.voice.capture._helpers import _RMS_FLOOR_DB as _RMS_FLOOR_DB
+from sovyx.voice.capture._helpers import (
+    InputDeviceNotFoundError as InputDeviceNotFoundError,
+)
 from sovyx.voice.capture._helpers import _extract_peak_db as _extract_peak_db
 from sovyx.voice.capture._helpers import _resolve_input_entry as _resolve_input_entry
 from sovyx.voice.capture._helpers import _rms_db_int16 as _rms_db_int16

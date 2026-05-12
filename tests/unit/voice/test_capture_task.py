@@ -21,6 +21,7 @@ from sovyx.voice._capture_task import (
     AlsaHwDirectRestartVerdict,
     AudioCaptureTask,
     ExclusiveRestartVerdict,
+    InputDeviceNotFoundError,
     SessionManagerRestartVerdict,
     SharedRestartVerdict,
     _extract_peak_db,
@@ -115,15 +116,73 @@ class TestResolveInputEntry:
         assert got.index == 3  # noqa: PLR2004
         assert got.host_api_name == "Windows WASAPI"
 
-    def test_falls_back_to_os_default_when_int_unknown(self) -> None:
+    def test_raises_when_int_not_in_enumeration(self) -> None:
+        """**v0.38.2 fix** — explicit int selector with no match → raise.
+
+        Pre-v0.38.2 (the load-bearing bug) silently fell back to the
+        OS default device — see `LAUDO-voice-failover-root-cause-2026-05-12.md`
+        §2 H1. Operator's "fala e a LLM nao responde" symptom traced
+        to this exact silent fallback (capture task swapped from
+        Razer USB device=5 to OS default device=8 = internal HDA
+        mic at vol=9% → captured silence → STT never decoded → LLM
+        never invoked).
+
+        The fix raises :class:`InputDeviceNotFoundError`, which
+        propagates up to ``_consume_loop``'s reconnect-failed handler
+        (`_loop_mixin.py:414-419`); the loop retries with backoff
+        until the original device returns to the enumeration.
+        Replaces the pre-v0.38.2 ``test_falls_back_to_os_default_when_int_unknown``.
+        """
+        other = _input_entry(index=1, name="Other", is_default=False)
+        default = _input_entry(index=9, name="Default", is_default=True)
+        with pytest.raises(InputDeviceNotFoundError) as exc_info:
+            _resolve_input_entry(
+                input_device=99,
+                enumerate_fn=lambda: [other, default],
+                host_api_name=None,
+            )
+        assert exc_info.value.requested == 99  # noqa: PLR2004
+        assert exc_info.value.available_indexes == [1, 9]
+        # Sanity — the structured fields match the int branch.
+        assert "99" in str(exc_info.value)
+        assert "OS default" in str(exc_info.value)
+
+    def test_raises_when_str_name_not_in_enumeration(self) -> None:
+        """v0.38.2 — explicit str selector with no canonical match → raise.
+
+        Sibling of the int branch. Same root cause: silent fallback
+        to OS default would let the wizard-persisted device name
+        drift to a different physical device when the original is
+        unplugged. The fix raises so the reconnect loop retries.
+        """
+        other = _input_entry(index=1, name="Other")
+        with pytest.raises(InputDeviceNotFoundError) as exc_info:
+            _resolve_input_entry(
+                input_device="Razer-that-was-unplugged",
+                enumerate_fn=lambda: [other],
+                host_api_name=None,
+            )
+        assert exc_info.value.requested == "Razer-that-was-unplugged"
+
+    def test_none_selector_still_falls_back_to_os_default(self) -> None:
+        """v0.38.2 — when caller passes None (no preference), legitimate
+        OS-default fallback path is preserved unchanged.
+
+        This is the boot path used by ``AudioCaptureTask`` when no
+        wizard selection has happened yet. Operator wants "whatever
+        works"; OS-default is the right answer. The v0.38.2 fix
+        ONLY changes the int/str-not-matching paths — None still
+        falls back as before.
+        """
         other = _input_entry(index=1, name="Other", is_default=False)
         default = _input_entry(index=9, name="Default", is_default=True)
         got = _resolve_input_entry(
-            input_device=99,
+            input_device=None,
             enumerate_fn=lambda: [other, default],
             host_api_name=None,
         )
         assert got.index == 9  # noqa: PLR2004
+        assert got.is_os_default is True
 
     def test_raises_when_no_inputs_available(self) -> None:
         with pytest.raises(RuntimeError, match="No audio input devices"):
@@ -132,6 +191,60 @@ class TestResolveInputEntry:
                 enumerate_fn=lambda: [],
                 host_api_name=None,
             )
+
+    # ── H1-T1 (mission LAUDO 2026-05-12) — operator scenario reproduction ──
+
+    def test_h1_operator_scenario_razer_index_vanishes_raises(self) -> None:
+        """v0.38.2 fix VALIDATION — operator's exact scenario raises.
+
+        Mirrors operator's diag tarball
+        `sovyx-diag-...20260512T012059Z` mid-session device-swap that
+        caused "falo e a LLM nao responde". Pre-v0.38.2 this scenario
+        SILENTLY swapped from Razer USB (device=5) to OS default
+        (device=8 = HDA mic at vol=9%) — operator captured silence.
+
+        v0.38.2 fix: ``_resolve_input_entry`` raises
+        :class:`InputDeviceNotFoundError`; propagates up to
+        ``_consume_loop``'s ``audio_capture_reconnect_failed`` handler
+        (`_loop_mixin.py:414-419`); reconnect loop retries with
+        backoff. When Razer returns to the enumeration (USB
+        re-enumerates / PortAudio re-init completes), reconnect
+        succeeds on the ORIGINAL device.
+
+        See `LAUDO-voice-failover-root-cause-2026-05-12.md` §2 H1
+        for the full evidence chain + tarball cross-reference.
+        """
+        # Operator's PipeWire-Linux device list, post-Razer-hiccup:
+        #   Razer (index 5) is ABSENT from this re-enumeration
+        #   "default" (index 8, is_os_default=True) routes via PipeWire
+        #   to HDA SN6180 internal mic at vol=9% on operator's box
+        #   internal mic (index 4) is hw:1,0 directly
+        default_entry = _input_entry(
+            index=8,
+            name="default",
+            host_api="ALSA",
+            is_default=True,
+        )
+        internal = _input_entry(
+            index=4,
+            name="HD-Audio Generic: SN6180 Analog (hw:1,0)",
+            host_api="ALSA",
+            is_default=False,
+        )
+        enum_post_hiccup = [internal, default_entry]
+
+        # Pre-v0.38.2: silent return of default_entry (the bug).
+        # Post-v0.38.2: raise so the reconnect loop retries.
+        with pytest.raises(InputDeviceNotFoundError) as exc_info:
+            _resolve_input_entry(
+                input_device=5,  # caller still wants Razer hw:2,0
+                enumerate_fn=lambda: enum_post_hiccup,
+                host_api_name="ALSA",
+            )
+        assert exc_info.value.requested == 5  # noqa: PLR2004
+        assert 8 in exc_info.value.available_indexes
+        assert 4 in exc_info.value.available_indexes
+        assert 5 not in exc_info.value.available_indexes
 
 
 class TestExtractPeakDb:

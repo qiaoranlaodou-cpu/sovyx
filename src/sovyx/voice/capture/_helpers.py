@@ -42,10 +42,51 @@ if TYPE_CHECKING:
 __all__ = [
     "_PEAK_DB_RE",
     "_RMS_FLOOR_DB",
+    "InputDeviceNotFoundError",
     "_extract_peak_db",
     "_resolve_input_entry",
     "_rms_db_int16",
 ]
+
+
+class InputDeviceNotFoundError(LookupError):
+    """Raised when an explicit ``input_device`` selector doesn't match
+    any candidate in the current device enumeration.
+
+    v0.38.2 — root-cause fix for the operator's "fala e a LLM nao
+    responde" symptom (LAUDO-voice-failover-root-cause-2026-05-12.md
+    §2 H1). Pre-v0.38.2 ``_resolve_input_entry`` SILENTLY fell back to
+    the OS default device when the requested int/str selector didn't
+    match — on PipeWire-Linux the OS default is the WirePlumber
+    default source (typically the laptop's internal HDA mic at the
+    user's default volume, often <10%), so the capture task swapped
+    from a working USB headset to a silent internal mic mid-session
+    and operator's voice never reached STT.
+
+    Now: explicit selectors raise this exception when no match is
+    found, propagating up to ``_consume_loop``'s reconnect-failed
+    handler (`_loop_mixin.py:414-419`) which logs
+    ``audio_capture_reconnect_failed`` and retries with backoff.
+    Subsequent retries see the original device come back (USB
+    re-enumerates / PortAudio re-init completes) and succeed
+    correctly.
+
+    Attributes:
+        requested: the int/str selector that didn't match.
+        available_indexes: the int indexes that DID exist at lookup
+            time. Useful in the structured log for triage.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        requested: int | str,
+        available_indexes: list[int],
+    ) -> None:
+        super().__init__(message)
+        self.requested = requested
+        self.available_indexes = available_indexes
 
 
 _RMS_FLOOR_DB = -120.0
@@ -111,15 +152,27 @@ def _resolve_input_entry(
 
     Matching order:
 
-    1. Exact PortAudio index (``int``) when provided.
+    1. Exact PortAudio index (``int``) when provided. **v0.38.2:**
+       raises :class:`InputDeviceNotFoundError` when the int doesn't
+       match any candidate. Pre-v0.38.2 silently fell back to OS
+       default — the load-bearing bug behind the operator's
+       "fala e a LLM nao responde" symptom (see class docstring).
     2. Canonical device name (``str``) optionally refined by
        ``host_api_name`` — lets the wizard persist a stable identifier
-       across reboots where indices shuffle.
-    3. First OS-default input, or the first available input entry.
+       across reboots where indices shuffle. **v0.38.2:** also raises
+       :class:`InputDeviceNotFoundError` when the str doesn't match.
+    3. ``None`` selector → first OS-default input, or the first
+       available input entry. This is the legitimate "I don't care,
+       give me whatever" path; preserved unchanged.
 
-    Raises :class:`RuntimeError` when the host exposes no input devices
-    at all so :meth:`AudioCaptureTask.start` can fail loudly instead of
-    silently opening the OS default.
+    Raises:
+        RuntimeError: when the host exposes no input devices at all.
+        InputDeviceNotFoundError: **v0.38.2** — when an explicit
+            int/str selector doesn't match any candidate. Caller
+            (typically ``_reopen_stream_after_device_error``) must
+            either re-cascade or let ``_consume_loop`` retry with
+            backoff (the existing ``audio_capture_reconnect_failed``
+            handler at ``_loop_mixin.py:414-419`` covers this).
     """
     if enumerate_fn is not None:
         entries = enumerate_fn()
@@ -137,6 +190,26 @@ def _resolve_input_entry(
         for entry in candidates:
             if entry.index == input_device:
                 return entry
+        # v0.38.2 — root-cause fix for LAUDO §2 H1 (silent fallback
+        # to OS default caused mid-session swap from Razer USB
+        # headset to internal HDA mic at vol=9% on operator's
+        # PipeWire-Linux env). Raise instead of silent fallback;
+        # caller's reconnect loop retries with backoff.
+        msg = (
+            f"Input device index {input_device} not found in current "
+            f"enumeration (available indexes: "
+            f"{sorted(e.index for e in candidates)}). Pre-v0.38.2 this "
+            f"silently fell back to the OS default device, causing the "
+            f"capture task to swap to a different (potentially silent) "
+            f"device mid-session. Caller MUST handle this by retrying "
+            f"the same selector after backoff (consume loop does this "
+            f"automatically) or by triggering an explicit re-cascade."
+        )
+        raise InputDeviceNotFoundError(
+            msg,
+            requested=input_device,
+            available_indexes=sorted(e.index for e in candidates),
+        )
 
     if isinstance(input_device, str) and input_device:
         from sovyx.voice.device_enum import _canonicalise
@@ -149,6 +222,24 @@ def _resolve_input_entry(
                     return entry
         if matches:
             return matches[0]
+        # v0.38.2 — same fix as the int branch. Explicit str selector
+        # that doesn't match → raise so the reconnect loop retries
+        # rather than silently swapping to a different device.
+        msg = (
+            f"Input device name {input_device!r} not found in current "
+            f"enumeration. Pre-v0.38.2 this silently fell back to the "
+            f"OS default device. Caller MUST handle this — see int "
+            f"branch above for the recommended retry pattern."
+        )
+        raise InputDeviceNotFoundError(
+            msg,
+            requested=input_device,
+            available_indexes=sorted(e.index for e in candidates),
+        )
 
+    # input_device is None → legitimate "give me OS default" path.
+    # Preserved unchanged: this is the pre-cascade boot path used by
+    # AudioCaptureTask when no specific device was selected by the
+    # operator (or when the wizard's selection is None).
     defaults = [e for e in candidates if e.is_os_default]
     return defaults[0] if defaults else candidates[0]
