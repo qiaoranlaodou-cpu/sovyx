@@ -78,12 +78,22 @@ _APPLY_COST_MS = 400
 def _find_preferred_session_manager_target(
     context: BypassContext,
 ) -> DeviceEntry | None:
-    """Return the best session-manager virtual / OS default target.
+    """Return the best session-manager virtual target.
 
-    Preference: ``pipewire`` → ``pulse`` / ``pulseaudio`` → ``default``
-    → any input with ``kind == SESSION_MANAGER_VIRTUAL``. Returns
-    ``None`` when no suitable target is present (device is a bare
+    Preference: ``pipewire`` → ``pulse`` / ``pulseaudio`` → any input
+    with ``kind == SESSION_MANAGER_VIRTUAL``. Returns ``None`` when no
+    explicit session-manager virtual is present (device is a bare
     ``hw:X,Y`` with no session manager on the host — rare in 2026).
+
+    v0.38.2 — REMOVED previous Pass 3 (``DeviceKind.OS_DEFAULT``
+    fallback). On PipeWire-Linux the OS-default alias maps via the
+    pipewire-alsa shim to WirePlumber's default source, which is
+    typically the laptop's internal HDA mic at the user's default
+    volume (often <10%) — escaping TO the OS-default alias swapped
+    the capture from a working USB headset to a silent internal mic.
+    See LAUDO-voice-failover-root-cause-2026-05-12.md §2 H1 (Path 2).
+    EscapeBypass is for moving FROM hardware TO an explicit session-
+    manager virtual; the OS-default alias is not a session manager.
     """
     from sovyx.voice.device_enum import enumerate_devices
 
@@ -115,14 +125,8 @@ def _find_preferred_session_manager_target(
         if entry.canonical_name.startswith("pulse"):
             return entry
 
-    # Pass 3 — OS-default alias.
-    for entry in devices:
-        if _same_as_current(entry) or not _input_only(entry):
-            continue
-        if entry.kind == DeviceKind.OS_DEFAULT:
-            return entry
-
-    # Pass 4 — any session-manager-virtual input.
+    # Pass 3 — any session-manager-virtual input. (v0.38.2: previous
+    # ``DeviceKind.OS_DEFAULT`` Pass 3 fallback removed; see docstring.)
     for entry in devices:
         if _same_as_current(entry) or not _input_only(entry):
             continue

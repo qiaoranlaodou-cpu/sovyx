@@ -162,24 +162,39 @@ class TestApplyPreferenceOrder:
         assert call_kwargs["target_device"].index == 8  # pulse before default
 
     @pytest.mark.asyncio()
-    async def test_default_when_no_virtual(self) -> None:
+    async def test_no_target_when_only_os_default_alias_available(self) -> None:
+        """v0.38.2 — OS_DEFAULT alias is NO LONGER a fallback target.
+
+        Pre-v0.38.2 this test asserted that EscapeBypass would target
+        the OS-default alias (Pass 3) when no session-manager virtual
+        was enumerated. **That was the load-bearing bug behind the
+        operator's "fala e a LLM nao responde"** on PipeWire-Linux —
+        the OS-default alias maps via pipewire-alsa to WirePlumber's
+        default source = laptop's internal HDA mic at vol=9% →
+        capture swaps to silent internal mic mid-session.
+
+        Replaces pre-v0.38.2 ``test_default_when_no_virtual``. New
+        contract: when no explicit session-manager virtual exists,
+        EscapeBypass returns no target → BypassApplyError → cascade
+        advances to the next strategy (alsa_capture_switch /
+        alsa_mixer_reset / etc.). See
+        LAUDO-voice-failover-root-cause-2026-05-12.md §2 H1 Path 2.
+        """
         strategy = LinuxSessionManagerEscapeBypass()
-        capture_task = MagicMock()
-        capture_task.request_session_manager_restart = AsyncMock(
-            return_value=_healthy_restart(7),
-        )
-        ctx = _context(capture_task=capture_task)
+        ctx = _context()
         devices = [
             _entry(index=4, name="hw:1,0", kind=DeviceKind.HARDWARE, in_ch=2),
             _entry(index=7, name="default", kind=DeviceKind.OS_DEFAULT),
         ]
-        with patch(
-            "sovyx.voice.device_enum.enumerate_devices",
-            return_value=devices,
+        with (
+            patch(
+                "sovyx.voice.device_enum.enumerate_devices",
+                return_value=devices,
+            ),
+            pytest.raises(BypassApplyError) as exc_info,
         ):
             await strategy.apply(ctx)
-        call_kwargs = capture_task.request_session_manager_restart.call_args.kwargs
-        assert call_kwargs["target_device"].index == 7
+        assert "no session-manager target" in str(exc_info.value)
 
 
 class TestApplyFailureModes:
