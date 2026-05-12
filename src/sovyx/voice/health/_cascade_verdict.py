@@ -248,6 +248,25 @@ def select_alternative_endpoint(
         return bool(physical and q.is_quarantined_physical(physical))
 
     candidates = [e for e in entries if not _is_skippable(e)]
+    # v0.38.3 — exclude DeviceKind.OS_DEFAULT virtual aliases from
+    # failover candidates. On Linux + PipeWire the "default" PCM
+    # routes via pipewire-alsa shim to WirePlumber's default source,
+    # which on the operator's Sony VAIO + Mint env is the laptop
+    # internal HDA mic at vol=9% / -64 dB → captures effective
+    # silence. Failing over TO this alias swaps capture from a
+    # working USB headset to a silent internal mic mid-session.
+    # Operator's `loogs.txt` (2026-05-12T04:52:09) showed exactly
+    # this: voice.failover.succeeded → voice.to_friendly_name=default
+    # → next heartbeat at device=8 with RMS=-88 dB silent_frames=63.
+    # See LAUDO-voice-failover-root-cause-2026-05-12.md §2 H1
+    # NEW Path 3 (discovered post-v0.38.2 from operator's loogs.txt).
+    # Hardware-class devices that happen to also be ``is_os_default``
+    # (e.g. user explicitly set Razer as default in WirePlumber) are
+    # preserved by the kind check — this filter ONLY excludes the
+    # virtual alias, not real hardware that's default-marked.
+    from sovyx.voice.device_enum import DeviceKind  # noqa: PLC0415
+
+    candidates = [e for e in candidates if e.kind != DeviceKind.OS_DEFAULT]
     preferred = pick_preferred(candidates, kind=kind)
     if not preferred:
         return None

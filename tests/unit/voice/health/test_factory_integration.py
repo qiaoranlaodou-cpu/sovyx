@@ -717,6 +717,141 @@ class TestSelectAlternativeEndpoint:
         assert result is not None
         assert result.name == "Laptop Array Mic"
 
+    def test_v0_38_3_excludes_os_default_kind_virtual_alias(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """v0.38.3 — operator's loogs.txt scenario: failover MUST NOT
+        pick the OS_DEFAULT virtual alias on Linux + PipeWire.
+
+        The operator's `c:/Users/guipe/Downloads/loogs.txt`
+        2026-05-12T04:52:08-09 sequence showed:
+          1. Razer USB (hw:2,0, idx 5) gets quarantined after bypass
+             cascade returns ineffective.
+          2. select_alternative_endpoint picks the "default" entry
+             (kind=OS_DEFAULT, is_os_default=True) because pre-v0.38.3
+             the picker preferred is_os_default candidates.
+          3. "default" routes via pipewire-alsa to PipeWire source 55
+             (HDA internal mic at vol=9% / -64 dB) → captures silence
+             → voice_pipeline_deaf_warning fires every heartbeat → STT
+             never decodes → LLM never invoked.
+
+        v0.38.3 fix: exclude entries where kind == OS_DEFAULT from
+        candidate set. Hardware devices marked is_os_default=True
+        (e.g. user explicitly set Razer as WirePlumber default)
+        are preserved — only the "default" virtual alias is dropped.
+
+        See LAUDO-voice-failover-root-cause-2026-05-12.md §2 NEW Path 3.
+        """
+        from sovyx.voice import device_enum
+        from sovyx.voice.device_enum import DeviceKind
+
+        # Operator's actual device topology from loogs.txt.
+        razer = DeviceEntry(
+            index=5,
+            name="Razer BlackShark V2 Pro: USB Audio (hw:2,0)",
+            canonical_name="razer blackshark v2 pro: usb a",
+            host_api_index=0,
+            host_api_name="ALSA",
+            max_input_channels=1,
+            max_output_channels=2,
+            default_samplerate=48_000,
+            is_os_default=False,
+            kind=DeviceKind.HARDWARE,
+        )
+        pipewire = DeviceEntry(
+            index=7,
+            name="pipewire",
+            canonical_name="pipewire",
+            host_api_index=0,
+            host_api_name="ALSA",
+            max_input_channels=64,
+            max_output_channels=64,
+            default_samplerate=44_100,
+            is_os_default=False,
+            kind=DeviceKind.SESSION_MANAGER_VIRTUAL,
+        )
+        default_alias = DeviceEntry(
+            index=8,
+            name="default",
+            canonical_name="default",
+            host_api_index=0,
+            host_api_name="ALSA",
+            max_input_channels=64,
+            max_output_channels=64,
+            default_samplerate=44_100,
+            is_os_default=True,
+            kind=DeviceKind.OS_DEFAULT,
+        )
+        monkeypatch.setattr(
+            device_enum,
+            "enumerate_devices",
+            lambda: [razer, pipewire, default_alias],
+        )
+
+        q = EndpointQuarantine(quarantine_s=300.0, maxsize=8)
+        # Quarantine Razer (the from_endpoint in operator's scenario).
+        razer_guid = derive_endpoint_guid(razer, apo_reports=None, platform_key="linux")
+        q.add(endpoint_guid=razer_guid)
+
+        result = select_alternative_endpoint(quarantine=q, platform_key="linux")
+        # Pre-v0.38.3: would return default_alias (silent trap).
+        # Post-v0.38.3: must return pipewire (real session manager virtual).
+        assert result is not None, "v0.38.3 must find a non-OS_DEFAULT alternative; got None"
+        assert result.kind != DeviceKind.OS_DEFAULT, (
+            f"v0.38.3 must NOT pick OS_DEFAULT virtual alias; "
+            f"got entry name={result.name!r} kind={result.kind}"
+        )
+        assert result.name == "pipewire", (
+            f"With Razer quarantined + OS_DEFAULT excluded, the only "
+            f"viable alternative is the pipewire virtual; got {result.name!r}"
+        )
+
+    def test_v0_38_3_hardware_marked_os_default_still_preferred(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """v0.38.3 fix is surgical — hardware devices marked
+        is_os_default=True (e.g. user pinned Razer as default) are
+        STILL preferred. Only the kind=OS_DEFAULT virtual alias is
+        excluded.
+        """
+        from sovyx.voice import device_enum
+        from sovyx.voice.device_enum import DeviceKind
+
+        razer_default = DeviceEntry(
+            index=5,
+            name="Razer Mic",
+            canonical_name="razer mic",
+            host_api_index=0,
+            host_api_name="ALSA",
+            max_input_channels=1,
+            max_output_channels=0,
+            default_samplerate=48_000,
+            is_os_default=True,  # Razer IS the OS default
+            kind=DeviceKind.HARDWARE,  # but it's HARDWARE, not the alias
+        )
+        other = DeviceEntry(
+            index=4,
+            name="Other Mic",
+            canonical_name="other mic",
+            host_api_index=0,
+            host_api_name="ALSA",
+            max_input_channels=2,
+            max_output_channels=0,
+            default_samplerate=48_000,
+            is_os_default=False,
+            kind=DeviceKind.HARDWARE,
+        )
+        monkeypatch.setattr(
+            device_enum,
+            "enumerate_devices",
+            lambda: [other, razer_default],
+        )
+        q = EndpointQuarantine(quarantine_s=300.0, maxsize=8)
+        result = select_alternative_endpoint(quarantine=q, platform_key="linux")
+        assert result is not None
+        # Hardware-class device with is_os_default=True wins.
+        assert result.name == "Razer Mic"
+
     def test_physical_quarantine_match_rejects_alias(
         self,
         monkeypatch: pytest.MonkeyPatch,
