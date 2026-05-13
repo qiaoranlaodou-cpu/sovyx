@@ -1016,6 +1016,33 @@ async def create_voice_pipeline(
             },
         )
 
+    # Phase 3.T3.1 — sibling sentinel detection for empty input_device_name.
+    # The bootstrap path at engine/bootstrap.py:144 coerces an empty
+    # mind_config.voice_input_device_name into None before the factory call,
+    # which silently routes resolve_device() at line 945 below into the
+    # OS-default fall-through (device_enum.py:506-510). v0.38.3 only
+    # patched the failover path's OS-DEFAULT virtual-alias exclusion; the
+    # initial-resolution fall-through was never observable in audit logs.
+    # Operators who never ran the voice-setup wizard saw the daemon pick
+    # whatever PortAudio called "default", regardless of which physical
+    # mic they intended. This WARN gives operations a structured signal
+    # they can grep for (matched downstream by the T3.2 fall-through WARN
+    # in device_enum.resolve_device) and an actionable remediation path.
+    if not input_device_name:
+        logger.warning(
+            "voice.factory.input_device_unconfigured",
+            **{
+                "voice.mind_id": mind_id,
+                "voice.action_required": (
+                    "voice_input_device_name is empty — daemon will fall "
+                    "through to PortAudio OS-default. Run "
+                    "`sovyx voice setup --mind-id <X>` to configure the "
+                    "mic explicitly, or `sovyx doctor voice --calibrate` "
+                    "for the full diagnostic + tune-up flow."
+                ),
+            },
+        )
+
     config = VoicePipelineConfig(
         mind_id=mind_id,
         wake_word_enabled=wake_word_enabled,

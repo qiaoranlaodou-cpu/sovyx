@@ -503,8 +503,49 @@ def resolve_device(
                 return same_device[0]
             return entry
 
+    # Phase 3.T3.2 — observability for the OS-default fall-through path.
+    # When BOTH ``requested_name`` and ``requested_index`` are falsy we
+    # have no operator intent left to honour; resolution silently selects
+    # the host's PortAudio OS-default (or first preferred entry when no
+    # default flag is set). Pre-Phase-3 this branch left no audit trail,
+    # so an operator with a stale ``voice_input_device_name=""`` saw
+    # whatever PortAudio called "default" with no observable boundary
+    # signalling the silent selection. Emitting a structured WARN here
+    # gives ops a grep target paired with the T3.1 factory sentinel
+    # (``voice.factory.input_device_unconfigured``); each WARN sits at a
+    # distinct boundary with a distinct payload — defense-in-depth by
+    # design, not the anti-pattern-#12 test-smell variant.
+    fell_through_silently = not requested_name and (
+        requested_index is None or isinstance(requested_index, str)
+    )
     preferred = pick_preferred(entries, kind=kind)
     defaults = [e for e in preferred if e.is_os_default]
     if defaults:
+        if fell_through_silently:
+            logger.warning(
+                "voice.device_enum.os_default_fallthrough",
+                kind=kind,
+                selected_device=defaults[0].name,
+                selected_host_api=defaults[0].host_api_name,
+                note=(
+                    "No requested device — fell through to PortAudio "
+                    "OS-default. Explicit configuration recommended for "
+                    "production. Run `sovyx voice setup` to pin a mic."
+                ),
+            )
         return defaults[0]
-    return preferred[0] if preferred else None
+    if preferred:
+        if fell_through_silently:
+            logger.warning(
+                "voice.device_enum.os_default_fallthrough",
+                kind=kind,
+                selected_device=preferred[0].name,
+                selected_host_api=preferred[0].host_api_name,
+                note=(
+                    "No requested device + no OS-default flag — selected "
+                    "first preferred entry. Run `sovyx voice setup` to "
+                    "pin a mic explicitly."
+                ),
+            )
+        return preferred[0]
+    return None
