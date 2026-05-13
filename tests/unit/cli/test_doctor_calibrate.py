@@ -1293,3 +1293,164 @@ class TestMindResolverWireup:
         assert "bravo" in combined
         # Tells the operator to pass --mind-id.
         assert "--mind-id" in combined
+
+
+# ====================================================================
+# Phase 4.T4.1 — calibrate prereq gate (LENIENT v0.39.0)
+# ====================================================================
+#
+# When the operator runs --calibrate against a mind whose
+# voice_input_device_name is empty:
+#
+#   * Non-interactive  -> WARN voice.calibrate.prereq_lenient + yellow
+#                          stdout banner + heuristic fallback preserved
+#                          (LENIENT v0.39.0 contract; v0.40.0 flips this
+#                          into a hard error per Phase 5).
+#   * Interactive      -> auto-invoke run_voice_setup inline, then
+#                          continue calibrate with the now-populated value.
+#
+# When voice_input_device_name IS set, the prereq block is a no-op
+# (no WARN, no setup invocation).
+
+
+def _patch_prereq_mind_config(*, voice_input_device_name: str) -> object:
+    """Patch the prereq's MindConfig load so we can drive the gate path
+    without rewriting the autouse default/mind.yaml seed."""
+    from sovyx.mind.config import MindConfig
+
+    config = MindConfig(name="default", voice_input_device_name=voice_input_device_name)
+    return patch(
+        "sovyx.cli.commands.doctor._load_mind_config_best_effort",
+        return_value=config,
+    )
+
+
+class TestCalibratePrereqGate:
+    """Phase 4.T4.1 — prereq detection BEFORE step 1 (fingerprint)."""
+
+    def test_lenient_warn_when_non_interactive_and_mic_unset(self) -> None:
+        """Non-interactive + empty voice_input_device_name -> WARN
+        emitted, yellow stdout banner rendered, heuristic preserved
+        (downstream pipeline runs normally)."""
+        from structlog.testing import capture_logs
+
+        diag_result = DiagRunResult(
+            tarball_path=Path("/tmp/diag.tar.gz"),
+            duration_s=600.0,
+            exit_code=0,
+        )
+        with (
+            _patch_prereq_mind_config(voice_input_device_name=""),
+            patch(
+                "sovyx.cli.commands.doctor.capture_fingerprint",
+                return_value=_fingerprint(),
+            ),
+            patch(
+                "sovyx.cli.commands.doctor.run_full_diag",
+                return_value=diag_result,
+            ),
+            patch(
+                "sovyx.cli.commands.doctor.triage_tarball",
+                return_value=_triage(),
+            ),
+            patch(
+                "sovyx.cli.commands.doctor.capture_measurements",
+                return_value=_measurements(),
+            ),
+            patch(
+                "sovyx.cli.commands.doctor.CalibrationEngine.evaluate",
+                return_value=_r10_profile(),
+            ),
+            patch(
+                "sovyx.cli.commands.doctor.CalibrationApplier.apply",
+                return_value=_apply_result_advise(),
+            ),
+            capture_logs() as captured,
+        ):
+            result = runner.invoke(app, ["doctor", "voice", "--calibrate", "--non-interactive"])
+
+        assert result.exit_code == 0, result.output
+        # Yellow banner surfaces on stdout so an operator watching the
+        # console immediately sees the prereq hint.
+        clean = _strip_ansi(result.output)
+        assert "voice_input_device_name is empty" in clean
+        assert "sovyx voice setup" in clean
+        # Structured WARN for telemetry / log-grep.
+        warns = [c for c in captured if c.get("event") == "voice.calibrate.prereq_lenient"]
+        assert len(warns) == 1
+        warn = warns[0]
+        assert warn["log_level"] == "warning"
+        assert warn["would_fail_in_strict"] is True
+        assert warn["mind_id"] == "default"
+
+    def test_no_prereq_warn_when_mic_already_configured(self) -> None:
+        """voice_input_device_name set -> prereq block is a silent no-op
+        (no WARN, downstream pipeline runs as before)."""
+        from structlog.testing import capture_logs
+
+        diag_result = DiagRunResult(
+            tarball_path=Path("/tmp/diag.tar.gz"),
+            duration_s=600.0,
+            exit_code=0,
+        )
+        with (
+            _patch_prereq_mind_config(voice_input_device_name="Razer BlackShark"),
+            patch(
+                "sovyx.cli.commands.doctor.capture_fingerprint",
+                return_value=_fingerprint(),
+            ),
+            patch(
+                "sovyx.cli.commands.doctor.run_full_diag",
+                return_value=diag_result,
+            ),
+            patch(
+                "sovyx.cli.commands.doctor.triage_tarball",
+                return_value=_triage(),
+            ),
+            patch(
+                "sovyx.cli.commands.doctor.capture_measurements",
+                return_value=_measurements(),
+            ),
+            patch(
+                "sovyx.cli.commands.doctor.CalibrationEngine.evaluate",
+                return_value=_r10_profile(),
+            ),
+            patch(
+                "sovyx.cli.commands.doctor.CalibrationApplier.apply",
+                return_value=_apply_result_advise(),
+            ),
+            capture_logs() as captured,
+        ):
+            result = runner.invoke(app, ["doctor", "voice", "--calibrate", "--non-interactive"])
+
+        assert result.exit_code == 0, result.output
+        clean = _strip_ansi(result.output)
+        assert "voice_input_device_name is empty" not in clean
+        warns = [c for c in captured if c.get("event") == "voice.calibrate.prereq_lenient"]
+        assert warns == [], f"prereq WARN must NOT fire when mic is configured, got: {warns}"
+
+    def test_lenient_warn_includes_action_required_pointer(self) -> None:
+        """The structured WARN payload exposes ``action_required`` so log
+        consumers can render it without parsing the operator banner."""
+        from structlog.testing import capture_logs
+
+        with (
+            _patch_prereq_mind_config(voice_input_device_name=""),
+            patch(
+                "sovyx.cli.commands.doctor.capture_fingerprint",
+                return_value=_fingerprint(),
+            ),
+            patch(
+                "sovyx.cli.commands.doctor.run_full_diag",
+                side_effect=DiagPrerequisiteError("Linux-only — abort early"),
+            ),
+            capture_logs() as captured,
+        ):
+            # Run aborts at diag-prereq (exit 5) but the prereq WARN must
+            # have already fired before the abort.
+            runner.invoke(app, ["doctor", "voice", "--calibrate", "--non-interactive"])
+
+        warns = [c for c in captured if c.get("event") == "voice.calibrate.prereq_lenient"]
+        assert len(warns) == 1
+        assert "sovyx voice setup" in warns[0]["action_required"]
+        assert "v0.40.0" in warns[0]["action_required"]
