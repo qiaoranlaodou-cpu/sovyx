@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import re
+import sys
 from pathlib import Path
 
 import typer
@@ -158,6 +159,18 @@ def token(
     console.print("[dim]Use this token to authenticate with the dashboard.[/dim]\n")
 
 
+def _stdin_is_tty() -> bool:
+    """Return True when stdin is an interactive terminal.
+
+    Wrapped as a module-level helper so tests can mock the TTY signal
+    via ``patch("sovyx.cli.main._stdin_is_tty", return_value=True)``
+    without fighting Click's :class:`CliRunner` stdin isolation, which
+    replaces ``sys.stdin`` during ``invoke`` and would defeat a direct
+    ``sys.stdin.isatty`` patch.
+    """
+    return sys.stdin.isatty()
+
+
 _MIND_NAME_PATTERN = re.compile(r"^[A-Za-z][A-Za-z0-9_-]{0,63}$")
 
 
@@ -187,6 +200,15 @@ def init(
     name: str = typer.Argument(
         "Sovyx",
         help="Mind name (letters/digits/_/-, 1-64 chars, starts with letter)",
+    ),
+    skip_voice_setup: bool = typer.Option(
+        False,
+        "--skip-voice-setup",
+        help=(
+            "Skip the inline mic-picker after creating the mind. Useful "
+            "for scripted installs; operators can run `sovyx voice setup` "
+            "later. Non-TTY shells auto-skip regardless of this flag."
+        ),
     ),
 ) -> None:
     """Initialize Sovyx: create config files and data directory."""
@@ -218,7 +240,8 @@ def init(
         console.print(f"[dim]• {logs_dir} already exists[/dim]")
 
     # Create mind.yaml using full config (auto-detects LLM provider from env)
-    mind_dir = data_dir / name.lower()
+    mind_id_for_setup = name.lower()
+    mind_dir = data_dir / mind_id_for_setup
     mind_dir.mkdir(parents=True, exist_ok=True)
     mind_yaml = mind_dir / "mind.yaml"
     if not mind_yaml.exists():
@@ -229,19 +252,62 @@ def init(
     else:
         console.print(f"[dim]• Mind '{name}' already exists[/dim]")
 
+    # Phase 2.T2.2 — invoke `sovyx voice setup` inline when the operator
+    # is on a TTY and did not pass --skip-voice-setup. This closes the
+    # bootstrap gap that landed operators with ``voice_input_device_name=""``
+    # immediately after `sovyx init`, which then fed the silent-mic
+    # heuristic into `sovyx doctor voice --calibrate` (anti-pattern #35).
+    # Non-TTY auto-skips so scripted installs don't hang on the picker.
+    voice_setup_ran = False
+    if skip_voice_setup:
+        console.print(
+            "\n[dim]• Voice setup skipped via --skip-voice-setup. "
+            "Run [bold]sovyx voice setup[/bold] later to configure your mic.[/dim]"
+        )
+    elif not _stdin_is_tty():
+        console.print(
+            "\n[dim]• Voice setup skipped (non-interactive shell). Run "
+            "[bold]sovyx voice setup --input-device 'NAME' --non-interactive[/bold] "
+            "later to configure your mic.[/dim]"
+        )
+    else:
+        from sovyx.cli.commands.voice_setup import (  # noqa: PLC0415
+            VoiceSetupError,
+            run_voice_setup,
+        )
+        from sovyx.engine.types import MindId  # noqa: PLC0415
+
+        try:
+            asyncio.run(
+                run_voice_setup(
+                    mind_id=MindId(mind_id_for_setup),
+                    data_dir=data_dir,
+                    input_device=None,
+                    non_interactive=False,
+                )
+            )
+            voice_setup_ran = True
+        except VoiceSetupError as exc:
+            # Don't fail the init — the operator can re-run setup later.
+            console.print(
+                f"\n[yellow]Voice setup skipped:[/yellow] {exc}\n"
+                f"[dim]Run [bold]sovyx voice setup[/bold] later when ready.[/dim]"
+            )
+
     console.print("\n[bold green]Sovyx initialized![/bold green]")
     console.print(f"Data directory: {data_dir}")
     console.print("\nNext: [bold]sovyx start[/bold] to launch the daemon")
     # rc.6 (Agent 2 E.2): point operators at the calibration wizard for
-    # silent-mic / hardware-pinned issues. Pre-rc.6 a fresh Sony VAIO +
-    # PipeWire operator following `sovyx init` had no breadcrumb to
-    # `sovyx doctor voice --calibrate`; they would hit silent-mic on
-    # first run and have to dig through docs to find the wizard.
-    console.print(
-        "\n[dim]Voice not working as expected? Run "
-        "[bold]sovyx doctor voice --calibrate[/bold] (Linux, 8-12 min) "
-        "for an automatic mic + mixer + APO calibration.[/dim]"
-    )
+    # silent-mic / hardware-pinned issues. After Phase 2.T2.2, the
+    # calibrate breadcrumb is shown ONLY when voice setup did not run
+    # inline; when it ran, the operator's mic is already configured and
+    # the calibrate prereq (Phase 4) will accept the persisted value.
+    if not voice_setup_ran:
+        console.print(
+            "\n[dim]Voice not working as expected? Run "
+            "[bold]sovyx doctor voice --calibrate[/bold] (Linux, 8-12 min) "
+            "for an automatic mic + mixer + APO calibration.[/dim]"
+        )
 
 
 @app.command()

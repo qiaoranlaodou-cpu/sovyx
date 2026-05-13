@@ -61,6 +61,79 @@ class TestInit:
         assert logs_dir.is_dir()
         assert "logs" in result.stdout
 
+    def test_init_skip_voice_setup_flag_emits_skipped_message(self, tmp_path: Path) -> None:
+        """Phase 2.T2.2 — --skip-voice-setup shows the skipped hint without
+        invoking the picker (CliRunner is non-TTY anyway, so this asserts
+        the message variant when the flag is explicit)."""
+        with patch("sovyx.cli.main.Path.home", return_value=tmp_path):
+            result = runner.invoke(app, ["init", "Test", "--skip-voice-setup"])
+        assert result.exit_code == 0
+        assert "skipped via --skip-voice-setup" in result.stdout
+
+    def test_init_non_tty_emits_setup_skipped_hint(self, tmp_path: Path) -> None:
+        """Phase 2.T2.2 — without --skip-voice-setup, CliRunner's non-TTY
+        stdin produces the 'non-interactive shell' hint pointing at
+        ``sovyx voice setup --non-interactive``."""
+        with patch("sovyx.cli.main.Path.home", return_value=tmp_path):
+            result = runner.invoke(app, ["init", "Test"])
+        assert result.exit_code == 0
+        assert "non-interactive shell" in result.stdout
+        # The hint includes the canonical follow-up command.
+        assert "sovyx voice setup" in result.stdout
+
+    def test_init_invokes_voice_setup_on_tty(self, tmp_path: Path) -> None:
+        """Phase 2.T2.2 — TTY stdin invokes run_voice_setup inline.
+
+        Mocks ``_stdin_is_tty`` (not sys.stdin directly — Click's CliRunner
+        replaces sys.stdin during invoke and would defeat a direct patch)
+        + AsyncMock the setup function; asserts the function was awaited
+        with the resolved MindId and the calibrate-breadcrumb is
+        SUPPRESSED when setup succeeded.
+        """
+        from unittest.mock import AsyncMock
+
+        run_setup_mock = AsyncMock()
+        with (
+            patch("sovyx.cli.main.Path.home", return_value=tmp_path),
+            patch("sovyx.cli.main._stdin_is_tty", return_value=True),
+            patch(
+                "sovyx.cli.commands.voice_setup.run_voice_setup",
+                run_setup_mock,
+            ),
+        ):
+            result = runner.invoke(app, ["init", "TestMind"])
+        assert result.exit_code == 0
+        run_setup_mock.assert_awaited_once()
+        kwargs = run_setup_mock.await_args.kwargs
+        assert str(kwargs["mind_id"]) == "testmind"
+        assert kwargs["non_interactive"] is False
+        # After successful inline setup, the calibrate breadcrumb is
+        # suppressed (mic is already configured).
+        assert "doctor voice --calibrate" not in result.stdout
+
+    def test_init_tty_voice_setup_failure_does_not_block_init(self, tmp_path: Path) -> None:
+        """Phase 2.T2.2 — VoiceSetupError raised by the picker does NOT
+        cause init to exit non-zero. Init prints a yellow hint and
+        continues to the 'Sovyx initialized!' message."""
+        from sovyx.cli.commands.voice_setup import VoiceSetupError
+
+        async def _fail(*_args: object, **_kwargs: object) -> None:
+            msg = "No capture devices detected"
+            raise VoiceSetupError(msg)
+
+        with (
+            patch("sovyx.cli.main.Path.home", return_value=tmp_path),
+            patch("sovyx.cli.main._stdin_is_tty", return_value=True),
+            patch(
+                "sovyx.cli.commands.voice_setup.run_voice_setup",
+                side_effect=_fail,
+            ),
+        ):
+            result = runner.invoke(app, ["init", "Test"])
+        assert result.exit_code == 0
+        assert "Voice setup skipped" in result.stdout
+        assert "Sovyx initialized" in result.stdout
+
 
 class TestStop:
     """Stop command."""
