@@ -2800,16 +2800,21 @@ async def _enable_voice_locked(
         if request_tts_engine is not None:
             await editor.set_scalar(mind_yaml_path, "voice_tts_engine", request_tts_engine)
         if persisted_device_name:
-            await editor.set_scalar(
-                mind_yaml_path,
-                "voice_input_device_name",
-                persisted_device_name,
+            # Phase 2.T2.3 — paired (name + host_api) persistence + in-memory
+            # mirror live in the shared helper now. Calls into this site
+            # used to issue two separate ``editor.set_scalar`` writes plus
+            # a ``contextlib.suppress``-guarded mirror block; the helper
+            # consolidates both halves under a single audit-logged
+            # operation that the CLI also consumes.
+            from sovyx.voice.calibration._persist_device import (  # noqa: PLC0415
+                persist_voice_input_device,
             )
-        if persisted_host_api:
-            await editor.set_scalar(
-                mind_yaml_path,
-                "voice_input_device_host_api",
-                persisted_host_api,
+
+            await persist_voice_input_device(
+                mind_yaml_path=mind_yaml_path,
+                device_name=persisted_device_name,
+                host_api=persisted_host_api or None,
+                mind_config=mind_config_obj,
             )
 
     if mind_config_obj is not None:
@@ -2822,12 +2827,6 @@ async def _enable_voice_locked(
         if request_tts_engine is not None:
             with contextlib.suppress(Exception):
                 mind_config_obj.voice_tts_engine = request_tts_engine
-        if persisted_device_name:
-            with contextlib.suppress(Exception):
-                mind_config_obj.voice_input_device_name = persisted_device_name
-        if persisted_host_api:
-            with contextlib.suppress(Exception):
-                mind_config_obj.voice_input_device_host_api = persisted_host_api
 
     # ``host_api_name`` is ``str | None`` on a real :class:`AudioCaptureTask`
     # but tests pass bare ``MagicMock()`` stand-ins, so coerce to a JSON-safe
