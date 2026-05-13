@@ -178,14 +178,16 @@ class TestRunVoiceSetup:
     async def test_zero_devices_raises_setup_error(self, tmp_path: Path) -> None:
         """Empty PortAudio enumeration → VoiceSetupError pointing at OS audio."""
         _seed_mind_yaml(tmp_path, "jonny")
-        with patch.object(voice_setup_mod, "list_capture_devices", return_value=[]):
-            with pytest.raises(VoiceSetupError, match="No capture devices"):
-                await run_voice_setup(
-                    mind_id=MindId("jonny"),
-                    data_dir=tmp_path,
-                    input_device="Razer",
-                    non_interactive=True,
-                )
+        with (
+            patch.object(voice_setup_mod, "list_capture_devices", return_value=[]),
+            pytest.raises(VoiceSetupError, match="No capture devices"),
+        ):
+            await run_voice_setup(
+                mind_id=MindId("jonny"),
+                data_dir=tmp_path,
+                input_device="Razer",
+                non_interactive=True,
+            )
 
     @pytest.mark.asyncio()
     async def test_input_device_no_match_propagates_error(self, tmp_path: Path) -> None:
@@ -351,9 +353,11 @@ class TestListCaptureDevices:
         import sys as _sys
 
         original = _sys.modules.pop("sounddevice", None)
-        with patch.dict(_sys.modules, {"sounddevice": None}):
-            with pytest.raises(VoiceSetupError, match="PortAudio"):
-                voice_setup_mod.list_capture_devices()
+        with (
+            patch.dict(_sys.modules, {"sounddevice": None}),
+            pytest.raises(VoiceSetupError, match="PortAudio"),
+        ):
+            voice_setup_mod.list_capture_devices()
         if original is not None:
             _sys.modules["sounddevice"] = original
 

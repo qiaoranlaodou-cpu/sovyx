@@ -154,13 +154,17 @@ class TestValidation:
         assert "negatives-dir" in result.stdout
 
     def test_no_backend_registered(self, tmp_path: Path) -> None:
-        # backend reset by autouse fixture; don't register one.
+        # backend reset by autouse fixture; don't register one. Pass
+        # --unattached so the Phase 1.T1.3 mind resolver is bypassed
+        # (the test runs on a clean ~/.sovyx where no mind is configured,
+        # which would otherwise short-circuit before the backend check).
         result = runner.invoke(
             app,
             [
                 "voice",
                 "train-wake-word",
                 "Lúcia",
+                "--unattached",
                 "--negatives-dir",
                 str(tmp_path / "neg"),
             ],
@@ -170,7 +174,9 @@ class TestValidation:
 
     def test_non_ascii_wake_word_after_fold_rejected(self, tmp_path: Path) -> None:
         """Wake word with no ASCII characters after fold (e.g.
-        Chinese-only) produces empty job-id → rejected."""
+        Chinese-only) produces empty job-id → rejected. ``--unattached``
+        bypasses the Phase 1.T1.3 mind resolver (clean CI runner has no
+        ~/.sovyx)."""
         register_default_backend(_StubBackend())
         result = runner.invoke(
             app,
@@ -178,6 +184,7 @@ class TestValidation:
                 "voice",
                 "train-wake-word",
                 "你好",  # all-Chinese, ASCII-fold yields empty
+                "--unattached",
                 "--negatives-dir",
                 str(tmp_path / "neg"),
             ],
