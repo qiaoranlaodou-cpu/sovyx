@@ -45,6 +45,21 @@ def _patch_data_dir(tmp_path: Path):  # noqa: ANN202 — context-manager helper
     )
 
 
+def _seed_mind(data_dir: Path, mind_id: str) -> None:
+    """Phase 1.T1.4 prereq: seed ``<data_dir>/<mind_id>/mind.yaml`` so
+    the shared mind resolver accepts ``--mind-id <mind_id>``.
+
+    Pre-Phase-1 the homegrown ``_resolve_mind_id_for_signing_key``
+    accepted ANY string for ``--mind-id`` and let the key generator
+    create the per-mind directory on demand. The shared resolver
+    requires the mind to exist on disk — operators must run
+    ``sovyx init`` (or seed the dir explicitly) first.
+    """
+    mind_dir = data_dir / mind_id
+    mind_dir.mkdir(parents=True, exist_ok=True)
+    (mind_dir / "mind.yaml").write_text(f"name: {mind_id}\nid: {mind_id}\n", encoding="utf-8")
+
+
 class TestGenerateSigningKey:
     def test_happy_path_creates_keypair_with_canonical_paths(
         self,
@@ -55,6 +70,7 @@ class TestGenerateSigningKey:
         # is unreliable; patching the module's `logger` object is
         # the documented escape hatch — see CLAUDE.md anti-pattern
         # "structlog routing makes it caplog-flaky" / test_home_path).
+        _seed_mind(tmp_path, "test-mind")
         spy = MagicMock()
         with _patch_data_dir(tmp_path), patch.object(_kg_module, "logger", spy):
             result = runner.invoke(
@@ -78,6 +94,7 @@ class TestGenerateSigningKey:
         assert kwargs.get("mode") == "created"
 
     def test_refuses_overwrite_without_force(self, tmp_path: Path) -> None:
+        _seed_mind(tmp_path, "m1")
         with _patch_data_dir(tmp_path):
             first = runner.invoke(
                 voice_app,
@@ -97,6 +114,7 @@ class TestGenerateSigningKey:
         self,
         tmp_path: Path,
     ) -> None:
+        _seed_mind(tmp_path, "m1")
         with _patch_data_dir(tmp_path):
             first = runner.invoke(
                 voice_app,
@@ -129,6 +147,7 @@ class TestGenerateSigningKey:
         self,
         tmp_path: Path,
     ) -> None:
+        _seed_mind(tmp_path, "perm-test")
         with _patch_data_dir(tmp_path):
             result = runner.invoke(
                 voice_app,
@@ -142,6 +161,7 @@ class TestGenerateSigningKey:
         assert (pub.stat().st_mode & 0o777) == 0o644
 
     def test_public_key_pem_is_parseable_ed25519(self, tmp_path: Path) -> None:
+        _seed_mind(tmp_path, "parse-test")
         with _patch_data_dir(tmp_path):
             result = runner.invoke(
                 voice_app,
@@ -161,6 +181,7 @@ class TestGenerateSigningKey:
         assert b"BEGIN PUBLIC KEY" in re_pem
 
     def test_output_flag_redirects_keypair_location(self, tmp_path: Path) -> None:
+        _seed_mind(tmp_path, "m1")
         target_dir = tmp_path / "custom-keys"
         target_dir.mkdir()
         target = target_dir / "my-key.priv"
@@ -181,6 +202,26 @@ class TestGenerateSigningKey:
         assert target_dir.joinpath("my-key.pub").is_file()
         # Canonical per-mind path NOT created when --output is used.
         assert not (tmp_path / "m1" / PRIVATE_KEY_FILENAME).exists()
+
+    def test_mind_id_missing_errors_with_actionable_message(self, tmp_path: Path) -> None:
+        """Phase 1.T1.4 wire-up: --mind-id <ghost> with no <ghost>/mind.yaml
+        errors with the BadParameter "not found" message instead of
+        silently creating <data_dir>/<ghost>/ on demand (the old
+        homegrown resolver's fallback-to-literal-default behaviour).
+        """
+        _seed_mind(tmp_path, "real-mind")  # available alternative
+        with _patch_data_dir(tmp_path):
+            result = runner.invoke(
+                voice_app,
+                ["generate-signing-key", "--mind-id", "ghost"],
+            )
+        assert result.exit_code != 0
+        combined = result.output + (result.stderr if result.stderr_bytes else "")
+        assert "ghost" in combined
+        assert "real-mind" in combined  # available list surfaces the real mind
+        assert "not found" in combined.lower()
+        # The key MUST NOT have been written under the bogus mind.
+        assert not (tmp_path / "ghost" / PRIVATE_KEY_FILENAME).exists()
 
     def test_help_text_mentions_signing_key_generation(self) -> None:
         # Smoke: ``--help`` returns 0 + describes the command. Used by

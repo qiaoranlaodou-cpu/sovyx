@@ -215,6 +215,10 @@ class TestHappyPath:
                         "voice",
                         "train-wake-word",
                         "Lucia",
+                        # Phase 1.T1.3: exercise the global-training path
+                        # explicitly so the resolver is bypassed (no mind
+                        # configured in this tmp_path).
+                        "--unattached",
                         "--target-samples",
                         "12",  # CLI enforces min=10
                         "--negatives-dir",
@@ -262,6 +266,10 @@ class TestCancelledFailedPaths:
                     "voice",
                     "train-wake-word",
                     "Test",
+                    # Phase 1.T1.3: cancellation / failure paths are about
+                    # the training pipeline, not mind-id resolution — use
+                    # --unattached so the resolver doesn't fire.
+                    "--unattached",
                     "--target-samples",
                     "10",  # CLI enforces min=10
                     "--negatives-dir",
@@ -466,11 +474,17 @@ class TestTrainCommandHotReload:
     RPC. Validates the message rendering + the call path. The daemon
     is mocked at the DaemonClient layer."""
 
-    def test_no_mind_id_skips_hot_reload_entirely(
+    def test_unattached_skips_hot_reload_entirely(
         self,
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
+        """``--unattached`` writes to the pretrained pool, no hot-reload.
+
+        Phase 1.T1.3: the resolver is bypassed entirely on this path, so
+        the test runs with an EMPTY ``data_dir`` (no minds) and still
+        succeeds — the new explicit-opt-in semantic for global training.
+        """
         register_default_backend(_StubBackend())
         _seed_negatives(tmp_path / "neg")
         output = tmp_path / "out" / "x.onnx"
@@ -490,6 +504,7 @@ class TestTrainCommandHotReload:
                     "voice",
                     "train-wake-word",
                     "Lucia",
+                    "--unattached",
                     "--target-samples",
                     "10",
                     "--negatives-dir",
@@ -502,14 +517,48 @@ class TestTrainCommandHotReload:
                 catch_exceptions=False,
             )
 
-        assert result.exit_code == 0
-        # Without --mind-id, the helper is never called → daemon
-        # probe never runs.
+        assert result.exit_code == 0, result.output
+        # --unattached path: the helper is never called → daemon probe
+        # never runs.
         assert is_running_mock.call_count == 0
         # Rich may word-wrap the rendered line; assert on a stable
         # substring that survives wrap.
         assert "Trained without --mind-id" in result.stdout
         assert "next restart" in result.stdout
+
+    def test_unattached_and_mind_id_are_mutex(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Phase 1.T1.3 mutex: --unattached + --mind-id rejected at flag-parse."""
+        register_default_backend(_StubBackend())
+        _seed_negatives(tmp_path / "neg")
+        monkeypatch.setenv("SOVYX_DATA_DIR", str(tmp_path))
+        monkeypatch.setenv("SOVYX_DATABASE__DATA_DIR", str(tmp_path))
+
+        result = runner.invoke(
+            app,
+            [
+                "voice",
+                "train-wake-word",
+                "Lucia",
+                "--unattached",
+                "--mind-id",
+                "lucia",
+                "--target-samples",
+                "10",
+                "--negatives-dir",
+                str(tmp_path / "neg"),
+                "--voices",
+                "v",
+            ],
+        )
+        assert result.exit_code != 0
+        # Click prints BadParameter to stderr (or output for CliRunner mix);
+        # both messages cite the mutex.
+        combined = result.output + (result.stderr if result.stderr_bytes else "")
+        assert "mutually exclusive" in combined.lower()
 
     def test_with_mind_id_and_daemon_running_calls_rpc(
         self,
@@ -521,6 +570,10 @@ class TestTrainCommandHotReload:
         output = tmp_path / "out" / "lucia.onnx"
         monkeypatch.setenv("SOVYX_DATA_DIR", str(tmp_path))
         monkeypatch.setenv("SOVYX_DATABASE__DATA_DIR", str(tmp_path))
+        # Phase 1.T1.3 mind resolver prereq: seed the target mind on disk.
+        lucia_dir = tmp_path / "lucia"
+        lucia_dir.mkdir()
+        (lucia_dir / "mind.yaml").write_text("name: lucia\nid: lucia\n", encoding="utf-8")
 
         captured: dict[str, object] = {}
 
@@ -579,6 +632,10 @@ class TestTrainCommandHotReload:
         output = tmp_path / "out" / "lucia.onnx"
         monkeypatch.setenv("SOVYX_DATA_DIR", str(tmp_path))
         monkeypatch.setenv("SOVYX_DATABASE__DATA_DIR", str(tmp_path))
+        # Phase 1.T1.3 mind resolver prereq: seed the target mind on disk.
+        lucia_dir = tmp_path / "lucia"
+        lucia_dir.mkdir()
+        (lucia_dir / "mind.yaml").write_text("name: lucia\nid: lucia\n", encoding="utf-8")
 
         with (
             patch("sovyx.voice.tts_kokoro.KokoroTTS", _StubKokoroTTS),
@@ -610,3 +667,45 @@ class TestTrainCommandHotReload:
         # Training still succeeded (exit 0); restart hint surfaces.
         assert result.exit_code == 0
         assert "Daemon not running" in result.stdout
+
+    def test_explicit_mind_id_missing_errors_at_resolver(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Phase 1.T1.3 wire-up: --mind-id <ghost> with no <ghost>/mind.yaml
+        errors with the BadParameter "not found" message BEFORE the
+        training pipeline runs (no synthesis, no backend resolution)."""
+        register_default_backend(_StubBackend())
+        _seed_negatives(tmp_path / "neg")
+        monkeypatch.setenv("SOVYX_DATA_DIR", str(tmp_path))
+        monkeypatch.setenv("SOVYX_DATABASE__DATA_DIR", str(tmp_path))
+        # Seed ONE legitimate mind so the resolver's error message
+        # surfaces it as the available alternative.
+        (tmp_path / "real-mind").mkdir()
+        (tmp_path / "real-mind" / "mind.yaml").write_text(
+            "name: real-mind\nid: real-mind\n", encoding="utf-8"
+        )
+
+        result = runner.invoke(
+            app,
+            [
+                "voice",
+                "train-wake-word",
+                "Lucia",
+                "--mind-id",
+                "ghost",
+                "--target-samples",
+                "10",
+                "--negatives-dir",
+                str(tmp_path / "neg"),
+                "--voices",
+                "v",
+            ],
+        )
+        assert result.exit_code != 0
+        combined = result.output + (result.stderr if result.stderr_bytes else "")
+        # Operator-readable error citing the bad id + available alternatives.
+        assert "ghost" in combined
+        assert "real-mind" in combined
+        assert "not found" in combined.lower()

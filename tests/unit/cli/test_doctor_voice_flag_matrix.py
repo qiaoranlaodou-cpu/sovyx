@@ -187,7 +187,21 @@ class TestVoiceGenerateSigningKey:
         from sovyx.voice.calibration import _key_generation as kg
 
         out_priv = tmp_path / "calibration.signing-key.priv"
-        with patch.object(kg, "generate_signing_key") as gen:
+        # Phase 1.T1.4: the shared mind resolver requires
+        # <data_dir>/<mind_id>/mind.yaml to exist on disk. Steer the
+        # CLI's data_dir resolver at tmp_path + seed the mind.yaml so
+        # --mind-id default is accepted.
+        (tmp_path / "default").mkdir()
+        (tmp_path / "default" / "mind.yaml").write_text(
+            "name: default\nid: default\n", encoding="utf-8"
+        )
+        with (
+            patch.object(kg, "generate_signing_key") as gen,
+            patch(
+                "sovyx.cli.commands.voice._resolve_data_dir_for_signing_key",
+                return_value=tmp_path,
+            ),
+        ):
             gen.return_value = kg.GeneratedSigningKey(
                 private_key_path=out_priv,
                 public_key_path=out_priv.with_suffix(".pub"),

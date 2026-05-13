@@ -36,6 +36,8 @@ from typing import TYPE_CHECKING
 import typer
 from rich.console import Console
 
+from sovyx.cli._mind_resolver import resolve_mind_id
+
 if TYPE_CHECKING:
     from sovyx.voice._consent_ledger import ConsentLedger
 
@@ -280,13 +282,28 @@ def train_wake_word(
         ...,
         help="Wake word to train (e.g. 'Lúcia', 'Jhonatan').",
     ),
-    mind_id: str = typer.Option(
-        "",
+    mind_id: str | None = typer.Option(
+        None,
         "--mind-id",
         help=(
-            "Owning mind. Empty = global / unattached training. "
-            "When set, the trained ONNX is hot-reloaded into the "
-            "daemon's WakeWordRouter for that mind on success."
+            "Owning mind. Default: auto-detected when exactly one "
+            "mind exists at <data_dir>/<mind>/mind.yaml; required "
+            "when multiple minds exist. The trained ONNX is "
+            "hot-reloaded into the daemon's WakeWordRouter for "
+            "that mind on success. Pass --unattached for global "
+            "training (no per-mind hot-reload). Mutually exclusive "
+            "with --unattached."
+        ),
+    ),
+    unattached: bool = typer.Option(
+        False,
+        "--unattached",
+        help=(
+            "Train globally — write the .onnx to the pretrained pool "
+            "without targeting a specific mind. The daemon picks it "
+            "up on next restart. Use when you have zero minds "
+            "configured (pre-`sovyx init`) or want a model that "
+            "every mind shares. Mutually exclusive with --mind-id."
         ),
     ),
     language: str = typer.Option(
@@ -376,6 +393,33 @@ def train_wake_word(
         )
         raise typer.Exit(code=2)
 
+    # Phase 1.T1.3 — resolve the target mind once at the entry boundary.
+    # --unattached and --mind-id are mutually exclusive: --unattached
+    # means "global training, pool only, no per-mind hot-reload" while
+    # --mind-id targets a specific mind. Auto-detect single mind when
+    # neither is set; error with the available-minds list when 2+ minds
+    # exist or zero minds + no --unattached.
+    if unattached and mind_id is not None:
+        raise typer.BadParameter(
+            "--unattached and --mind-id are mutually exclusive. "
+            "Pass --unattached for global / pool-only training, OR "
+            "--mind-id <name> to hot-reload into one specific mind.",
+            param_hint="--unattached / --mind-id",
+        )
+    if unattached:
+        # TrainingRequest models "global training" as an empty mind_id;
+        # the rest of this function uses ``resolved_mind_id`` (str)
+        # uniformly + ``if resolved_mind_id:`` to gate hot-reload.
+        resolved_mind_id: str = ""
+    else:
+        try:
+            from sovyx.engine.config import EngineConfig  # noqa: PLC0415
+
+            data_dir = EngineConfig().data_dir
+        except Exception:  # noqa: BLE001 — fall back gracefully
+            data_dir = Path.home() / ".sovyx"
+        resolved_mind_id = resolve_mind_id(mind_id, data_dir)
+
     # Resolve trainer backend FIRST so we fail fast with operator
     # guidance when the extras aren't installed — saves the operator
     # from waiting for synthesis only to hit the missing-backend
@@ -439,7 +483,7 @@ def train_wake_word(
 
     request = TrainingRequest(
         wake_word=wake_word,
-        mind_id=mind_id,
+        mind_id=resolved_mind_id,
         language=language,
         target_positive_samples=target_samples,
         synthesizer_voices=voice_tuple,
@@ -455,9 +499,9 @@ def train_wake_word(
     console.print(f"  language:      [cyan]{language}[/cyan]")
     console.print(f"  target_samples: [cyan]{target_samples}[/cyan]")
     console.print(f"  negatives_dir: [dim]{negatives_dir}[/dim]")
-    if mind_id:
+    if resolved_mind_id:
         console.print(
-            f"  hot-reload to mind: [cyan]{mind_id}[/cyan] (if daemon running)",
+            f"  hot-reload to mind: [cyan]{resolved_mind_id}[/cyan] (if daemon running)",
         )
 
     # Build orchestrator.
@@ -509,9 +553,9 @@ def train_wake_word(
         console.print(
             f"  duration_actual:  [dim]{final_state.completed_at}[/dim]",
         )
-        if mind_id and final_state.output_path:
-            _attempt_hot_reload(mind_id, Path(final_state.output_path))
-        elif mind_id:
+        if resolved_mind_id and final_state.output_path:
+            _attempt_hot_reload(resolved_mind_id, Path(final_state.output_path))
+        elif resolved_mind_id:
             console.print(
                 "  [yellow]No output path recorded — hot-reload skipped.[/yellow]",
             )
@@ -557,30 +601,6 @@ def _resolve_data_dir_for_signing_key() -> Path:
         return Path.home() / ".sovyx"
 
 
-def _resolve_mind_id_for_signing_key(data_dir: Path, mind_id: str | None) -> str:
-    """Resolve the per-mind directory the signing key lands under.
-
-    When ``--mind-id`` is passed explicitly, trust the operator (multi-
-    mind future-proofing). Otherwise discover the first mind directory
-    under ``data_dir`` (same scan ``sovyx start`` does), and fall back
-    to ``"default"`` when none exists. The fallback matches how
-    operator-test installs (``sovyx init`` never run) lay out the
-    filesystem; the resulting ``<data_dir>/default/`` directory is
-    created on demand by :func:`generate_signing_key`.
-
-    CLAUDE.md anti-pattern #33: don't assume a registry method exists;
-    do the filesystem discovery defensively.
-    """
-    if mind_id is not None and mind_id.strip():
-        return mind_id.strip()
-
-    if data_dir.exists():
-        for child in sorted(data_dir.iterdir()):
-            if child.is_dir() and (child / "mind.yaml").exists():
-                return child.name
-    return "default"
-
-
 @voice_app.command("generate-signing-key")
 def generate_signing_key(
     force: bool = typer.Option(
@@ -603,12 +623,14 @@ def generate_signing_key(
             "Default: <data_dir>/<mind_id>/calibration.signing-key.priv"
         ),
     ),
-    mind_id: str = typer.Option(
-        "",
+    mind_id: str | None = typer.Option(
+        None,
         "--mind-id",
         help=(
-            "Owning mind. Empty = auto-detect from <data_dir>/<*>/mind.yaml; "
-            "falls back to 'default' when no mind is configured."
+            "Owning mind. Default: auto-detected when exactly one mind "
+            "exists at <data_dir>/<mind>/mind.yaml; required when "
+            "multiple minds exist. Errors with the available-minds "
+            "list when the value cannot be resolved."
         ),
     ),
 ) -> None:
@@ -647,10 +669,7 @@ def generate_signing_key(
     )
 
     data_dir = _resolve_data_dir_for_signing_key()
-    resolved_mind_id = _resolve_mind_id_for_signing_key(
-        data_dir,
-        mind_id if mind_id else None,
-    )
+    resolved_mind_id = resolve_mind_id(mind_id, data_dir)
 
     output_path: Path | None = None
     if output.strip():
