@@ -93,20 +93,33 @@ Every response carries `X-Request-Id`. Include it when reporting bugs.
 
 ### Voice
 
+Voice routes are spread across 9 router files (`src/sovyx/dashboard/routes/voice*.py`).
+The tables below group them by area. Every route resolves the active mind via
+`_shared.resolve_active_mind_id_for_request` and emits
+`dashboard.shared.fallback_default_mind` (WARN) when no mind id is provided in
+the request — see [`observability.md`](observability.md) §"Pending catalog
+promotion (post-v0.39.0)" for the event contract.
+
+#### Voice — control plane
+
 | Method | Path                              | Description                                                           |
 | ------ | --------------------------------- | --------------------------------------------------------------------- |
 | GET    | `/api/voice/status`               | Voice pipeline state and device info.                                 |
 | GET    | `/api/voice/service-health`       | Aggregated readiness probe (T6.20). 4-field response for monitoring.  |
-| GET    | `/api/voice/health`               | ComboStore + overrides + quarantine snapshot (dashboard-grade).       |
-| GET    | `/api/voice/health/quarantine`    | Kernel-invalidated quarantine snapshot.                               |
 | GET    | `/api/voice/models`               | Installed STT/TTS/VAD model catalogue.                                |
+| GET    | `/api/voice/models/status`        | Per-model on-disk status (present / downloading / missing).           |
+| POST   | `/api/voice/models/download`      | Trigger a model download. SSE-style progress on the same request.     |
+| GET    | `/api/voice/voices`               | Available Piper / Kokoro voice catalogue (per spoken language).       |
 | GET    | `/api/voice/hardware-detect`      | Probe GPU/CPU and return the recommended voice profile.               |
 | POST   | `/api/voice/enable`               | Start the voice pipeline (downloads models on first run).             |
 | POST   | `/api/voice/disable`              | Stop the voice pipeline and release audio devices.                    |
-| GET    | `/api/voice/test/devices`         | Enumerate audio devices available to the setup wizard.                |
-| WS     | `/api/voice/test/input`           | Live RMS/peak/hold meter stream for mic sanity-check.                 |
-| POST   | `/api/voice/test/output`          | Queue a TTS playback job on an output device.                         |
-| GET    | `/api/voice/test/output/{job_id}` | Poll playback job until `done` or `error`.                            |
+| POST   | `/api/voice/forget`               | Erase voice-derived data per the GDPR / LGPD lifecycle.               |
+| GET    | `/api/voice/wake-word/status`     | Per-mind wake-word state — armed model, cooldown, last score.         |
+| GET    | `/api/voice/capture-diagnostics`  | RMS / VAD / APO / device-resolver snapshot for triage.                |
+| POST   | `/api/voice/capture-exclusive`    | Request WASAPI exclusive-mode capture (Windows). Emits `CaptureRestartFrame` (anti-pattern #29). |
+| GET    | `/api/voice/linux-mixer-diagnostics` | Linux ALSA / PipeWire mixer probe + saturation report.             |
+| POST   | `/api/voice/linux-mixer-reset`    | Reset mixer levels to known-good defaults (closes `linux_mixer_saturated` confidence=1.00 finding). |
+| GET    | `/api/voice/platform-diagnostics` | Cross-platform parity probe — Linux/Windows/macOS deltas.             |
 
 `GET /api/voice/service-health` returns
 `{ready: bool, reason: str, last_diagnosis: str | null, watchdog_state:
@@ -117,8 +130,80 @@ degrade via the `reason` field (closed enum: `ok`, `voice_disabled`,
 operator-facing hint when `last_diagnosis` maps to a known
 remediation.
 
+#### Voice — health & quarantine
+
+| Method | Path                              | Description                                                           |
+| ------ | --------------------------------- | --------------------------------------------------------------------- |
+| GET    | `/api/voice/health`               | ComboStore + overrides + quarantine snapshot (dashboard-grade).       |
+| GET    | `/api/voice/health/quarantine`    | Kernel-invalidated quarantine snapshot.                               |
+| POST   | `/api/voice/health/reprobe`       | Re-run diagnosis on the active capture endpoint.                      |
+| POST   | `/api/voice/health/forget`        | Forget a device entry from the ComboStore (manual operator override). |
+| POST   | `/api/voice/health/pin`           | Pin a device's diagnosis verdict — disables auto-quarantine.          |
+| GET    | `/api/voice/frame-history`        | Bounded ring buffer of `PipelineFrame` transitions (256 entries, observability per anti-pattern #25). |
+| GET    | `/api/voice/restart-history`      | Bounded ring buffer of `CaptureRestartFrame` events (anti-pattern #29). |
+
+#### Voice — calibration
+
+| Method | Path                                              | Description                                                           |
+| ------ | ------------------------------------------------- | --------------------------------------------------------------------- |
+| POST   | `/api/voice/calibration/start`                    | Start a calibration run. Mind id required (`feedback_no_speculation` Pattern A — no sentinel default per anti-pattern #35). |
+| GET    | `/api/voice/calibration/status/{job_id}`          | Poll calibration progress.                                            |
+| POST   | `/api/voice/calibration/cancel/{job_id}`          | Cancel an in-flight run.                                              |
+| GET    | `/api/voice/calibration/profile`                  | Read the active calibration profile (schema v1; signature verdict).   |
+| GET    | `/api/voice/calibration/profile/inspect`          | Detailed profile dump with rule-firing trace + measurement breakdown. |
+| POST   | `/api/voice/calibration/profile/regenerate`       | Regenerate profile from current measurements (no fresh capture).      |
+| GET    | `/api/voice/calibration/backups`                  | List timestamped profile backups for the resolved mind.               |
+| POST   | `/api/voice/calibration/backup/restore`           | Restore a backup by timestamp.                                        |
+| WS     | `/api/voice/calibration/jobs/{job_id}/stream`     | Live calibration progress stream (per-rule firing + decision events). |
+| POST   | `/api/voice/calibration/signing-key/generate`     | Server-side Ed25519 key-gen flow (alternative to the CLI command).    |
+| GET    | `/api/voice/calibration/signing-key/status`       | Key presence + fingerprint without exposing the private half.         |
+
+#### Voice — wizard (onboarding flow)
+
+| Method | Path                              | Description                                                           |
+| ------ | --------------------------------- | --------------------------------------------------------------------- |
+| GET    | `/api/voice/wizard/devices`       | Enumerate audio devices for the wizard picker.                        |
+| POST   | `/api/voice/wizard/test-record`   | Capture a short test recording for the device-sanity step.            |
+| GET    | `/api/voice/wizard/tts-engines`   | Available TTS engines (Piper / Kokoro) + per-engine voice list.       |
+| GET    | `/api/voice/wizard/diagnostic`    | Wizard-grade `doctor voice` summary (capture / VAD / wake-word).      |
+| GET    | `/api/voice/wizard/...`           | Additional wizard probes — see `routes/voice_wizard.py` for the full set. |
+| POST   | `/api/voice/wizard/telemetry`     | Operator-attribution telemetry on wizard step completion (204).       |
+
+#### Voice — wake-word training
+
+| Method | Path                                              | Description                                                           |
+| ------ | ------------------------------------------------- | --------------------------------------------------------------------- |
+| POST   | `/api/voice/training/jobs`                        | Submit a wake-word training job for the resolved mind.                |
+| GET    | `/api/voice/training/jobs`                        | List training jobs.                                                   |
+| GET    | `/api/voice/training/jobs/{job_id}`               | Job detail + status.                                                  |
+| POST   | `/api/voice/training/jobs/{job_id}/cancel`        | Cancel a queued / running job.                                        |
+| WS     | `/api/voice/training/jobs/{job_id}/stream`        | Live training progress (steps + loss + samples).                      |
+
+#### Voice — KB profile (anti-pattern #26)
+
+| Method | Path                                              | Description                                                           |
+| ------ | ------------------------------------------------- | --------------------------------------------------------------------- |
+| GET    | `/api/voice/kb/profiles`                          | List installed KB profiles for the active mind.                       |
+| GET    | `/api/voice/kb/profiles/{name}`                   | Inspect a KB profile (signature verdict, content, provenance).        |
+| POST   | `/api/voice/kb/profiles/{name}/install`           | Install / pin a profile from the local store.                         |
+| POST   | `/api/voice/kb/contribute`                        | Submit a calibration profile back to the community KB queue (post-anonymisation). |
+
+#### Voice — device-test (legacy URL — superseded by wizard endpoints)
+
+| Method | Path                              | Description                                                           |
+| ------ | --------------------------------- | --------------------------------------------------------------------- |
+| GET    | `/api/voice/test/devices`         | Enumerate audio devices available to the setup wizard.                |
+| WS     | `/api/voice/test/input`           | Live RMS/peak/hold meter stream for mic sanity-check.                 |
+| POST   | `/api/voice/test/output`          | Queue a TTS playback job on an output device.                         |
+| GET    | `/api/voice/test/output/{job_id}` | Poll playback job until `done` or `error`.                            |
+
 See [`voice-device-test`](modules/voice-device-test.md) for the frame protocol,
 error taxonomy, rate-limits, and tuning knobs.
+
+The route list above is verified against
+`src/sovyx/dashboard/routes/voice*.py` at HEAD. The auto-generated OpenAPI
+schema at `/openapi.json` is the contract source of truth — refer to it when
+implementing a client, and treat this table as a navigation aid.
 
 ### Plugins
 

@@ -6,7 +6,54 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ## [Unreleased]
 
-(none — every shipped delta is in v0.41.1 below)
+(none — every shipped delta is in v0.41.2 below)
+
+## [0.41.2] — 2026-05-14
+
+Documentation patch — closes 3 HIGH/MEDIUM gaps surfaced by the
+2026-05-13 consolidated audit
+(`docs-internal/GAPS-CONSOLIDATED-2026-05-13.md` §2.3 + §2.4 + §3.5).
+
+### Documented (no code change)
+
+- ``docs/api-reference.md`` — voice section expanded from 12 endpoints
+  to ~50 across 7 sub-tables: control plane, health & quarantine,
+  calibration, wizard, wake-word training, KB profile, legacy
+  device-test. Every entry verified against
+  ``src/sovyx/dashboard/routes/voice*.py`` at HEAD. Closes §2.3 —
+  the prior table left ~30 endpoints undocumented.
+- ``docs/modules/cli.md`` — Commands section reorganised from a
+  free-form code block (which left 22 commands undocumented per
+  §2.4) into 9 grouped sub-tables: Root, ``doctor`` (6 commands),
+  ``voice`` (5 commands), ``brain`` (3 commands), ``mind`` (5
+  commands incl. retention prune/status), ``plugin`` (8 commands),
+  ``kb`` (4 commands), ``audit`` (1 command), ``logs`` +
+  ``dashboard``. Each command has its arguments + behaviour note.
+  ``sovyx init`` description updated to mention v0.39.0's inline
+  ``voice setup`` invocation + ``--skip-voice-setup`` escape flag.
+- ``docs/observability.md`` — new "Pending catalog promotion
+  (post-v0.39.0)" section documenting 6 events emitted at HEAD but
+  not yet in the auto-generated catalog
+  (``voice.factory.mind_id_default_sentinel``,
+  ``voice.factory.input_device_unconfigured``,
+  ``voice.device_enum.os_default_fallthrough``,
+  ``voice.calibrate.prereq_lenient``,
+  ``voice.calibrate.prereq_strict``,
+  ``dashboard.shared.fallback_default_mind``) plus operator ``jq``
+  recipe for the Gate 3 grep target. Closes §3.5 — the events
+  shipped in v0.39.0 → v0.40.1 had no public-facing reference, and
+  Gate 3 of the v0.41.0 operator validation backlog requires the
+  operator to grep for them by name. Catalog promotion (folding
+  into ``scripts/_gen_log_schemas.py``) is intentionally NOT in
+  this commit — that's a code change, separate from this docs-only
+  scope.
+
+### Notes
+
+- Zero ``src/sovyx/`` or ``dashboard/src/`` modifications. Pure
+  documentation; ``uv.lock`` updated only for the version bump.
+- Predecessor: v0.41.1 (BREAKING + CHANGELOG backfill + broken-link
+  fix, 2026-05-14).
 
 ## [0.41.1] — 2026-05-14
 

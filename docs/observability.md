@@ -107,6 +107,42 @@ _36 canonical events. Regenerate via `uv run python scripts/_gen_log_schemas.py`
 
 <!-- END AUTO-GENERATED EVENTS TABLE -->
 
+### Pending catalog promotion (post-v0.39.0)
+
+The events below are emitted by the daemon at HEAD but are **not yet
+in the auto-generated catalog above**. They surface in operator logs
+and Gate 3 of the v0.41.0 hardware validation backlog
+(`docs-internal/OPERATOR-VALIDATION-BACKLOG-2026.md` §v0.41.0)
+greps for them by name. They will be folded into the canonical
+catalog when `scripts/_gen_log_schemas.py` adds typed schemas for
+the new families — until then this section is the authoritative
+reference.
+
+| Event | Level | Description | Required payload | Optional payload |
+|---|---|---|---|---|
+| `voice.factory.mind_id_default_sentinel` | WARN | Voice factory was invoked with the `"default"` mind-id sentinel — anti-pattern #35 wire-up WARN. Operator should grep for upstream callers that bypass `_shared.resolve_active_mind_id_for_request`. Emitted from `src/sovyx/voice/factory/__init__.py:1006`. | `voice.mind_id_resolved`, `voice.caller_path_hint` | `voice.factory.entrypoint`, `voice.factory.via` |
+| `voice.factory.input_device_unconfigured` | WARN | Voice factory found an empty `voice_input_device_name` on the resolved mind — the daemon will attempt fallback enumeration. Surfaces Gate 3 (operator-validation §v0.41.0). Emitted from `src/sovyx/voice/factory/__init__.py:1033`. | `voice.mind_id_resolved` | `voice.config_path`, `voice.fallback_strategy` |
+| `voice.device_enum.os_default_fallthrough` | WARN | Device enumerator fell through to the OS default after no candidate matched. Anti-pattern #21 / #35 forensic. Emitted from `src/sovyx/voice/device_enum.py:526` + line 540. | `voice.mind_id`, `voice.requested_name`, `voice.candidate_count` | `voice.os_default_name`, `voice.os_default_host_api` |
+| `voice.calibrate.prereq_lenient` | WARN | `sovyx doctor voice --calibrate` LENIENT prereq gate fired (v0.39.x). The calibration continued with first-attenuated-card heuristic fallback. Superseded by `voice.calibrate.prereq_strict` from v0.40.0. | `voice.mind_id`, `voice.reason` | — |
+| `voice.calibrate.prereq_strict` | ERROR | `sovyx doctor voice --calibrate` STRICT prereq gate fired (v0.40.0+) — the command hard-exits with code `EXIT_DOCTOR_VOICE_NOT_CONFIGURED=6`. Emitted from `src/sovyx/cli/commands/doctor.py:914`. | `voice.mind_id`, `voice.reason` | `voice.input_device_configured`, `voice.remediation_hint` |
+| `dashboard.shared.fallback_default_mind` | WARN | A dashboard request landed at `_shared.resolve_active_mind_id_for_request` without an explicit mind id and fell back to `default`. Operator's Gate 3 grep target — expected count = 0 in steady-state. Emitted from `src/sovyx/dashboard/_shared.py:73` + line 147. | `dashboard.route`, `dashboard.method` | `dashboard.request_id`, `dashboard.client_hash` |
+
+**Operator usage:** to confirm no caller is slipping past the
+resolver (Gate 3 of v0.41.0 validation), grep daemon logs for the
+event names above:
+
+```bash
+jq 'select(.event == "voice.factory.mind_id_default_sentinel" or
+           .event == "voice.factory.input_device_unconfigured" or
+           .event == "voice.device_enum.os_default_fallthrough" or
+           .event == "dashboard.shared.fallback_default_mind")' \
+   ~/.sovyx/logs/sovyx.log
+```
+
+Expected count over a 24h soak with mind configured: **0**. Any
+non-zero count is a per-event triage trail (each line carries
+`voice.mind_id_resolved` so the offending caller is identifiable).
+
 ### Known events {#known-events}
 
 `sovyx.observability.schema.KNOWN_EVENTS` maps each event name to the
