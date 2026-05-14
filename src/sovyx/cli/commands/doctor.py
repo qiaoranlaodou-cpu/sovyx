@@ -400,6 +400,19 @@ def doctor_voice(
         "signature gate; the dict is not a fully-validated profile. "
         "Mutually exclusive with --show / --rollback / --evaluate-rules.",
     ),
+    input_device: str | None = typer.Option(
+        None,
+        "--input-device",
+        help="Phase 5.T5.2 escape hatch — with --calibrate + "
+        "--non-interactive, invoke `sovyx voice setup` inline against "
+        "this device specifier (substring matched, case-insensitive, "
+        "OR enumeration index) BEFORE the prereq gate fires. Persists "
+        "the mic choice to mind.yaml and continues the calibrate "
+        "pipeline. Use in CI / systemd scripts that need to onboard a "
+        "fresh mind without a separate `voice setup` step. No-op when "
+        "the mic is already configured OR when running interactively "
+        "(the inline picker runs in that case).",
+    ),
 ) -> None:
     """Voice subsystem health checks + auto-fix tools.
 
@@ -536,6 +549,7 @@ def doctor_voice(
         signing_key=signing_key,
         evaluate_rules=evaluate_rules,
         inspect_migration=inspect_migration,
+        input_device=input_device,
     )
     raise typer.Exit(exit_code)
 
@@ -559,6 +573,7 @@ def _run_voice_doctor(
     signing_key: Path | None = None,
     evaluate_rules: bool = False,
     inspect_migration: bool = False,
+    input_device: str | None = None,
 ) -> int:
     """Execute the voice doctor flow. Returns the desired exit code.
 
@@ -594,6 +609,7 @@ def _run_voice_doctor(
             explain=explain,
             surgical=surgical,
             signing_key=signing_key,
+            input_device=input_device,
         )
     if full_diag:
         return _run_voice_full_diag(non_interactive=non_interactive, surgical=surgical)
@@ -794,6 +810,7 @@ def _run_voice_calibrate(
     explain: bool,
     surgical: bool = False,
     signing_key: Path | None = None,
+    input_device: str | None = None,
 ) -> int:
     """Execute the calibration engine end-to-end + persist the profile.
 
@@ -852,6 +869,45 @@ def _run_voice_calibrate(
         prereq_mind_config is not None
         and not (prereq_mind_config.voice_input_device_name or "").strip()
     )
+
+    # Phase 5.T5.2 — ``--input-device`` escape hatch for non-interactive
+    # operators with an unconfigured mic. Persists the choice via the
+    # same ``run_voice_setup`` flow the dashboard + ``sovyx voice setup``
+    # CLI command use, then re-loads ``prereq_mind_config`` so the gate
+    # below sees the populated value and falls through silently. Lets
+    # one-line CI scripts onboard a fresh mind with a single command
+    # instead of chaining ``voice setup`` + ``calibrate``. No-op when
+    # the mic is already configured OR the operator is on a TTY (the
+    # inline picker handles that path).
+    if prereq_device_unset and non_interactive and input_device:
+        try:
+            from sovyx.cli.commands.voice_setup import (  # noqa: PLC0415
+                VoiceSetupError as _VoiceSetupError,
+            )
+            from sovyx.cli.commands.voice_setup import (  # noqa: PLC0415
+                run_voice_setup as _run_voice_setup,
+            )
+            from sovyx.engine.types import MindId as _MindIdEscape  # noqa: PLC0415
+
+            asyncio.run(
+                _run_voice_setup(
+                    mind_id=_MindIdEscape(mind_id),
+                    data_dir=data_dir,
+                    input_device=input_device,
+                    non_interactive=True,
+                )
+            )
+        except _VoiceSetupError as exc:
+            console.print(
+                f"\n[red]--input-device setup failed:[/red] {exc}\n"
+                f"[dim]Re-run with a different --input-device value or "
+                f"run `sovyx voice setup --mind-id {mind_id}` interactively.[/dim]"
+            )
+            return EXIT_DOCTOR_GENERIC_FAILURE
+        # Re-load mind_config so the gate below sees the now-populated
+        # voice_input_device_name.
+        prereq_mind_config = _load_mind_config_best_effort(data_dir, _MindId(mind_id))
+        prereq_device_unset = False
     if prereq_device_unset:
         if non_interactive:
             logger.error(

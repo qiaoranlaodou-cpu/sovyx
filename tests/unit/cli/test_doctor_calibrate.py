@@ -23,7 +23,7 @@ from __future__ import annotations
 import re
 from collections.abc import Generator
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from typer.testing import CliRunner
@@ -1467,3 +1467,77 @@ class TestCalibratePrereqGate:
         assert "sovyx voice setup --mind-id <X>" in action
         assert "--input-device 'NAME' --non-interactive" in action
         assert "re-run this command with `--input-device 'NAME'`" in action
+
+    def test_input_device_escape_hatch_invokes_setup_then_continues(self) -> None:
+        """Phase 5.T5.2 — non-interactive + empty mic + --input-device
+        invokes ``run_voice_setup`` inline, re-loads mind_config, then
+        proceeds through the calibrate pipeline normally (exit 0)."""
+        from sovyx.cli.commands import voice_setup as voice_setup_mod
+
+        diag_result = DiagRunResult(
+            tarball_path=Path("/tmp/diag.tar.gz"),
+            duration_s=600.0,
+            exit_code=0,
+        )
+        # AsyncMock for the async run_voice_setup; success returns void
+        # but the post-setup _load_mind_config_best_effort call must
+        # surface a NON-empty voice_input_device_name so the gate falls
+        # through. We patch _load_mind_config_best_effort to return DIFFERENT
+        # values on consecutive calls (empty first, populated second).
+        from sovyx.mind.config import MindConfig
+
+        empty_cfg = MindConfig(name="default", voice_input_device_name="")
+        populated_cfg = MindConfig(name="default", voice_input_device_name="Razer")
+
+        setup_mock = AsyncMock()
+        with (
+            # `_load_mind_config_best_effort` is called 3 times when calibrate
+            # runs end-to-end: (1) initial prereq, (2) post-escape-hatch reload,
+            # (3) step-4 measurer for active-mic-card resolve (line 1014).
+            patch(
+                "sovyx.cli.commands.doctor._load_mind_config_best_effort",
+                side_effect=[empty_cfg, populated_cfg, populated_cfg],
+            ),
+            patch.object(voice_setup_mod, "run_voice_setup", setup_mock),
+            patch(
+                "sovyx.cli.commands.doctor.capture_fingerprint",
+                return_value=_fingerprint(),
+            ),
+            patch("sovyx.cli.commands.doctor.run_full_diag", return_value=diag_result),
+            patch("sovyx.cli.commands.doctor.triage_tarball", return_value=_triage()),
+            patch(
+                "sovyx.cli.commands.doctor.capture_measurements",
+                return_value=_measurements(),
+            ),
+            patch(
+                "sovyx.cli.commands.doctor.CalibrationEngine.evaluate",
+                return_value=_r10_profile(),
+            ),
+            patch(
+                "sovyx.cli.commands.doctor.CalibrationApplier.apply",
+                return_value=_apply_result_advise(),
+            ),
+        ):
+            result = runner.invoke(
+                app,
+                [
+                    "doctor",
+                    "voice",
+                    "--calibrate",
+                    "--non-interactive",
+                    "--input-device",
+                    "Razer",
+                ],
+            )
+
+        assert result.exit_code == 0, result.output
+        # ``run_voice_setup`` was invoked with the operator's --input-device
+        # value + non_interactive=True (the escape-hatch contract).
+        setup_mock.assert_awaited_once()
+        kwargs = setup_mock.await_args.kwargs
+        assert kwargs["input_device"] == "Razer"
+        assert kwargs["non_interactive"] is True
+        assert str(kwargs["mind_id"]) == "default"
+        # No STRICT error fired — the escape hatch bypassed the gate.
+        clean = _strip_ansi(result.output)
+        assert "voice_input_device_name is empty" not in clean
