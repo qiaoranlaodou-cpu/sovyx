@@ -76,7 +76,7 @@ class ReflectPhase:
         extraction_source: str = "regex_fallback"
 
         if self._router:
-            llm_extracted = await self._extract_with_llm(perception.content)
+            llm_extracted = await self._extract_with_llm(perception.content, mind_id)
             if llm_extracted is not None:
                 extracted = llm_extracted
                 extraction_source = "llm_explicit"
@@ -183,7 +183,7 @@ class ReflectPhase:
         # Classify relation types via LLM for within-turn pairs
         relation_types: dict[tuple[str, str], str] | None = None
         if len(concept_ids) >= 2 and self._router:  # noqa: PLR2004
-            relation_types = await self._classify_relations(extracted, concept_ids)
+            relation_types = await self._classify_relations(extracted, concept_ids, mind_id)
 
         if len(concept_ids) >= 2:  # noqa: PLR2004
             try:
@@ -222,7 +222,7 @@ class ReflectPhase:
         )
 
         # Generate episode summary via LLM (optional)
-        summary = await self._generate_summary(perception.content, response.content)
+        summary = await self._generate_summary(perception.content, response.content, mind_id)
 
         # Encode episode — pass new concept IDs as star topology hubs
         # (each connects to top-K existing by activation)
@@ -295,7 +295,9 @@ class ReflectPhase:
                 result[ec.name] = 0.5
         return result
 
-    async def _extract_with_llm(self, message: str) -> list[ExtractedConcept] | None:
+    async def _extract_with_llm(
+        self, message: str, mind_id: MindId
+    ) -> list[ExtractedConcept] | None:
         """Extract concepts using LLM. Returns None on failure."""
         if not self._router:
             return None
@@ -308,6 +310,7 @@ class ReflectPhase:
                 temperature=0.1,
                 max_tokens=1024,
                 phase="reflect",
+                mind_id=str(mind_id),
             )
 
             # Parse JSON response
@@ -405,6 +408,7 @@ class ReflectPhase:
         self,
         extracted: list[ExtractedConcept],
         concept_ids: list[ConceptId],
+        mind_id: MindId,
     ) -> dict[tuple[str, str], str] | None:
         """Classify relation types between within-turn concept pairs.
 
@@ -440,6 +444,7 @@ class ReflectPhase:
                 temperature=0.1,
                 max_tokens=512,
                 phase="reflect",
+                mind_id=str(mind_id),
             )
 
             text = resp.content.strip()
@@ -489,6 +494,7 @@ class ReflectPhase:
         self,
         user_input: str,
         assistant_response: str,
+        mind_id: MindId,
     ) -> str | None:
         """Generate a 1-sentence summary of the exchange via LLM.
 
@@ -511,6 +517,7 @@ class ReflectPhase:
                 temperature=0.1,
                 max_tokens=64,
                 phase="reflect",
+                mind_id=str(mind_id),
             )
             summary = resp.content.strip()
             # Remove wrapping quotes if present

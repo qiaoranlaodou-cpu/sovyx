@@ -111,6 +111,7 @@ async def detect_contradiction(
     new_content: str,
     llm_router: LLMRouter | None = None,
     fast_model: str = "",
+    mind_id: str = "",
 ) -> ContentRelation:
     """Detect semantic relationship between old and new concept content.
 
@@ -146,6 +147,7 @@ async def detect_contradiction(
                 new_content,
                 llm_router,
                 fast_model,
+                mind_id,
             )
         except (LLMError, json.JSONDecodeError, ValueError):
             # LLMError: provider/router-level failure (circuit open,
@@ -167,6 +169,7 @@ async def _detect_via_llm(
     new_content: str,
     llm_router: LLMRouter,
     fast_model: str,
+    mind_id: str = "",
 ) -> ContentRelation:
     """Classify content relationship via LLM pairwise comparison.
 
@@ -200,6 +203,7 @@ async def _detect_via_llm(
         temperature=0.0,
         max_tokens=100,
         phase="contradiction",
+        mind_id=mind_id,
     )
 
     text = resp.content.strip()

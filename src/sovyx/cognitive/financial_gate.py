@@ -200,6 +200,7 @@ _CLASSIFY_PROMPT = (
 async def classify_intent_llm(
     text: str,
     llm_router: object,
+    mind_id: str = "",
 ) -> str:
     """Classify user intent via LLM (language-agnostic).
 
@@ -219,6 +220,7 @@ async def classify_intent_llm(
             temperature=0.0,
             max_tokens=10,
             phase="financial_gate",
+            mind_id=mind_id,
         )
         raw = response.content.strip().upper()
         if "CONFIRM" in raw:
@@ -345,6 +347,7 @@ class FinancialGate:
         self,
         text: str,
         llm_router: object | None = None,
+        mind_id: str = "",
     ) -> tuple[str, PendingConfirmation | None]:
         """Handle user response with LLM classification fallback.
 
@@ -375,7 +378,7 @@ class FinancialGate:
 
         # 2. Try LLM classification (any language)
         if llm_router is not None:
-            intent = await classify_intent_llm(text, llm_router)
+            intent = await classify_intent_llm(text, llm_router, mind_id)
             if intent != "unclear":
                 logger.debug("financial_classify_method", method="llm", intent=intent)
                 return self._resolve_intent(intent, pending)

@@ -69,7 +69,7 @@ class AttendPhase:
             return False
         return True
 
-    async def process(self, perception: Perception) -> bool:
+    async def process(self, perception: Perception, mind_id: str = "") -> bool:
         """Check if perception should be processed.
 
         Cascade:
@@ -221,7 +221,7 @@ class AttendPhase:
 
         # ── 2. LLM classifier (if available and filter active) ──
         if self._llm_router is not None and self._safety.content_filter != "none":
-            verdict = await self._classify_with_llm(perception.content)
+            verdict = await self._classify_with_llm(perception.content, mind_id)
             if verdict is not None and not verdict.safe:
                 # Map LLM category to PatternCategory for audit trail
                 llm_category = _map_safety_category(verdict.category)
@@ -275,6 +275,7 @@ class AttendPhase:
     async def _classify_with_llm(
         self,
         content: str,
+        mind_id: str = "",
     ) -> SafetyVerdict | None:
         """Classify content using LLM safety classifier.
 
@@ -285,7 +286,7 @@ class AttendPhase:
             from sovyx.cognitive.safety_classifier import classify_content
 
             assert self._llm_router is not None  # Caller already checked
-            return await classify_content(content, self._llm_router)
+            return await classify_content(content, self._llm_router, mind_id=mind_id)
         except Exception:  # noqa: BLE001
             logger.debug(
                 "attend_llm_classifier_error",

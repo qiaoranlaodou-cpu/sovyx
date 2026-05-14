@@ -639,6 +639,7 @@ class BrainAccess:
             new_content=new_content,
             llm_router=self._brain._llm_router,
             fast_model=self._brain._fast_model,
+            mind_id=str(self._mind_id),
         )
         return relation.value
 

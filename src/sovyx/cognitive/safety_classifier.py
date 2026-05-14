@@ -144,6 +144,7 @@ async def classify_content(
     llm_router: LLMRouter,
     *,
     timeout: float = _CLASSIFY_TIMEOUT_SEC,
+    mind_id: str = "",
 ) -> SafetyVerdict:
     """Classify text content for safety using LLM.
 
@@ -211,6 +212,7 @@ async def classify_content(
                 max_tokens=20,
                 conversation_id="__safety_classifier__",
                 phase="safety",
+                mind_id=mind_id,
             ),
             timeout=timeout,
         )
@@ -326,6 +328,7 @@ async def batch_classify_content(
     *,
     timeout: float = _CLASSIFY_TIMEOUT_SEC,
     max_concurrent: int = _BATCH_MAX_CONCURRENT,
+    mind_id: str = "",
 ) -> BatchClassificationResult:
     """Classify multiple texts concurrently with deduplication and caching.
 
@@ -384,7 +387,7 @@ async def batch_classify_content(
 
     async def _classify_one(text: str) -> SafetyVerdict:
         async with semaphore:
-            return await classify_content(text, llm_router, timeout=timeout)
+            return await classify_content(text, llm_router, timeout=timeout, mind_id=mind_id)
 
     if uncached_indices:
         unique_texts = list(uncached_indices.keys())

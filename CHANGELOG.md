@@ -6,7 +6,88 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ## [Unreleased]
 
-(none — every shipped delta is in v0.42.2 below)
+(none — every shipped delta is in v0.43.0 below)
+
+## [0.43.0] — 2026-05-14
+
+LLMRouter ``mind_id`` thread-through across 11 cognitive call
+sites — closes MISSION-post-v0_42_2-quality-discipline-2026-05-14
+Phase 4 + GAPS-CONSOLIDATED-2026-05-13.md §2.5 follow-up. Minor
+bump because ``LLMRouter.generate`` / ``LLMRouter.stream`` signatures
+gain a new kwarg (additive, backward-compatible — default ``""``).
+
+### Changed
+
+- ``LLMRouter.generate(..., mind_id: str = "")`` and
+  ``LLMRouter.stream(..., mind_id: str = "")`` accept an explicit
+  ``mind_id`` argument that propagates to the two
+  ``cost_guard.record(...)`` call sites (lines 511 + 800). Empty
+  ``mind_id`` defaults to the v0.41.3 ``_unresolved`` bucket per
+  ``llm.cost.py``.
+
+### Threaded (11 call sites)
+
+1. ``cognitive/think.py:91`` — ``Think.process`` passes
+   ``mind_id=str(mind_id)`` to ``router.generate``.
+2. ``cognitive/think.py:158`` — ``Think.process_streaming`` passes
+   ``mind_id`` to ``router.stream``.
+3. ``cognitive/act.py:410`` — ``ActPhase.process`` accepts new
+   ``mind_id`` kwarg, threads through ``_react_loop`` →
+   ``router.generate``. Also threads to
+   ``_apply_output_guard`` → ``OutputGuard.check_async``.
+4. ``cognitive/reflect/phase.py:305`` — ``_extract_with_llm``
+   accepts ``mind_id`` arg; caller in ``Reflect.process`` passes it.
+5. ``cognitive/reflect/phase.py:441`` — ``_classify_relations``
+   ditto.
+6. ``cognitive/reflect/phase.py:512`` — ``_generate_summary`` ditto.
+7. ``cognitive/safety_classifier.py:207`` —
+   ``classify_content(..., mind_id="")`` + ``batch_classify_content``
+   propagation.
+8. ``cognitive/pii_guard.py:431`` — ``_ner_classify`` accepts
+   ``mind_id``; ``check_async`` propagates.
+9. ``cognitive/financial_gate.py:217`` — ``classify_intent_llm``
+   accepts ``mind_id``; ``handle_user_response_async`` propagates.
+10. ``brain/contradiction.py:198`` — ``_detect_via_llm`` accepts
+    ``mind_id``; ``detect_contradiction`` propagates from its 2
+    callers (``brain/service.py::learn_concept`` +
+    ``plugins/context.py::BrainAccess.classify_content``).
+11. ``upgrade/conv_import/_summary.py:196`` — ``_call_summariser``
+    accepts ``mind_id``; caller passes it through.
+
+### Cognitive-loop wiring
+
+- ``cognitive/loop.py`` — ``AttendPhase.process`` and
+  ``ActPhase.process`` now receive ``str(request.mind_id)`` at both
+  the standard + streaming dispatch points. Closes the last layer:
+  every cognitive phase that fires an LLM call now propagates the
+  active mind id through to CostGuard.
+
+### Acceptance criterion
+
+After v0.43.0 ship + restart, the ``_unresolved`` row on the
+cost-breakdown dashboard should stay at 0 over a steady-state
+24h window (no LLM calls slipping past the threading layer).
+Operator validates per ``OPERATOR-VALIDATION-BACKLOG-2026.md``
+§v0.41.3 — v0.42.2 Gate 5.
+
+### Migration
+
+- Plugins / external callers of ``LLMRouter.generate(...)`` /
+  ``LLMRouter.stream(...)``: no change required (default
+  ``mind_id=""`` preserves backward compatibility). Adding the kwarg
+  is recommended for callers that have ``mind_id`` in scope —
+  enables per-mind cost attribution.
+- Cognitive subsystem extensions / fork divergence: any custom
+  cognitive phase that calls ``router.generate`` should thread
+  ``mind_id`` per the patterns above.
+
+### Notes
+
+- Predecessor: v0.42.2 (regression closure + honest CI post-mortem).
+- All gates verified directly (via summary-line grep, per the
+  pre-push hook discipline + ``feedback_ci_preflight`` Addendum
+  2026-05-14): ruff (lint+format), mypy strict (44 source files
+  checked, 0 issues), bandit (Medium 0, High 0), pytest, tsc, vitest.
 
 ## [0.42.2] — 2026-05-14
 

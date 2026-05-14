@@ -126,7 +126,7 @@ class OutputGuard:
 
         return self._act_on_match(response_text, match)
 
-    async def check_async(self, response_text: str) -> OutputFilterResult:
+    async def check_async(self, response_text: str, mind_id: str = "") -> OutputFilterResult:
         """Check LLM response via regex→LLM cascade (async).
 
         Cascade:
@@ -160,7 +160,7 @@ class OutputGuard:
 
         # ── 2. LLM classifier ──
         if self._llm_router is not None:
-            verdict = await self._classify_with_llm(response_text)
+            verdict = await self._classify_with_llm(response_text, mind_id)
             if verdict is not None and not verdict.safe:
                 llm_category = _map_safety_category(verdict.category)
                 llm_match = FilterMatch(
@@ -271,6 +271,7 @@ class OutputGuard:
     async def _classify_with_llm(
         self,
         content: str,
+        mind_id: str = "",
     ) -> SafetyVerdict | None:
         """Classify output using LLM safety classifier.
 
@@ -282,7 +283,7 @@ class OutputGuard:
             )
 
             assert self._llm_router is not None
-            return await classify_content(content, self._llm_router)
+            return await classify_content(content, self._llm_router, mind_id=mind_id)
         except Exception:  # noqa: BLE001
             logger.debug(
                 "output_guard_llm_classifier_error",

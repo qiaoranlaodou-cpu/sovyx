@@ -360,7 +360,7 @@ class PIIGuard:
             types_found=frozenset(types),
         )
 
-    async def check_async(self, text: str) -> PIIFilterResult:
+    async def check_async(self, text: str, mind_id: str = "") -> PIIFilterResult:
         """Scan text with regex + LLM NER fallback.
 
         Strategy:
@@ -385,7 +385,7 @@ class PIIGuard:
         if not self._safety.pii_protection:
             return regex_result
 
-        llm_types = await self._ner_classify(text)
+        llm_types = await self._ner_classify(text, mind_id)
         if not llm_types:
             return regex_result
 
@@ -410,7 +410,7 @@ class PIIGuard:
             types_found=frozenset(llm_types),
         )
 
-    async def _ner_classify(self, text: str) -> set[str]:
+    async def _ner_classify(self, text: str, mind_id: str = "") -> set[str]:
         """Run LLM NER to detect PII types.
 
         Returns set of detected PII type strings, or empty set.
@@ -438,6 +438,7 @@ class PIIGuard:
                     temperature=0.0,
                     max_tokens=50,
                     phase="pii_guard",
+                    mind_id=mind_id,
                 ),
                 timeout=_NER_TIMEOUT_SEC,
             )

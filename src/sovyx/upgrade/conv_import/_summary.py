@@ -124,7 +124,7 @@ async def summarize_and_encode(
     # ── Step 1: ask the LLM for a summary, or use fallback ─────────
     parsed: _ParsedSummary | None = None
     if llm_router is not None and conv.turn_count() > 0:
-        parsed = await _call_summariser(conv, llm_router, fast_model, warnings)
+        parsed = await _call_summariser(conv, llm_router, fast_model, warnings, mind_id)
 
     if parsed is None:
         parsed = _build_fallback(conv, warnings)
@@ -179,6 +179,7 @@ async def _call_summariser(
     llm_router: LLMRouter,
     fast_model: str | None,
     warnings: list[str],
+    mind_id: MindId,
 ) -> _ParsedSummary | None:
     """Run the LLM summariser; return None on any failure.
 
@@ -198,6 +199,7 @@ async def _call_summariser(
             model=fast_model,
             temperature=0.1,
             max_tokens=512,
+            mind_id=str(mind_id),
             phase="conv_import",
         )
     except (LLMError, AttributeError) as exc:

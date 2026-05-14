@@ -243,7 +243,9 @@ class ActPhase:
         result = self._pii_guard.check(text)
         return result.text
 
-    async def _apply_output_guard(self, text: str) -> tuple[str, bool, str | None]:
+    async def _apply_output_guard(
+        self, text: str, mind_id: str = ""
+    ) -> tuple[str, bool, str | None]:
         """Apply output safety filter if configured.
 
         Uses async cascade (regex→LLM) when available,
@@ -255,7 +257,7 @@ class ActPhase:
         if self._output_guard is None:
             return text, False, None
 
-        result = await self._output_guard.check_async(text)
+        result = await self._output_guard.check_async(text, mind_id)
         if not result.filtered:
             return text, False, None
 
@@ -272,6 +274,7 @@ class ActPhase:
         llm_response: LLMResponse,
         assembled_messages: list[dict[str, str]],
         perception: Perception,
+        mind_id: str = "",
     ) -> ActionResult:
         """Format LLM response into ActionResult.
 
@@ -296,11 +299,13 @@ class ActPhase:
                 assembled_messages,
                 perception,
                 reply_to,
+                mind_id,
             )
 
         # Apply output guard + PII guard to LLM response
         text, was_filtered, reason = await self._apply_output_guard(
             llm_response.content,
+            mind_id,
         )
         text = self._apply_pii_guard(text)
 
@@ -318,6 +323,7 @@ class ActPhase:
         assembled_messages: list[dict[str, str]],
         perception: Perception,
         reply_to: str | None,
+        mind_id: str = "",
     ) -> ActionResult:
         """Execute the ReAct loop: tool_calls → execute → re-invoke LLM.
 
@@ -411,6 +417,7 @@ class ActPhase:
                     messages=messages,
                     tools=tools,
                     phase="act",
+                    mind_id=mind_id,
                 )
             except Exception as e:  # noqa: BLE001
                 logger.error("react_reinvoke_failed", error=str(e))
@@ -427,7 +434,7 @@ class ActPhase:
 
         # Final response (after loop ends or no more tool_calls)
         response_text = current_response.content or ""
-        text, was_filtered, reason = await self._apply_output_guard(response_text)
+        text, was_filtered, reason = await self._apply_output_guard(response_text, mind_id)
         text = self._apply_pii_guard(text)
 
         return ActionResult(

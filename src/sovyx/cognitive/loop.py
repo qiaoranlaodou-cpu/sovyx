@@ -208,7 +208,7 @@ class CognitiveLoop:
                 t.start_cognitive_span("attend"),
                 _measure_phase_latency(CognitivePhase.ATTENDING),
             ):
-                should_process = await self._attend.process(perception)
+                should_process = await self._attend.process(perception, str(request.mind_id))
 
             if not should_process:
                 logger.debug(
@@ -244,6 +244,7 @@ class CognitiveLoop:
                     llm_response,
                     assembled_msgs,
                     perception,
+                    str(request.mind_id),
                 )
 
             # Attach LLM metadata to ActionResult for dashboard
@@ -343,7 +344,7 @@ class CognitiveLoop:
                 t.start_cognitive_span("attend"),
                 _measure_phase_latency(CognitivePhase.ATTENDING),
             ):
-                should_process = await self._attend.process(perception)
+                should_process = await self._attend.process(perception, str(request.mind_id))
 
             if not should_process:
                 return ActionResult(
@@ -450,6 +451,7 @@ class CognitiveLoop:
                     llm_response,
                     assembled_msgs,
                     perception,
+                    str(request.mind_id),
                 )
 
             # Attach LLM metadata to ActionResult for dashboard

@@ -267,6 +267,7 @@ class BrainService:
                     new_content=content,
                     llm_router=self._llm_router,
                     fast_model=self._fast_model,
+                    mind_id=str(mind_id),
                 )
 
                 # Apply cascade based on classification

@@ -873,7 +873,7 @@ class TestLLMExtraction:
         ]
         router = _mock_llm_response(concepts)
         phase = ReflectPhase(mock_brain, llm_router=router)
-        result = await phase._extract_with_llm("test")  # noqa: SLF001
+        result = await phase._extract_with_llm("test", MIND)  # noqa: SLF001
         assert result is not None
         assert result[0].source_quality == "explicit"
 
@@ -893,7 +893,7 @@ class TestLLMExtraction:
         ]
         router = _mock_llm_response(concepts)
         phase = ReflectPhase(mock_brain, llm_router=router)
-        result = await phase._extract_with_llm("test")  # noqa: SLF001
+        result = await phase._extract_with_llm("test", MIND)  # noqa: SLF001
         assert result is not None
         ec = result[0]
         assert ec.importance == pytest.approx(0.9)
@@ -1059,7 +1059,7 @@ class TestLLMExtraction:
 
     async def test_llm_extract_without_router(self, mock_brain: AsyncMock) -> None:
         phase = ReflectPhase(mock_brain, llm_router=None)
-        result = await phase._extract_with_llm("test")  # noqa: SLF001
+        result = await phase._extract_with_llm("test", MIND)  # noqa: SLF001
         assert result is None
 
     async def test_llm_failure_falls_back_to_regex(self, mock_brain: AsyncMock) -> None:
@@ -1421,6 +1421,7 @@ class TestRelationClassification:
         result = await phase._classify_relations(  # noqa: SLF001
             [ExtractedConcept("A", "a", "fact")],
             [ConceptId("c1")],
+            MIND,
         )
         assert result is None
 
@@ -1854,7 +1855,7 @@ class TestEpisodeSummary:
         )
         phase._router = AsyncMock()  # type: ignore[assignment]
         phase._router.generate = AsyncMock(return_value=summary_resp)  # type: ignore[union-attr]
-        result = await phase._generate_summary("test", "ok")
+        result = await phase._generate_summary("test", "ok", MIND)
         assert result == "User likes coding."
 
     async def test_summary_truncates_long_response(self, mock_brain: AsyncMock) -> None:
@@ -1873,7 +1874,7 @@ class TestEpisodeSummary:
         )
         phase._router = AsyncMock()  # type: ignore[assignment]
         phase._router.generate = AsyncMock(return_value=summary_resp)  # type: ignore[union-attr]
-        result = await phase._generate_summary("test", "ok")
+        result = await phase._generate_summary("test", "ok", MIND)
         assert result is not None
         assert len(result) == 200
         assert result.endswith("...")

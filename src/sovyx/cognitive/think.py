@@ -94,6 +94,7 @@ class ThinkPhase:
                 temperature=self._mind_config.llm.temperature,
                 tools=tools,
                 phase="think",
+                mind_id=str(mind_id),
             )
 
             logger.debug(
@@ -161,6 +162,7 @@ class ThinkPhase:
                 temperature=self._mind_config.llm.temperature,
                 tools=tools,
                 phase="think",
+                mind_id=str(mind_id),
             )
 
             return chunk_iter, ctx.messages

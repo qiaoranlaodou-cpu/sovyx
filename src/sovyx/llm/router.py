@@ -343,6 +343,7 @@ class LLMRouter:
         conversation_id: str = "",
         tools: list[dict[str, object]] | None = None,
         phase: str = "",
+        mind_id: str = "",
     ) -> LLMResponse:
         """Generate response via most available provider.
 
@@ -359,6 +360,12 @@ class LLMRouter:
                 ``"safety"`` / ``"pii_guard"`` / ``"financial_gate"`` /
                 ``"contradiction"``). Empty string aggregates as
                 ``"unknown"`` in dashboard reports (issue #43).
+            mind_id: Mind instance ID for per-mind cost attribution
+                (v0.43.0+). Empty string buckets the spend into the
+                ``_unresolved`` row of ``CostBreakdown.by_mind`` and
+                emits a structured ``llm.cost.unresolved_attribution``
+                WARN — see ``MISSION-post-v0_42_2-quality-discipline-2026-05-14.md``
+                Phase 4 for the threading contract.
 
         Returns:
             LLMResponse from first successful provider.
@@ -513,6 +520,7 @@ class LLMRouter:
                         response.model,
                         conversation_id,
                         provider=provider.name,
+                        mind_id=mind_id,
                         tokens=response.tokens_in + response.tokens_out,
                         cache_read_tokens=response.cache_read_tokens,
                         cache_creation_tokens=response.cache_creation_tokens,
@@ -619,6 +627,7 @@ class LLMRouter:
         conversation_id: str = "",
         tools: list[dict[str, object]] | None = None,
         phase: str = "",
+        mind_id: str = "",
     ) -> AsyncIterator[LLMStreamChunk]:
         """Stream LLM response chunks via the first available provider.
 
@@ -802,6 +811,7 @@ class LLMRouter:
                 final_chunk.model or chosen_model or "",
                 conversation_id,
                 provider=chosen_provider.name,
+                mind_id=mind_id,
                 tokens=final_chunk.tokens_in + final_chunk.tokens_out,
                 cache_read_tokens=final_chunk.cache_read_tokens,
                 cache_creation_tokens=final_chunk.cache_creation_tokens,
