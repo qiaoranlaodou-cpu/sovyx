@@ -36,7 +36,28 @@ async def get_active_mind_id(registry: ServiceRegistry) -> str:
     """Get the first active mind ID from MindManager.
 
     Used by status, brain, and conversations modules for mind-scoped queries.
-    Returns "default" if MindManager is unavailable.
+    Returns ``"default"`` if MindManager is unavailable OR registered but
+    holding no active minds — see the fallback caveat below.
+
+    .. note::
+
+       Phase 1.T1.5 (v0.39.0) makes ``sovyx start`` refuse to boot
+       without a real mind on disk, so :class:`MindManager` ALWAYS
+       holds at least one active mind in production. The ``"default"``
+       fallback below is therefore unreachable from a healthy
+       production daemon. It is preserved for two legitimate states:
+
+       * Test fixtures that exercise the dashboard surface without
+         going through bootstrap (no MindManager registered).
+       * The transient bootstrap window before the first mind is
+         registered (microseconds-scale, but observable in tightly-
+         timed startup races).
+
+       Phase 6.T6.3 (v0.40.1) wires a structured WARN
+       ``dashboard.shared.fallback_default_mind`` at the fallback
+       point so any production occurrence surfaces as a grep-able
+       signal — operators can wire alerts to flag a regression of
+       the Phase 1.T1.5 daemon-boot gate.
     """
     try:
         from sovyx.engine.bootstrap import MindManager
@@ -48,6 +69,18 @@ async def get_active_mind_id(registry: ServiceRegistry) -> str:
                 return minds[0]
     except Exception:  # noqa: BLE001
         logger.debug("get_active_mind_id_failed")
+    logger.warning(
+        "dashboard.shared.fallback_default_mind",
+        callsite="get_active_mind_id",
+        reason=(
+            "MindManager not registered OR returned no active minds; "
+            "falling back to the literal 'default' sentinel. In a healthy "
+            "production daemon this path is unreachable (Phase 1.T1.5 "
+            "ensures sovyx start refuses to boot without a real mind) — "
+            "any occurrence here flags either a test fixture, a transient "
+            "bootstrap window, or a regression of the daemon-boot gate."
+        ),
+    )
     return "default"
 
 
@@ -105,6 +138,20 @@ async def resolve_active_mind_id_for_request(
         # see "this came from the cache, not from a live registry
         # lookup that returned default".
         return cached, MIND_ID_SOURCE_APP_STATE
+    # Phase 6.T6.3 (v0.40.1) — WARN before returning the literal
+    # sentinel so any production occurrence is grep-able. Phase 1.T1.5
+    # makes this path unreachable in a healthy daemon; ``get_active_mind_id``
+    # docstring covers the test-fixture + transient-bootstrap rationale
+    # for keeping the fallback.
+    logger.warning(
+        "dashboard.shared.fallback_default_mind",
+        callsite="resolve_active_mind_id_for_request",
+        reason=(
+            "Neither app.state.mind_id nor MindManager produced a real "
+            "mind id; falling back to the literal 'default' sentinel. "
+            "See get_active_mind_id docstring for the closure rationale."
+        ),
+    )
     return "default", MIND_ID_SOURCE_FALLBACK_DEFAULT
 
 
