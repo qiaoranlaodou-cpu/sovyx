@@ -813,9 +813,7 @@ class TestMindIdThreading:
         provider.supports_model.return_value = True
         provider.stream = _fake_stream
 
-        router = LLMRouter(
-            providers=[provider], cost_guard=cost_guard, event_bus=event_bus
-        )
+        router = LLMRouter(providers=[provider], cost_guard=cost_guard, event_bus=event_bus)
 
         async for _ in router.stream(
             messages=[{"role": "user", "content": "hi"}],
