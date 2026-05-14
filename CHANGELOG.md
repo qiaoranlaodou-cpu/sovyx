@@ -6,7 +6,76 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ## [Unreleased]
 
-(none — every shipped delta is in v0.41.3 below)
+(none — every shipped delta is in v0.41.4 below)
+
+## [0.41.4] — 2026-05-14
+
+LOW-priority sweep — closes 4 gaps from
+``GAPS-CONSOLIDATED-2026-05-13.md`` §4: dependency pin ceilings,
+test hermeticity baseline, anti-pattern #27 canonical migration,
+and §4.4 RESOLVED-BY-DOCSTRING acknowledgement.
+
+### Changed (deps hygiene — §4.1)
+
+- ``pyproject.toml`` direct dependencies gain ``< N`` upper-bound
+  ceilings on every package: pydantic ``<3``, structlog ``<26``,
+  typer ``<1``, fastapi ``<1``, cryptography ``<46``, httpx ``<1``,
+  pyyaml ``<7``, aiosqlite ``<1``, onnxruntime ``<3``, etc. Belt-
+  and-suspenders on top of ``uv.lock`` exact pinning — prevents
+  accidental adoption of breaking major releases when a future
+  ``uv lock`` regeneration runs unchecked. Zero runtime behaviour
+  change at HEAD; CI ``uv lock --check`` confirms the resolution
+  is identical to v0.41.3.
+
+### Added (test infrastructure — §4.3)
+
+- ``tests/unit/cli/conftest.py`` — new file with
+  ``_seed_default_mind`` helper + ``_seed_tmp_path_default_mind``
+  autouse fixture. Every test in ``tests/unit/cli/`` now pre-seeds
+  ``tmp_path/.sovyx/default/mind.yaml`` before the test body runs.
+  Tests that patch ``Path.home`` → ``tmp_path`` (TestInit,
+  TestDoctor in test_main.py + TestDoctorGeneral in test_doctor.py
+  — the Agent #2 MEDIUM-risk class "safe today, fragile to future
+  change") automatically inherit a configured ``default`` mind.
+  Closes the v0.39.1-class CI flake on clean runners
+  (anti-pattern #23) at the test-discovery layer.
+
+### Changed (anti-pattern #27 canonical migration — §4.5)
+
+- ``src/sovyx/plugins/manager.py:519`` — migrated the one explicit
+  Bandit-B110 site (``except Exception: pass`` with
+  ``# nosec B110``) to anti-pattern #27's canonical
+  ``except Exception as exc: logger.debug("..._skipped", reason=...)``
+  pattern. The site is entry-point discovery: distribution-metadata
+  parse failures are genuinely benign; the daemon proceeds with the
+  entry points it could parse. Debug-level emit keeps the failure
+  observable without prod log spam. Other ``try/except: pass`` sites
+  across ``src/sovyx/`` (~14 files) use specific-exception narrow
+  patterns or already have ``# noqa: BLE001`` rationale comments —
+  per ``feedback_enterprise_only``, migrating those is style-only
+  (not security or observability) and deferred.
+
+### Documented (§4.4 RESOLVED-BY-DOCSTRING)
+
+- The 4 routes flagged by gap §4.4 (``mind_id: str = "default"``
+  in ``routes/voice_calibration.py:360, 454, 910, 1275``) all
+  already carry explanatory docstrings stating the
+  sentinel-resolver contract; the v0.40.1 ``_shared.resolve_active_mind_id_for_request``
+  WARN mechanism (``dashboard.shared.fallback_default_mind``)
+  surfaces any caller that omits the field. Anti-pattern #35 is
+  pattern (b) [sentinel + WARN at top wire-up] across all 4 sites.
+  Making the field required (pattern (a)) would force dashboard
+  callers to send the literal ``"default"`` string instead of
+  omitting — net effect identical, breakage risk during migration.
+  No code change in this commit; gap closed as
+  RESOLVED-BY-DOCSTRING + RESOLVED-BY-WARN-COVERAGE in
+  ``docs-internal/GAPS-CONSOLIDATED-2026-05-13.md`` §4.4.
+
+### Notes
+
+- Predecessor: v0.41.3 (CostGuard defensive WARN + _unresolved bucket).
+- Quality gates green: ruff (lint+format), mypy strict, bandit,
+  pytest (global), tsc, vitest.
 
 ## [0.41.3] — 2026-05-14
 

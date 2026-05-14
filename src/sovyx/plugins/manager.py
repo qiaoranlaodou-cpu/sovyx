@@ -516,8 +516,19 @@ class PluginManager:
                         name=ep.name,
                         error=str(e),
                     )
-        except Exception:  # noqa: BLE001  # nosec B110
-            pass
+        except Exception as exc:  # noqa: BLE001 — entry-point discovery is best-effort
+            # Anti-pattern #27: replace silent ``try/except: pass`` with
+            # ``contextlib.suppress``-equivalent intent + structured debug
+            # log. Reason: entry-point enumeration failures (missing
+            # distribution metadata, corrupted .dist-info) are genuinely
+            # benign — the daemon proceeds with the entry points it could
+            # parse. Debug-level emit keeps it observable without prod
+            # log spam. Closes ``GAPS-CONSOLIDATED-2026-05-13.md`` §4.5.
+            logger.debug(
+                "plugin.entry_point.enumeration_skipped",
+                reason=str(exc),
+                error_type=type(exc).__name__,
+            )
         return plugins
 
     @staticmethod
