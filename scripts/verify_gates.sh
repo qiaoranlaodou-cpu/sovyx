@@ -195,6 +195,15 @@ echo ""
 if [[ ${#FAILURES[@]} -eq 0 ]]; then
     printf '%s🟢 all %d gates verified GREEN via summary lines (not exit codes).%s\n' "$GREEN" "$GATE_TOTAL" "$RESET"
     printf '%slogs:%s %s\n' "$YELLOW" "$RESET" "$LOG_DIR"
+    # Write marker for pre-push hook: HEAD SHA + epoch.
+    # The hook reads this to verify gates ran against the current
+    # HEAD recently. Marker is in .git/ (not tracked) so each clone
+    # builds its own fresh proof history.
+    GIT_DIR=$(git rev-parse --git-dir 2>/dev/null || echo ".git")
+    HEAD_SHA=$(git rev-parse HEAD 2>/dev/null || echo "no-head")
+    EPOCH=$(date +%s)
+    printf '%s\n%s\n' "$HEAD_SHA" "$EPOCH" > "$GIT_DIR/.last-gates-pass"
+    printf '%smarker:%s %s/.last-gates-pass (HEAD=%s epoch=%s)\n' "$YELLOW" "$RESET" "$GIT_DIR" "${HEAD_SHA:0:8}" "$EPOCH"
     exit 0
 else
     printf '%s🔴 %d/%d gates FAILED:%s\n' "$RED" "${#FAILURES[@]}" "$GATE_TOTAL" "$RESET"
@@ -202,5 +211,8 @@ else
         printf '   - %s\n' "$f"
     done
     printf '%slogs:%s %s\n' "$YELLOW" "$RESET" "$LOG_DIR"
+    # Invalidate any stale marker — gate failure means no proof.
+    GIT_DIR=$(git rev-parse --git-dir 2>/dev/null || echo ".git")
+    rm -f "$GIT_DIR/.last-gates-pass"
     exit 1
 fi
