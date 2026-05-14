@@ -49,19 +49,16 @@ This replaces the pre-v0.39.0 literal-`"default"` sentinel (anti-pattern #35 clo
 
 ## Mic prereq (Phase 4 of the same mission)
 
-The calibrate pipeline reads `voice_input_device_name` from the target mind's `mind.yaml` so it knows which physical capture device to tune. The prereq gate runs immediately after the TTY check and behaves differently depending on shell mode + LENIENT vs. STRICT version:
+The calibrate pipeline reads `voice_input_device_name` from the target mind's `mind.yaml` so it knows which physical capture device to tune. The prereq gate runs immediately after the TTY check:
 
 | Shell mode | `voice_input_device_name` empty | `voice_input_device_name` set |
 |---|---|---|
 | **Interactive** | Inline `sovyx voice setup` picker runs; persisted choice is re-loaded; pipeline continues. Operator can abort with `q`. | Skip prereq, run pipeline directly. |
-| **Non-interactive (v0.39.x, LENIENT)** | WARN `voice.calibrate.prereq_lenient` emitted + yellow banner on stdout; heuristic fallback preserved (first-attenuated-ALSA-card). | Skip prereq, run pipeline directly. |
-| **Non-interactive (v0.40.0+, STRICT)** | Hard error with `EXIT_DOCTOR_VOICE_NOT_CONFIGURED`. Operator must pre-configure the mic via `sovyx voice setup --input-device 'NAME' --non-interactive` or pass an inline `--input-device` flag (Phase 5.T5.2). | Skip prereq, run pipeline directly. |
+| **Non-interactive** | Hard error with `EXIT_DOCTOR_VOICE_NOT_CONFIGURED` (exit code 6) + structured ERROR `voice.calibrate.prereq_strict`. Operator pre-configures via `sovyx voice setup --input-device 'NAME' --non-interactive` OR passes an inline `--input-device 'NAME'` flag to the calibrate command itself (Phase 5.T5.2 escape hatch). | Skip prereq, run pipeline directly. |
 
-The structured WARN payload (LENIENT mode) includes:
+The STRICT error message lists THREE remediation paths (interactive setup / scripted setup / inline `--input-device`) so operators with different constraints (dev shell, CI, systemd) can pick the right one without re-reading docs.
 
-* `mind_id` — which mind was being calibrated
-* `would_fail_in_strict: true` — telemetry signal for the STRICT flip
-* `action_required` — operator-readable remediation pointer
+> **History:** Pre-v0.40.0 versions emitted a LENIENT WARN (`voice.calibrate.prereq_lenient`) + yellow operator banner and continued with a first-attenuated-ALSA-card heuristic fallback. The LENIENT mode was the one-minor-cycle staged-adoption deprecation window (v0.39.x); v0.40.0 closed the window with the STRICT flip per `feedback_staged_adoption`. No `--legacy-heuristic-fallback` back-compat flag exists by design (band-aid posture rejected per `feedback_enterprise_only`).
 
 Persistence path for the inline picker is `voice/calibration/_persist_device.persist_voice_input_device`, the same atomic helper the dashboard voice-enable endpoint uses — both writers commit through `ConfigEditor.set_scalar` (lock-per-path, temp-file + rename).
 

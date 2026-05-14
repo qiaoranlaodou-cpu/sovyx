@@ -253,16 +253,22 @@ machine-readable output.
 
 ### Voice not working? Auto-fix it (Linux)
 
-**Prerequisite (new in v0.39.0):** the calibrate flow reads
-`voice_input_device_name` from your `mind.yaml` to know which mic to
-tune. If `sovyx init` already ran the inline picker, you're set. If
-not, run `sovyx voice setup` first (or
-`sovyx voice setup --input-device "Razer" --non-interactive` from a
-script). On an interactive shell, `--calibrate` will offer to run
-the picker for you when the mic isn't yet configured. In v0.39.x a
-non-interactive run with an unconfigured mic falls back to a
-heuristic + warns; v0.40.0 will turn that warning into a hard
-error.
+**Prerequisite:** the calibrate flow reads `voice_input_device_name`
+from your `mind.yaml` to know which mic to tune. If `sovyx init`
+already ran the inline picker, you're set. If not, configure the
+mic via ONE of:
+
+* **Interactive:** `sovyx voice setup --mind-id <X>` (picker
+  prompts).
+* **Scripted:** `sovyx voice setup --mind-id <X> --input-device "Razer" --non-interactive`.
+* **Inline:** pass `--input-device "Razer"` directly to the
+  calibrate command on a non-interactive shell.
+
+On an interactive shell, `--calibrate` runs the picker for you when
+the mic isn't yet configured. On a non-interactive shell with an
+unconfigured mic AND no `--input-device` flag, the command exits
+with `EXIT_DOCTOR_VOICE_NOT_CONFIGURED` (code 6) + an error
+message listing the three remediation paths.
 
 If your microphone is silent or voice capture isn't working, run:
 
