@@ -109,6 +109,15 @@ EXIT_DOCTOR_USER_ABORTED = 4
 EXIT_DOCTOR_UNSUPPORTED = 5
 """--fix requested on non-Linux, or ``amixer`` is not on PATH."""
 
+EXIT_DOCTOR_VOICE_NOT_CONFIGURED = 6
+"""Phase 5.T5.1 — ``--calibrate`` invoked non-interactively against a mind
+whose ``voice_input_device_name`` is empty. Distinct from
+:data:`EXIT_DOCTOR_UNSUPPORTED` (platform mismatch — operator can't
+remediate by configuring the mic) because the operator CAN remediate by
+running ``sovyx voice setup`` or by passing ``--input-device 'NAME'``
+inline. Shell wrappers can branch on this code to surface a
+configuration-prompt UI instead of treating it as a platform error."""
+
 console = Console()
 logger = get_logger(__name__)
 doctor_app = typer.Typer(
@@ -318,8 +327,9 @@ def doctor_voice(
         "Prereq: a mic must be configured for the target mind via "
         "`sovyx voice setup` (or the dashboard). On an interactive shell "
         "the setup picker runs inline when the mic is unconfigured; "
-        "non-interactive shells warn + fall back to a heuristic in "
-        "v0.39.x and will hard-error in v0.40.0.",
+        "non-interactive shells must pre-configure via "
+        "`sovyx voice setup --non-interactive --input-device 'NAME'` "
+        "OR pass `--input-device 'NAME'` to this command inline.",
     ),
     mind_id: str | None = typer.Option(
         None,
@@ -813,7 +823,7 @@ def _run_voice_calibrate(
         )
         return EXIT_DOCTOR_USER_ABORTED
 
-    # Phase 4.T4.1 — voice prereq gate (LENIENT v0.39.0).
+    # Phase 5.T5.1 — voice prereq gate (STRICT v0.40.0).
     #
     # Detect the operator's "voice never configured" sentinel BEFORE
     # the 8-12 min diag pipeline runs:
@@ -821,19 +831,19 @@ def _run_voice_calibrate(
     # * Interactive shell -> auto-invoke ``run_voice_setup`` inline so
     #   the mic gets persisted to mind.yaml, then re-load mind_config
     #   and continue with the now-populated value.
-    # * Non-interactive   -> emit ``voice.calibrate.prereq_lenient`` WARN
-    #   + a yellow console line warning the operator that v0.40.0 will
-    #   make this a hard error. The heuristic fallback is preserved
-    #   (R10 + active-mic resolver pick the first attenuated card)
-    #   so existing CI / systemd-driven calibrate runs do not break
-    #   on the LENIENT release — telemetry from this WARN feeds the
-    #   v0.40.0 STRICT flip (Phase 5).
+    # * Non-interactive   -> hard error with
+    #   :data:`EXIT_DOCTOR_VOICE_NOT_CONFIGURED` + structured ERROR log
+    #   ``voice.calibrate.prereq_strict`` + a red operator banner listing
+    #   THREE remediation paths (interactive setup / non-interactive
+    #   setup / inline ``--input-device``). The v0.39.x LENIENT branch
+    #   (WARN + heuristic fallback) is GONE — one-minor-cycle staged-
+    #   adoption deprecation window closed at v0.40.0 ship.
     #
     # The mind_id passed in is already resolver-validated (Phase 1.T1.2)
     # so the load is guaranteed to find a mind.yaml on disk. A None
     # return from ``_load_mind_config_best_effort`` would indicate a
     # malformed YAML — fall through silently (the existing measurer
-    # path tolerates it).
+    # path tolerates it; out of scope per Mission §2 D5).
     from sovyx.engine.types import MindId as _MindId  # noqa: PLC0415
 
     data_dir = Path.home() / ".sovyx"
@@ -844,52 +854,56 @@ def _run_voice_calibrate(
     )
     if prereq_device_unset:
         if non_interactive:
-            logger.warning(
-                "voice.calibrate.prereq_lenient",
+            logger.error(
+                "voice.calibrate.prereq_strict",
                 mind_id=mind_id,
-                would_fail_in_strict=True,
                 action_required=(
-                    "voice_input_device_name is empty for this mind — "
-                    "calibrate will use the first-attenuated-card "
-                    "heuristic. Run `sovyx voice setup --mind-id <X>` "
-                    "to configure the mic explicitly. v0.40.0 will "
-                    "turn this WARN into a hard error."
+                    "voice_input_device_name is empty for this mind. "
+                    "Configure the mic via ONE of: "
+                    "(a) `sovyx voice setup --mind-id <X>` (interactive), "
+                    "(b) `sovyx voice setup --mind-id <X> --input-device 'NAME' "
+                    "--non-interactive`, "
+                    "(c) re-run this command with `--input-device 'NAME'` inline."
                 ),
             )
             console.print(
-                "\n[yellow]WARNING:[/yellow] [bold]voice_input_device_name "
-                "is empty[/bold] for this mind — calibration will use a "
-                "heuristic fallback.\n"
-                "[dim]Run [bold]sovyx voice setup[/bold] to configure your "
-                "mic explicitly. v0.40.0 will make this a hard error.[/dim]\n"
+                f"\n[red]ERROR:[/red] [bold]voice_input_device_name is empty"
+                f"[/bold] for mind [bold]{mind_id}[/bold].\n\n"
+                f"[bold]Remediation — pick one:[/bold]\n"
+                f"  • Interactive:  [cyan]sovyx voice setup --mind-id {mind_id}"
+                f"[/cyan]\n"
+                f"  • Scripted:     [cyan]sovyx voice setup --mind-id {mind_id}"
+                f" --input-device 'NAME' --non-interactive[/cyan]\n"
+                f"  • Inline:       [cyan]sovyx doctor voice --calibrate"
+                f" --input-device 'NAME' --non-interactive[/cyan]\n"
             )
-        else:
-            console.print(
-                f"\n[cyan]Voice is not yet configured for mind "
-                f"[bold]{mind_id}[/bold]. Let's set up your mic first.[/cyan]\n"
+            return EXIT_DOCTOR_VOICE_NOT_CONFIGURED
+        console.print(
+            f"\n[cyan]Voice is not yet configured for mind "
+            f"[bold]{mind_id}[/bold]. Let's set up your mic first.[/cyan]\n"
+        )
+        try:
+            from sovyx.cli.commands.voice_setup import (  # noqa: PLC0415
+                VoiceSetupError,
+                run_voice_setup,
             )
-            try:
-                from sovyx.cli.commands.voice_setup import (  # noqa: PLC0415
-                    VoiceSetupError,
-                    run_voice_setup,
-                )
-                from sovyx.engine.types import MindId  # noqa: PLC0415
+            from sovyx.engine.types import MindId  # noqa: PLC0415
 
-                asyncio.run(
-                    run_voice_setup(
-                        mind_id=MindId(mind_id),
-                        data_dir=data_dir,
-                        input_device=None,
-                        non_interactive=False,
-                    )
+            asyncio.run(
+                run_voice_setup(
+                    mind_id=MindId(mind_id),
+                    data_dir=data_dir,
+                    input_device=None,
+                    non_interactive=False,
                 )
-            except VoiceSetupError as exc:
-                console.print(
-                    f"\n[red]Voice setup failed:[/red] {exc}\n"
-                    f"[dim]Aborting calibrate. Re-run `sovyx voice setup` "
-                    f"manually, then retry `sovyx doctor voice --calibrate`.[/dim]"
-                )
-                return EXIT_DOCTOR_GENERIC_FAILURE
+            )
+        except VoiceSetupError as exc:
+            console.print(
+                f"\n[red]Voice setup failed:[/red] {exc}\n"
+                f"[dim]Aborting calibrate. Re-run `sovyx voice setup` "
+                f"manually, then retry `sovyx doctor voice --calibrate`.[/dim]"
+            )
+            return EXIT_DOCTOR_GENERIC_FAILURE
 
     console.print(
         "\n[bold cyan]Voice calibration[/bold cyan] "
