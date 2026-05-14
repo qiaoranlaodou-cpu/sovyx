@@ -705,3 +705,125 @@ class TestPhaseTagPlumbing:
 
         breakdown = cost_guard.get_breakdown("day")
         assert "unknown" in breakdown.by_phase
+
+
+class TestMindIdThreading:
+    """LLMRouter threads ``mind_id`` to CostGuard so per-mind cost
+    attribution survives across phases (v0.43.0).
+
+    Closes MISSION-post-v0_42_2-quality-discipline-2026-05-14.md Phase 4
+    contract — verifies the threading is mechanically correct so
+    regressions surface in CI instead of waiting for operator-side
+    dashboard inspection.
+
+    The contract under test:
+    * ``router.generate(mind_id="X")`` -> ``cost_guard._mind_spend["X"]``
+      receives the spend.
+    * ``router.generate()`` with default empty ``mind_id`` ->
+      ``cost_guard._mind_spend["_unresolved"]`` receives the spend
+      (v0.41.3 defensive-bucket fallback).
+    * Same contract for ``router.stream()``.
+
+    Per ``feedback_no_speculation`` Addendum 2026-05-14: verification
+    targets the source-of-truth bucket dict directly, not a derived
+    signal like "no _unresolved WARN was emitted".
+    """
+
+    async def test_generate_threads_mind_id_to_cost_guard(
+        self, cost_guard: CostGuard, event_bus: AsyncMock
+    ) -> None:
+        provider = _mock_provider("anthropic")
+        router = LLMRouter([provider], cost_guard, event_bus)
+
+        await router.generate(
+            [{"role": "user", "content": "hi"}],
+            mind_id="jonny",
+        )
+
+        # Source-of-truth assertion: the bucket dict, not a log line.
+        assert cost_guard._mind_spend["jonny"] > 0  # noqa: SLF001
+        # CRITICAL: explicit mind_id must NOT leak to _unresolved.
+        assert "_unresolved" not in cost_guard._mind_spend  # noqa: SLF001
+
+    async def test_generate_without_mind_id_buckets_unresolved(
+        self, cost_guard: CostGuard, event_bus: AsyncMock
+    ) -> None:
+        """Caller that omits mind_id triggers the v0.41.3 defensive bucket."""
+        provider = _mock_provider("anthropic")
+        router = LLMRouter([provider], cost_guard, event_bus)
+
+        # mind_id intentionally omitted — sentinel default "".
+        await router.generate([{"role": "user", "content": "hi"}])
+
+        # Spend lands in _unresolved instead of silently dropping.
+        assert cost_guard._mind_spend["_unresolved"] > 0  # noqa: SLF001
+        # No leakage into other named minds.
+        assert "jonny" not in cost_guard._mind_spend  # noqa: SLF001
+
+    async def test_generate_with_two_minds_isolates_attribution(
+        self, cost_guard: CostGuard, event_bus: AsyncMock
+    ) -> None:
+        """Cross-mind isolation: each mind_id gets its own bucket."""
+        provider = _mock_provider("anthropic")
+        router = LLMRouter([provider], cost_guard, event_bus)
+
+        await router.generate(
+            [{"role": "user", "content": "hi from jonny"}],
+            mind_id="jonny",
+        )
+        await router.generate(
+            [{"role": "user", "content": "hi from lucia"}],
+            mind_id="lucia",
+        )
+
+        assert cost_guard._mind_spend["jonny"] > 0  # noqa: SLF001
+        assert cost_guard._mind_spend["lucia"] > 0  # noqa: SLF001
+        # No bleed between minds + no _unresolved leakage.
+        assert "_unresolved" not in cost_guard._mind_spend  # noqa: SLF001
+
+    async def test_stream_threads_mind_id_to_cost_guard(
+        self, cost_guard: CostGuard, event_bus: AsyncMock
+    ) -> None:
+        """``router.stream(mind_id=X)`` propagates to the final-chunk
+        ``cost_guard.record`` call (symmetric to ``generate``).
+        """
+        from unittest.mock import MagicMock
+
+        from sovyx.llm.models import LLMStreamChunk
+
+        chunks = [
+            LLMStreamChunk(delta_text="Hello ", model="test-model", provider="test"),
+            LLMStreamChunk(
+                is_final=True,
+                finish_reason="stop",
+                tokens_in=10,
+                tokens_out=5,
+                model="test-model",
+                provider="test",
+            ),
+        ]
+
+        async def _fake_stream(*_a: object, **_kw: object):
+            for c in chunks:
+                yield c
+
+        provider = MagicMock()
+        provider.name = "test"
+        provider.is_available = True
+        provider.supports_model.return_value = True
+        provider.stream = _fake_stream
+
+        router = LLMRouter(
+            providers=[provider], cost_guard=cost_guard, event_bus=event_bus
+        )
+
+        async for _ in router.stream(
+            messages=[{"role": "user", "content": "hi"}],
+            model="test-model",
+            mind_id="jonny",
+        ):
+            pass
+
+        # Source-of-truth: mind bucket got the attribution post-stream-final.
+        assert cost_guard._mind_spend["jonny"] > 0  # noqa: SLF001
+        assert "_unresolved" not in cost_guard._mind_spend  # noqa: SLF001

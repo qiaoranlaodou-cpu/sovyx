@@ -6,7 +6,69 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ## [Unreleased]
 
-(none — every shipped delta is in v0.43.0 below)
+(none — every shipped delta is in v0.43.1 below)
+
+## [0.43.1] — 2026-05-14
+
+CI-enforced regression coverage for v0.43.0's ``mind_id``
+thread-through contract. Converts an operator-side dashboard
+inspection step (Gate 5 of
+``OPERATOR-VALIDATION-BACKLOG-2026.md`` §v0.41.3 — v0.42.2) into a
+mechanical CI gate.
+
+### Added
+
+- ``tests/unit/llm/test_router.py::TestMindIdThreading`` — 4 new
+  unit tests that verify the v0.43.0 threading contract end-to-end
+  against the source-of-truth bucket dicts (not derived signals like
+  WARN absence):
+  1. ``test_generate_threads_mind_id_to_cost_guard`` —
+     ``router.generate(mind_id="jonny")`` results in
+     ``cost_guard._mind_spend["jonny"] > 0`` and NO
+     ``_unresolved`` bucket leakage.
+  2. ``test_generate_without_mind_id_buckets_unresolved`` — caller
+     that omits ``mind_id`` correctly triggers the v0.41.3 defensive
+     ``_unresolved`` bucket (validates the defensive-fix contract
+     still works as the safety net).
+  3. ``test_generate_with_two_minds_isolates_attribution`` —
+     two distinct ``mind_id`` values produce two separate buckets
+     with no cross-mind bleed and no ``_unresolved`` leakage.
+  4. ``test_stream_threads_mind_id_to_cost_guard`` — symmetric
+     contract for ``router.stream()`` (final-chunk
+     ``cost_guard.record`` receives ``mind_id``).
+
+### Why
+
+Pre-v0.43.1, the threading contract was verified only via:
+* mypy strict (type signature),
+* existing tests passing (no regression),
+* future operator dashboard inspection (Gate 5 batched-validation).
+
+v0.43.1 adds **mechanical CI-level verification** so any future
+regression in router/CostGuard wiring is caught by ``pytest`` in
+the publish.yml gate — no longer dependent on operator dogfood.
+This is the "truly enterprise-grade" closure of Phase 4: the
+acceptance criterion ``_unresolved`` count = 0 in production is now
+a contract enforced in CI, not just a measurement.
+
+### Verification source-of-truth (per ``feedback_no_speculation``)
+
+Assertions target ``cost_guard._mind_spend`` dict directly — the
+canonical bucket-state representation, not a downstream WARN log
+or breakdown derivation. The principle: source-of-truth ⟹ if the
+dict is correct, the dashboard/log/breakdown are derived correctly.
+
+### Notes
+
+- Zero ``src/sovyx/`` or ``dashboard/src/`` modifications. Pure
+  test-coverage addition.
+- All gates verified GREEN via summary-line grep (pre-push hook
+  discipline): ruff (lint+format), mypy strict, bandit, pytest
+  (15074 passed — 4 new tests added on top of v0.43.0's 15070),
+  tsc, vitest.
+- Predecessor: v0.43.0 (mind_id thread-through implementation).
+- Mission Phase 4 acceptance criterion now CI-enforced, not just
+  operator-validated.
 
 ## [0.43.0] — 2026-05-14
 
