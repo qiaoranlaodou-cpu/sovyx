@@ -2,6 +2,7 @@ import { useCallback, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { SendIcon, LoaderIcon, SparklesIcon } from "lucide-react";
 import { api } from "@/lib/api";
+import { ChatResponseSchema } from "@/types/schemas";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 
@@ -51,10 +52,14 @@ export function FirstChatStep({ mindName, language, provider, model, onComplete 
     setSending(true);
 
     try {
-      const resp = await api.post<{ response: string }>("/api/chat", {
-        message: text,
-        user_name: "User",
-      });
+      const resp = await api.post<{ response: string }>(
+        "/api/chat",
+        {
+          message: text,
+          user_name: "User",
+        },
+        { schema: ChatResponseSchema },
+      );
       setMessages((prev) => [
         ...prev,
         { role: "assistant", content: resp.response || "..." },

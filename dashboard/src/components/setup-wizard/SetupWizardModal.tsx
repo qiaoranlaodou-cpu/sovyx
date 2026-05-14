@@ -18,6 +18,7 @@ import { useCallback, useEffect, useState } from "react";
 import { toast } from "sonner";
 import { SettingsIcon, LoaderIcon } from "lucide-react";
 import { api } from "@/lib/api";
+import { OkErrorResponseSchema } from "@/types/schemas";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -102,6 +103,7 @@ export function SetupWizardModal({
       const result = await api.post<{ ok: boolean; error?: string }>(
         `/api/setup/${pluginName}/configure`,
         { config: values },
+        { schema: OkErrorResponseSchema },
       );
       if (result.ok) {
         toast.success(`${pluginName} configured successfully`);

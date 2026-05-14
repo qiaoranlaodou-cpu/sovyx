@@ -7,6 +7,7 @@
 
 import { memo, useCallback, useState } from "react";
 import { api } from "@/lib/api";
+import { TestConnectionResultSchema } from "@/types/schemas";
 import { Button } from "@/components/ui/button";
 import { CheckCircle2Icon, XCircleIcon, LoaderIcon } from "lucide-react";
 import type { TestConnectionResult } from "./types";
@@ -34,6 +35,7 @@ function TestConnectionButtonImpl({
       const result = await api.post<TestConnectionResult>(
         `/api/setup/${pluginName}/test-connection`,
         { config },
+        { schema: TestConnectionResultSchema },
       );
       setState(result.success ? "success" : "error");
       setMessage(result.message);

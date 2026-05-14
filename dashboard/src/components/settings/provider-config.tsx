@@ -21,6 +21,7 @@ import {
 import { toast } from "sonner";
 
 import { api } from "@/lib/api";
+import { OkErrorResponseSchema } from "@/types/schemas";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -153,6 +154,7 @@ export function ProviderConfig() {
       const res = await api.put<{ ok: boolean; error?: string }>(
         "/api/providers",
         { provider: selectedProvider, model: selectedModel },
+        { schema: OkErrorResponseSchema },
       );
       if (res.ok) {
         toast.success(t("providers.saved", "Provider updated"));

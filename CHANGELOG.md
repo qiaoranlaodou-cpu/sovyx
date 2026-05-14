@@ -6,7 +6,82 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ## [Unreleased]
 
-(none — every shipped delta is in v0.41.4 below)
+(none — every shipped delta is in v0.42.0 below)
+
+## [0.42.0] — 2026-05-14
+
+Dashboard runtime validation expansion — closes
+``GAPS-CONSOLIDATED-2026-05-13.md`` §3.4 (zod schema coverage on
+mutation endpoints). Minor bump because this adds new exported
+schemas to the public ``dashboard/src/types/schemas.ts`` surface.
+
+### Added (4 new zod schemas)
+
+- ``OkErrorResponseSchema`` — generic ``{ ok: boolean; error?: string }``
+  with ``.passthrough()`` for forward-additive fields. Covers ~8
+  onboarding / settings / wizard mutation acknowledgement sites
+  that share the same simple shape.
+- ``TelegramSetupResultSchema`` — Telegram channel setup response.
+  Used by onboarding ``ChannelsStep`` + dashboard
+  ``channel-status`` panel.
+- ``TestConnectionResultSchema`` — plugin connection-test response.
+  Used by setup-wizard ``TestConnectionButton``.
+- ``ProviderSetupResultSchema`` — onboarding ``ProviderStep``
+  provider-confirm response (``{ok, provider, model}``).
+
+### Changed (schema-validated mutation sites)
+
+- ``components/onboarding/VoiceStep.tsx`` — ``api.post`` to
+  ``/api/voice/enable`` now validates response against
+  ``VoiceEnableResponseSchema`` (existing schema reused).
+- ``components/onboarding/FirstChatStep.tsx`` — ``/api/chat`` POST
+  validates against ``ChatResponseSchema``.
+- ``components/onboarding/ChannelsStep.tsx`` — ``/api/onboarding/channel/telegram``
+  POST validates against ``TelegramSetupResultSchema``.
+- ``components/onboarding/ProviderStep.tsx`` — both
+  ``/api/onboarding/provider`` POST sites (test + configure)
+  validate against ``ProviderSetupResultSchema``.
+- ``components/dashboard/channel-status.tsx`` — Telegram
+  inline-setup POST validates against ``TelegramSetupResultSchema``.
+- ``components/setup-wizard/TestConnectionButton.tsx`` —
+  test-connection POST validates against
+  ``TestConnectionResultSchema``.
+- ``components/setup-wizard/SetupWizardModal.tsx`` — plugin
+  configure POST validates against ``OkErrorResponseSchema``.
+- ``components/setup-wizard/VoiceSetupWizard.tsx`` — voice/enable
+  POST validates against ``OkErrorResponseSchema``.
+- ``components/settings/provider-config.tsx`` —
+  ``/api/providers`` PUT validates against ``OkErrorResponseSchema``.
+- ``components/settings/tts-engine-card.tsx`` —
+  ``/api/voice/enable`` POST validates against
+  ``OkErrorResponseSchema``.
+- ``pages/settings.tsx`` — both PUT sites
+  (``/api/settings`` log-level update + ``/api/config`` mind config
+  update) validate against ``OkErrorResponseSchema``.
+
+### Coverage stats
+
+Schema-validated mutation sites: ~90% of typed mutation endpoints
+in ``dashboard/src/`` (up from 76% at v0.41.4). The remaining ~10%
+are dashboard internal-state mutations (e.g. log-level config
+toggles where shape drift is observable at runtime as the toggle
+not switching). Per ``feedback_enterprise_only``, the highest-risk
+surfaces (operator-credential persistence in onboarding +
+provider-config, plus the voice enable / wizard / telegram setup
+flows) are now 100% schema-validated; cosmetic sweep deferred.
+
+### Notes
+
+- All new schemas use ``.passthrough()`` so the backend can add
+  diagnostic fields forward-compatibly without triggering safeParse
+  warnings.
+- Schema failures log a warning via ``lib/api.ts`` but still return
+  the payload (per the existing safeParse-log-warn-return contract)
+  — runtime resilience prioritised over hard-fail.
+- Predecessor: v0.41.4 (deps ceilings + cli test hermeticity +
+  anti-pattern #27 canonical).
+- Quality gates green: ruff (lint+format), mypy strict, bandit,
+  pytest (global), tsc, vitest.
 
 ## [0.41.4] — 2026-05-14
 

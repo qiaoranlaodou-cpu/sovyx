@@ -21,6 +21,7 @@ import {
   AlertCircleIcon,
 } from "lucide-react";
 import { api } from "@/lib/api";
+import { TelegramSetupResultSchema } from "@/types/schemas";
 import { cn } from "@/lib/utils";
 
 interface ChannelInfo {
@@ -54,9 +55,13 @@ function TelegramSetup({ onDone }: { onDone: () => void }) {
     setError("");
 
     try {
-      const res = await api.post<TelegramSetupResult>("/api/onboarding/channel/telegram", {
-        token: trimmed,
-      });
+      const res = await api.post<TelegramSetupResult>(
+        "/api/onboarding/channel/telegram",
+        {
+          token: trimmed,
+        },
+        { schema: TelegramSetupResultSchema },
+      );
 
       if (res.ok) {
         setBotUsername(res.bot_username ?? "");

@@ -27,6 +27,7 @@ import type {
   WizardDiagnosticResponse,
 } from "@/types/api";
 import {
+  OkErrorResponseSchema,
   WizardDevicesResponseSchema,
   WizardDiagnosticResponseSchema,
   WizardTestResultResponseSchema,
@@ -281,6 +282,7 @@ export function VoiceSetupWizard({
       const result = await api.post<{ ok: boolean; error?: string }>(
         "/api/voice/enable",
         body,
+        { schema: OkErrorResponseSchema },
       );
       if (result.ok) {
         dispatch({ type: "advanceToDone" });

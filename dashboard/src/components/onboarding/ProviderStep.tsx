@@ -8,6 +8,7 @@ import {
   ServerIcon,
 } from "lucide-react";
 import { api } from "@/lib/api";
+import { ProviderSetupResultSchema } from "@/types/schemas";
 import { PROVIDERS, type ProviderMeta } from "@/lib/providers-data";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -48,6 +49,7 @@ export function ProviderStep({
       const result = await api.post<{ ok: boolean; provider: string; model: string }>(
         "/api/onboarding/provider",
         body,
+        { schema: ProviderSetupResultSchema },
       );
       if (result.ok) {
         setTestResult({
@@ -81,6 +83,7 @@ export function ProviderStep({
       const result = await api.post<{ ok: boolean; provider: string; model: string }>(
         "/api/onboarding/provider",
         body,
+        { schema: ProviderSetupResultSchema },
       );
       if (result.ok) {
         onConfigured(result.provider, result.model);

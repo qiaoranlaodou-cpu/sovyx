@@ -25,7 +25,10 @@ import {
   type AlternativeDevice,
   type CaptureDeviceContendedPayload,
 } from "@/components/voice/DeviceContentionBanner";
-import { VoiceCaptureDeviceContendedErrorSchema } from "@/types/schemas";
+import {
+  VoiceCaptureDeviceContendedErrorSchema,
+  VoiceEnableResponseSchema,
+} from "@/types/schemas";
 
 interface VoiceStepProps {
   onConfigured: () => void;
@@ -179,7 +182,11 @@ export function VoiceStep({
         if (inputDeviceName) {
           body.input_device_name = inputDeviceName;
         }
-        const result = await api.post<EnableResult>("/api/voice/enable", body);
+        const result = await api.post<EnableResult>(
+          "/api/voice/enable",
+          body,
+          { schema: VoiceEnableResponseSchema },
+        );
         if (result.ok) {
           // v0.31.6 T3.1 — backend ``ok: true`` only proves the enable
           // request did not error; it does NOT prove the pipeline is

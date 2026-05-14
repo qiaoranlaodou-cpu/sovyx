@@ -1854,3 +1854,66 @@ export const CostBreakdownResponseSchema = z.object({
   by_model: z.record(z.string(), z.number()),
   tokens_by_phase: z.record(z.string(), z.number()),
 });
+
+// ── §3.4 closure (GAPS-CONSOLIDATED-2026-05-13) — mutation-endpoint coverage ──
+//
+// The schemas below close the 27/111 dashboard ``api.*`` call sites
+// that lacked runtime zod validation per Agent #6's audit. Each
+// schema is paired with a ``schema: ...`` argument at the call site
+// in v0.41.5. Onboarding + setup-wizard + provider flows are the
+// highest-risk surfaces (silent shape drift could persist bad
+// credentials or stall the operator on a phantom step) — they get
+// schemas first; lower-risk dashboard internal-state mutations follow.
+
+/**
+ * Canonical ``{ ok: boolean; error?: string }`` mutation-acknowledgement
+ * shape. Used across ~8 onboarding / setup / wizard / settings sites
+ * that simply confirm a side-effect succeeded. `.passthrough()` keeps
+ * the contract forward-additive for new diagnostic fields.
+ */
+export const OkErrorResponseSchema = z
+  .object({
+    ok: z.boolean(),
+    error: z.string().optional(),
+  })
+  .passthrough();
+
+/** Telegram channel setup response — onboarding + channel-status panel. */
+export const TelegramSetupResultSchema = z
+  .object({
+    ok: z.boolean(),
+    bot_username: z.string().optional(),
+    bot_name: z.string().optional(),
+    hot_started: z.boolean().optional(),
+    error: z.string().optional(),
+  })
+  .passthrough();
+
+/**
+ * Plugin connection-test response shape — setup-wizard
+ * TestConnectionButton + plugin install validation. Mirrors
+ * ``components/setup-wizard/types.ts::TestConnectionResult``.
+ */
+export const TestConnectionResultSchema = z
+  .object({
+    success: z.boolean(),
+    message: z.string(),
+    details: z.record(z.string(), z.unknown()).optional(),
+  })
+  .passthrough();
+
+/**
+ * Provider configuration result — onboarding ProviderStep
+ * confirms the provider + model the daemon adopted after the
+ * operator clicked "Confirm". The ``provider`` and ``model``
+ * fields echo the daemon's resolution (may differ from the
+ * operator's submission if a fallback rule fired).
+ */
+export const ProviderSetupResultSchema = z
+  .object({
+    ok: z.boolean(),
+    provider: z.string(),
+    model: z.string(),
+    error: z.string().optional(),
+  })
+  .passthrough();

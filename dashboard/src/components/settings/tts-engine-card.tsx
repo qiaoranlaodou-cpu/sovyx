@@ -13,6 +13,7 @@ import { Loader2Icon, Volume2Icon } from "lucide-react";
 import { toast } from "sonner";
 
 import { api } from "@/lib/api";
+import { OkErrorResponseSchema } from "@/types/schemas";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -61,6 +62,7 @@ export function TtsEngineCard() {
       const res = await api.post<{ ok: boolean; error?: string }>(
         "/api/voice/enable",
         { tts_engine: selected },
+        { schema: OkErrorResponseSchema },
       );
       if (res.ok) {
         toast.success(t("tts.saved", "TTS engine preference saved"));

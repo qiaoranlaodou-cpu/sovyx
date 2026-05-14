@@ -36,6 +36,7 @@ import {
 import { Textarea } from "@/components/ui/textarea";
 import { useDashboardStore } from "@/stores/dashboard";
 import { api, isAbortError } from "@/lib/api";
+import { OkErrorResponseSchema } from "@/types/schemas";
 import { toast } from "sonner";
 import { ExportImportSection } from "@/components/settings/export-import";
 import { LanguageSelector } from "@/components/settings/LanguageSelector";
@@ -209,6 +210,7 @@ export default function SettingsPage() {
       const res = await api.put<{ ok: boolean; changes?: Record<string, string>; error?: string }>(
         "/api/settings",
         { log_level: selectedLevel },
+        { schema: OkErrorResponseSchema },
       );
       if (res.ok !== false) {
         if (settings) setSettings({ ...settings, log_level: selectedLevel });
@@ -228,7 +230,9 @@ export default function SettingsPage() {
     if (!configDirty) return;
     try {
       setConfigSaving(true);
-      const res = await api.put<MindConfigUpdateResponse>("/api/config", editedConfig);
+      const res = await api.put<MindConfigUpdateResponse>("/api/config", editedConfig, {
+        schema: OkErrorResponseSchema,
+      });
       if (res.ok) {
         // Re-fetch to get updated state
         await fetchConfig();

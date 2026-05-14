@@ -9,6 +9,7 @@ import {
   MessageSquareIcon,
 } from "lucide-react";
 import { api, ApiError } from "@/lib/api";
+import { TelegramSetupResultSchema } from "@/types/schemas";
 import { Button } from "@/components/ui/button";
 
 interface ChannelsStepProps {
@@ -38,7 +39,11 @@ export function ChannelsStep({ mindName, onConfigured, onSkip }: ChannelsStepPro
         bot_username: string;
         bot_name: string;
         hot_started: boolean;
-      }>("/api/onboarding/channel/telegram", { token: token.trim() });
+      }>(
+        "/api/onboarding/channel/telegram",
+        { token: token.trim() },
+        { schema: TelegramSetupResultSchema },
+      );
 
       if (resp.ok) {
         setResult({
