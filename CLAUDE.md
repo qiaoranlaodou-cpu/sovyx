@@ -174,9 +174,9 @@ Each entry is **rule + why + pointer**. Forensic detail lives in the referenced 
 - **Imports & Test Patches:** 2, 11, 20, 36, 38
 - **Concurrency & Async:** 14, 15, 30
 - **Cross-Platform:** 21, 22, 24
-- **Voice Subsystem:** 25, 26, 27, 28, 29
+- **Voice Subsystem:** 25, 26, 27, 28, 29, 39
 - **Tests:** 8, 9, 10, 12, 31
-- **Architecture & Design:** 13, 16, 18, 19, 32, 33, 34, 37
+- **Architecture & Design:** 13, 16, 18, 19, 32, 33, 34, 37, 39
 
 ---
 
@@ -255,6 +255,12 @@ Each entry is **rule + why + pointer**. Forensic detail lives in the referenced 
 37. **Cryptographic verifier verdict ordering: cheapest + most-common-failure FIRST, dependency invariants asserted BEFORE invoking dependent ops:** In a 5-way verdict (`ACCEPTED / REJECTED_NO_SIGNATURE / REJECTED_BAD_SIGNATURE / REJECTED_MALFORMED_SIGNATURE / REJECTED_NO_TRUSTED_KEY`), order: (1) `pubkey is None` (else later `pubkey.verify(...)` crashes with `AttributeError`); (2) `signature is None` (cheap, avoids canonicalisation); (3) signature shape malformed (b64 invalid OR length != 64; cheap, avoids less-informative `InvalidSignature`); (4) actual `pubkey.verify` (expensive). Site: `_persistence.py::_verify_calibration_signature`.
 
 38. **Lazy `from X import Y` inside a function body invalidates module-level patches:** The lazy import resolves on the SOURCE module at call-time, not on the caller's top-level binding. Patch `X.Y` (source module attr), NOT `caller.Y`. Mixed cases: a single test may patch BOTH `caller.eager_attr` (top-level import) AND `source.lazy_attr` (function-body import). Extends #20 to lazy-import boundaries. **Cross-platform corollary:** when production references a POSIX-only attribute (e.g. `signal.SIGKILL`), Windows tests patching `sys.platform="linux"` MUST also `patch.object(target, "ATTR", value, create=True)` — else `AttributeError` before production logic runs. Same pattern for `os.killpg` and any POSIX symbol guarded by `sys.platform != "win32"`.
+
+39. **Probe-verdict misrouting + observability event-name drift across platforms.** Two paired subrules.
+
+    **(a) Verdict-disjoint remediation.** Acceptance gates and remediation routers MUST consume the probe **verdict** (a categorical classification), not the wrapping symptom. `vad_mute` (user not speaking) and `no_signal` (driver silent) are orthogonal failure classes; routing both to the same ladder loses the operator's working hardware. Sibling of #28 (verify signal energy, not callback count). Generalises: any router whose input is a multi-class verdict MUST dispatch per class, with disjoint remediation paths. Site: pre-mission `voice/health/capture_integrity.py` `handle_deaf_signal` funneled every non-HEALTHY verdict to a single strategy ladder; v0.44.0 verdict-router (Mission C1 T1.3) restored the disjoint dispatch with `assert_never` exhaustiveness. Carries the `is_recheck_eligible`/`is_apo_class_reason` consultation-of-derived-reason corollary at LENIENT (commit `c5791e40`): when a verdict-disjoint field is added during staged adoption, every classifier consumer MUST consult the new field first, with fallback to legacy for pre-mission data — bare reads of the legacy field at LENIENT silently disable the dispatch. Mission anchor: `docs-internal/missions/MISSION-c1-vad-mute-reclassification-2026-05-14.md`.
+
+    **(b) Cross-platform event-name drift.** Cross-platform event names MUST be neutral; platform-specific terminology (`apo.*`, `wasapi.*`, `dsound.*`) MUST be gated by `sys.platform` or live behind a neutral wrapper. Strategies can be platform-specific without the wrapping event needing to be. Sibling of #21 (APO is Windows-only). Site: pre-H2 mission, `audio.apo.bypassed` and `voice_apo_bypass_ineffective` fired on Linux hosts where `voice_clarity_active=False`. Generalises: an event's name is part of its public API for operators, dashboards, and downstream triage tooling; renaming has the same cost discipline as code refactors. Mission anchor: separate v0.43.3 mission (sibling of C1).
 
 ## Testing Patterns
 

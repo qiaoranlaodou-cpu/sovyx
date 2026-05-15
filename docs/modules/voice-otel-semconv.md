@@ -207,6 +207,9 @@ Probe mode discriminator: `cold`, `warm`. From
 | `sovyx.voice.health.recovery.attempts` | Counter | 1 | Watchdog recovery cycle counter |
 | `sovyx.voice.health.kernel_invalidated.events` | Counter | 1 | KERNEL_INVALIDATED emissions |
 | `sovyx.voice.health.apo_degraded.events` | Counter | 1 | APO_DEGRADED emissions |
+| `sovyx.voice.health.vad_frontend_reset.outcomes` | Counter | 1 | Mission C1 T1.4 — per-step outcome of the VAD-frontend reset ladder (`silero_reset` / `normalizer_engage` / future `silero_reinstantiate` / `agc2_floor_lift` / `fallback_vad`). Labels: `step`, `success=true\|false`, `reason` (failure-mode token when `success=false`), `elapsed_ms_bucket=lt_10ms\|lt_100ms\|lt_1s\|ge_1s` |
+| `sovyx.voice.health.coordinator.outcomes` | Counter | 1 | Mission C1 T1.3 / T1.6 — coordinator dispatch + benign-skip outcomes. Labels: `kind=benign_skip\|cascade_reevaluation_requested\|normalizer_engagement_requested`, `verdict`, `reason` |
+| `sovyx.voice.health.quarantine.reason_dual_emit` | Counter | 1 | **TEMPORARY** Mission C1 T1.7 — LENIENT v0.44.x calibration counter. Fires when `derived_reason != "apo_degraded"` (legacy default). Labels: `legacy_reason`, `derived_reason`. **REMOVED at v0.45.0 STRICT flip** (mission §8 T4.1 deletion target) |
 | `sovyx.voice.health.preflight.failures` | Counter | 1 | Preflight check failures |
 | `sovyx.voice.health.active_endpoint.changes` | Counter | 1 | Default-device-change events |
 | `sovyx.voice.health.self_feedback.blocks` | Counter | 1 | Self-feedback gate blocks |
