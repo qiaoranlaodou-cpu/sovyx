@@ -94,14 +94,27 @@ class TestKernelInvalidatedRecheckEligibility:
 
     @pytest.mark.asyncio()
     async def test_round_skips_ineligible_reasons(self) -> None:
-        """Entries with ``vad_frontend_dead`` / ``format_mismatch`` are
-        NOT re-probed (their recovery path is the reset ladder BEFORE
-        quarantine — once quarantined they are terminal-for-this-boot)."""
+        """Entries with ``derived_reason="vad_frontend_dead"`` /
+        ``"format_mismatch"`` are NOT re-probed by the kernel
+        rechecker — their recovery path is the in-pipeline reset
+        ladder BEFORE quarantine.
+
+        Test fixture uses production-realistic field values: the
+        LENIENT v0.44.x coordinator pins ``reason="apo_degraded"`` on
+        every quarantine and writes the verdict class to
+        ``derived_reason``. The rechecker MUST consult
+        ``derived_reason or reason`` to see the verdict class — a bare
+        ``entry.reason`` read would always return ``"apo_degraded"``
+        and admit every entry past the filter regardless of the
+        underlying verdict.
+        """
         from sovyx.voice.health._kernel_invalidated_recheck import (
             KernelInvalidatedRechecker,
         )
 
         q = EndpointQuarantine(quarantine_s=60.0)
+        # LENIENT v0.44.x semantics — ``reason`` is the legacy lifecycle
+        # pin; ``derived_reason`` carries the verdict class.
         q.add(
             endpoint_guid="guid-apo",
             reason="apo_degraded",
@@ -109,13 +122,13 @@ class TestKernelInvalidatedRecheckEligibility:
         )
         q.add(
             endpoint_guid="guid-vad",
-            reason="vad_frontend_dead",
-            derived_reason="vad_frontend_dead",
+            reason="apo_degraded",  # legacy pin
+            derived_reason="vad_frontend_dead",  # verdict class
         )
         q.add(
             endpoint_guid="guid-fmt",
-            reason="format_mismatch",
-            derived_reason="format_mismatch",
+            reason="apo_degraded",  # legacy pin
+            derived_reason="format_mismatch",  # verdict class
         )
 
         probe = AsyncMock()
@@ -133,7 +146,8 @@ class TestKernelInvalidatedRecheckEligibility:
         await rechecker._round()  # noqa: SLF001 — exercising filter
 
         # Only the APO-degraded entry should reach the probe; the two
-        # ineligible verdicts are filtered out by ``is_recheck_eligible``.
+        # verdicts filtered out by ``is_recheck_eligible`` evaluated
+        # on the derived_reason (NOT the legacy reason pin).
         called_guids = [call.args[0].endpoint_guid for call in probe.call_args_list]
         assert "guid-apo" in called_guids
         assert "guid-vad" not in called_guids

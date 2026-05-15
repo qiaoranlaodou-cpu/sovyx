@@ -540,16 +540,26 @@ class VoiceCaptureWatchdog:
                 return
             # Mission C1 §T2.1.a + §20.H — widen the filter from a
             # literal ``"apo_degraded"`` to the centralized APO-class
-            # classifier so future APO-class reasons (which today maps
-            # solely to ``"apo_degraded"`` but is the natural extension
-            # point for Linux PipeWire NS / macOS Voice Isolation hints)
-            # are honored. New verdict reasons (``vad_frontend_dead``,
-            # ``format_mismatch``) are NOT APO-class — they recover via
-            # the reset ladder BEFORE quarantine, and once quarantined
-            # are terminal-for-this-boot — so they are EXCLUDED from
-            # this re-probe loop by construction.
+            # classifier set ``{apo_degraded, vad_frontend_dead,
+            # format_mismatch}`` (warm-probe recheck heuristics apply
+            # mechanically across all three — see
+            # ``_APO_CLASS_REASONS`` docstring in ``_quarantine.py``).
+            # ``vad_frontend_dead`` / ``format_mismatch`` are SEPARATELY
+            # excluded from the kernel cold-probe rechecker via
+            # ``is_recheck_eligible`` (their recovery happens in the
+            # in-pipeline reset ladder BEFORE quarantine).
+            #
+            # Consult ``derived_reason`` first: at LENIENT v0.44.x the
+            # ``reason`` field is pinned to the legacy ``"apo_degraded"``
+            # (or lifecycle tags like ``"watchdog_recheck"`` on re-add)
+            # regardless of the underlying verdict; the verdict class
+            # lives on ``derived_reason``. The fallback to ``reason``
+            # covers pre-mission entries AND keeps the call site
+            # correct after the v0.45.0 STRICT flip.
             snapshot = tuple(
-                entry for entry in self._quarantine.snapshot() if is_apo_class_reason(entry.reason)
+                entry
+                for entry in self._quarantine.snapshot()
+                if is_apo_class_reason(entry.derived_reason or entry.reason)
             )
             if not snapshot:
                 continue

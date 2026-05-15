@@ -165,7 +165,7 @@ class KernelInvalidatedRechecker:
                 logger.error("voice_kernel_invalidated_recheck_round_raised", exc_info=True)
 
     async def _round(self) -> None:
-        # Mission C1 §T2.1.a + §20.H — filter to entries whose reason
+        # Mission C1 §T2.1.a + §20.H — filter to entries whose verdict
         # class is RECHECK-eligible. VAD-frontend ladder verdicts
         # (``vad_frontend_dead``, ``format_mismatch``) recover BEFORE
         # quarantine via the in-pipeline reset ladder; once they hit
@@ -176,8 +176,21 @@ class KernelInvalidatedRechecker:
         # stream by attributing VAD-frontend faults to the kernel
         # path. ``is_recheck_eligible`` is the single-source-of-truth
         # classifier (helpers at ``_quarantine.py``).
+        #
+        # IMPORTANT — consult ``derived_reason`` first: at LENIENT
+        # v0.44.x the ``reason`` field is pinned to the legacy
+        # ``"apo_degraded"`` (or lifecycle tags like
+        # ``"watchdog_recheck"`` on re-add) regardless of the verdict
+        # that caused the quarantine; the verdict class lives on
+        # ``derived_reason``. Falling back to ``reason`` covers
+        # pre-mission entries (empty ``derived_reason``) AND keeps the
+        # call site correct after the v0.45.0 STRICT flip promotes
+        # ``derived_reason`` → ``reason`` (the fallback becomes the
+        # actual read path with no further code change).
         snapshot = tuple(
-            entry for entry in self._quarantine.snapshot() if is_recheck_eligible(entry.reason)
+            entry
+            for entry in self._quarantine.snapshot()
+            if is_recheck_eligible(entry.derived_reason or entry.reason)
         )
         if not snapshot:
             return
