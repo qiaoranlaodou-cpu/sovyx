@@ -196,18 +196,41 @@ class IntegrityVerdict(StrEnum):
     computed against a *live* capture stream whose ring buffer already
     carries frames.
 
+    Anti-pattern #39(a): each verdict maps to a DISJOINT remediation
+    ladder — see :mod:`sovyx.voice.health.capture_integrity` coordinator
+    dispatch (mission anchor
+    ``docs-internal/missions/MISSION-c1-vad-mute-reclassification-2026-05-14.md``).
+
     Members:
         HEALTHY: RMS alive, VAD responsive, spectral envelope intact.
         APO_DEGRADED: RMS alive but VAD dead AND spectral envelope
             flattened — capture-side DSP (Windows Voice Clarity,
             PulseAudio ``module-echo-cancel``, CoreAudio VPIO) is
             destroying the signal before it reaches user space.
+            Remediation: bypass-strategy ladder.
         DRIVER_SILENT: RMS near zero / flat DC — the driver is open but
             not delivering audio. Distinct from APO_DEGRADED because
-            the fix is different (reopen / re-enumerate vs APO bypass).
+            the fix is different (cascade re-walk / re-enumerate vs
+            APO bypass).
         VAD_MUTE: VAD dead but spectrum intact and RMS in the noise
             floor band — user is genuinely not speaking. Re-probe
-            later; not a fault.
+            later; not a fault. **Benign** — coordinator returns empty
+            outcomes without setting ``_is_resolved``.
+        VAD_FRONTEND_DEAD: VAD silent across N consecutive probes
+            despite sustained RMS energy AND no APO-signature spectral
+            collapse — indicates Silero LSTM state corruption, ONNX
+            session-state fault, or shape mismatch reaching the VAD
+            frontend. Recovery via VAD-frontend reset ladder (Silero
+            reset → re-instantiate → FrameNormalizer engage → AGC2
+            floor lift → fallback VAD), distinct from APO bypass: no
+            OS-side DSP needs disabling, the fault is inside Sovyx's
+            own processing layer. Mission C1 §2.3 + §4.4. New in v0.44.0.
+        FORMAT_MISMATCH: Frames reaching the VAD do not match the
+            expected shape (16 kHz mono int16). Recovery is via
+            :meth:`AudioCaptureTask.engage_frame_normalizer` (forces a
+            stream re-open which rebuilds the FrameNormalizer for the
+            new source layout), not via OS-layer bypass. Mission C1
+            §4.4 L3. New in v0.44.0.
         INCONCLUSIVE: Probe aborted (timeout, teardown, insufficient
             frames in ring buffer). Caller retries.
     """
@@ -216,6 +239,8 @@ class IntegrityVerdict(StrEnum):
     APO_DEGRADED = "apo_degraded"
     DRIVER_SILENT = "driver_silent"
     VAD_MUTE = "vad_mute"
+    VAD_FRONTEND_DEAD = "vad_frontend_dead"
+    FORMAT_MISMATCH = "format_mismatch"
     INCONCLUSIVE = "inconclusive"
 
 
