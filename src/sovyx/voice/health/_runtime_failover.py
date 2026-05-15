@@ -177,6 +177,15 @@ async def _try_runtime_failover(
     """
     from_endpoint, from_friendly_name = _snapshot_current_endpoint(capture_task)
 
+    # Mission C1 §T2.1 + §T2.1.b — verdict-driven derived_reason for the
+    # quarantine entry that triggered this failover. Falls back to the
+    # legacy ``reason`` field for pre-mission entries (LENIENT v0.44.x
+    # cycle). Surfaces on every telemetry event so dashboards can split
+    # failover triggers by reason class (apo_degraded / vad_frontend_dead
+    # / format_mismatch / driver_silent) without grepping per-event
+    # context.
+    legacy_reason, derived_reason = _snapshot_quarantine_reasons(from_endpoint)
+
     # Step 1 — resolve target FIRST so the lenient telemetry shows
     # the would-be target. If selection fails, we still emit the
     # event with empty target fields so dashboards see the context.
@@ -198,6 +207,8 @@ async def _try_runtime_failover(
             "voice.to_endpoint": target_endpoint,
             "voice.to_friendly_name": target_friendly,
             "voice.reason": "endpoint_quarantined",
+            "voice.legacy_reason": legacy_reason,
+            "voice.derived_reason": derived_reason,
             "voice.candidates_remaining": candidates_remaining,
             "voice.gate_enabled": tuning.runtime_failover_on_quarantine_enabled,
             "voice.attempt_index": state.attempts,
@@ -361,6 +372,41 @@ def _snapshot_current_endpoint(capture_task: Any) -> tuple[str, str]:  # noqa: A
     except Exception:  # noqa: BLE001
         return "", ""
     return str(guid), str(name)
+
+
+def _snapshot_quarantine_reasons(endpoint_guid: str) -> tuple[str, str]:
+    """Mission C1 §T2.1 — return ``(legacy_reason, derived_reason)``.
+
+    Reads the live :class:`EndpointQuarantine` entry for ``endpoint_guid``
+    and surfaces both reason fields so :func:`_try_runtime_failover`
+    telemetry can split by class. Empty strings on any lookup failure
+    (entry expired between quarantine and failover dispatch, or
+    quarantine store transient error). Best-effort — failure to read
+    the reason MUST NOT block the failover decision.
+
+    For pre-mission quarantine entries (no ``derived_reason`` set),
+    ``derived_reason`` mirrors ``legacy_reason`` so dashboards can
+    treat the two fields uniformly during the LENIENT v0.44.x cycle.
+    """
+    if not endpoint_guid:
+        return "", ""
+    try:
+        from sovyx.voice.health._quarantine import get_default_quarantine
+
+        entry = get_default_quarantine().get(endpoint_guid)
+    except Exception as exc:  # noqa: BLE001 — telemetry lookup is best-effort
+        logger.debug(
+            "voice.failover.quarantine_reason_lookup_failed",
+            endpoint=endpoint_guid,
+            error=str(exc),
+            error_type=type(exc).__name__,
+        )
+        return "", ""
+    if entry is None:
+        return "", ""
+    legacy = entry.reason or ""
+    derived = entry.derived_reason or legacy
+    return legacy, derived
 
 
 def _safe_mind_id(pipeline: Any) -> str:  # noqa: ANN401

@@ -34,6 +34,7 @@ import dataclasses
 import json
 import logging
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
@@ -413,6 +414,17 @@ def doctor_voice(
         "the mic is already configured OR when running interactively "
         "(the inline picker runs in that case).",
     ),
+    reason_filter: str | None = typer.Option(
+        None,
+        "--reason-filter",
+        help="Mission C1 §T2.4: filter the 'Voice — quarantined endpoints' "
+        "section to entries whose verdict-derived reason matches the given "
+        "value (e.g. 'vad_frontend_dead', 'apo_degraded', "
+        "'format_mismatch', 'driver_silent'). Default: show every "
+        "quarantined endpoint with its reason class + remediation hint. "
+        "Empty quarantine renders an empty section regardless of the "
+        "filter.",
+    ),
 ) -> None:
     """Voice subsystem health checks + auto-fix tools.
 
@@ -550,6 +562,7 @@ def doctor_voice(
         evaluate_rules=evaluate_rules,
         inspect_migration=inspect_migration,
         input_device=input_device,
+        reason_filter=reason_filter,
     )
     raise typer.Exit(exit_code)
 
@@ -574,6 +587,7 @@ def _run_voice_doctor(
     evaluate_rules: bool = False,
     inspect_migration: bool = False,
     input_device: str | None = None,
+    reason_filter: str | None = None,
 ) -> int:
     """Execute the voice doctor flow. Returns the desired exit code.
 
@@ -616,6 +630,16 @@ def _run_voice_doctor(
 
     report = _run_voice_preflight()
     _render_voice_report(report, output_json=output_json, device=device)
+
+    # Mission C1 §T2.4 — surface the quarantine inventory + verdict-
+    # derived reason class + remediation hint per entry. Greenfield
+    # surface (the pre-mission doctor had ZERO quarantine awareness);
+    # always renders even when empty so operators can verify that no
+    # endpoint is silently quarantined under their nose.
+    _render_voice_quarantine_surface(
+        output_json=output_json,
+        reason_filter=reason_filter,
+    )
 
     failure_count = sum(1 for s in report.steps if not s.passed)
 
@@ -1517,6 +1541,75 @@ def _render_voice_report(
         console.print(
             f"\n[dim]Note: --device {device!r} is informational in this "
             "release; cascade-level filtering ships with the L7 RPC surface.[/dim]",
+        )
+
+
+def _render_voice_quarantine_surface(
+    *,
+    output_json: bool,
+    reason_filter: str | None,
+) -> None:
+    """Mission C1 §T2.4 — render the "Voice — quarantined endpoints" section.
+
+    Greenfield: pre-mission ``sovyx doctor voice`` had zero quarantine
+    awareness; this helper queries the process-local
+    :class:`EndpointQuarantine` (shared with the cascade + watchdog
+    rechecker) and renders one row per live entry. Each row carries:
+
+    * The friendly device name + endpoint GUID.
+    * The verdict-derived reason class (``apo_degraded`` /
+      ``vad_frontend_dead`` / ``format_mismatch`` / ``driver_silent``)
+      with a graceful fallback to the legacy ``reason`` field for
+      pre-mission entries.
+    * The operator-facing remediation hint from
+      :func:`diagnosis_user_remediation` (the same single-source-of-
+      truth dict the dashboard's service-health card consumes).
+    * Seconds-until-expiry so operators can correlate with the TTL knob.
+
+    ``reason_filter`` (when non-empty) drops entries whose
+    ``derived_reason`` / legacy ``reason`` doesn't match. Empty filter
+    OR empty quarantine renders an empty section — silence is OK here,
+    "no entries" is the typical (healthy) state.
+
+    JSON mode (``output_json=True``) skips this surface entirely; the
+    preflight JSON shape is consumed by external monitors that already
+    have the dashboard quarantine endpoint, so duplicating the surface
+    in the JSON envelope would just bloat the wire.
+    """
+    if output_json:
+        return
+    from sovyx.voice.health._quarantine import get_default_quarantine
+    from sovyx.voice.health._user_remediation import diagnosis_user_remediation
+
+    quarantine = get_default_quarantine()
+    entries = quarantine.snapshot()
+    if reason_filter:
+        filter_value = reason_filter.strip()
+        entries = tuple(
+            entry for entry in entries if (entry.derived_reason or entry.reason) == filter_value
+        )
+
+    console.print("\n[bold]Voice — quarantined endpoints[/bold]")
+    if not entries:
+        if reason_filter:
+            console.print(f"[dim]No quarantined endpoints match reason {reason_filter!r}.[/dim]")
+        else:
+            console.print("[dim]No endpoints in quarantine.[/dim]")
+        return
+
+    now = time.monotonic()
+    for entry in entries:
+        reason_key = entry.derived_reason or entry.reason or "unknown"
+        seconds_left = max(0.0, entry.expires_at_monotonic - now)
+        friendly = entry.device_friendly_name or entry.endpoint_guid or "(unknown)"
+        console.print(f"  • [bold]{friendly}[/bold]  [dim](reason: {reason_key})[/dim]")
+        hint = diagnosis_user_remediation(reason_key)
+        if hint:
+            console.print(f"    [dim]{hint}[/dim]")
+        console.print(
+            f"    [dim]Endpoint: {entry.endpoint_guid or '—'}  "
+            f"Host API: {entry.host_api or '—'}  "
+            f"Recheck in: {int(seconds_left)}s[/dim]"
         )
 
 

@@ -89,6 +89,7 @@ from sovyx.voice.health._quarantine import (
     EndpointQuarantine,
     QuarantineEntry,
     get_default_quarantine,
+    is_apo_class_reason,
 )
 from sovyx.voice.health.contract import (
     AudioServiceEvent,
@@ -537,8 +538,18 @@ class VoiceCaptureWatchdog:
                 return
             if not self._started:
                 return
+            # Mission C1 §T2.1.a + §20.H — widen the filter from a
+            # literal ``"apo_degraded"`` to the centralized APO-class
+            # classifier so future APO-class reasons (which today maps
+            # solely to ``"apo_degraded"`` but is the natural extension
+            # point for Linux PipeWire NS / macOS Voice Isolation hints)
+            # are honored. New verdict reasons (``vad_frontend_dead``,
+            # ``format_mismatch``) are NOT APO-class — they recover via
+            # the reset ladder BEFORE quarantine, and once quarantined
+            # are terminal-for-this-boot — so they are EXCLUDED from
+            # this re-probe loop by construction.
             snapshot = tuple(
-                entry for entry in self._quarantine.snapshot() if entry.reason == "apo_degraded"
+                entry for entry in self._quarantine.snapshot() if is_apo_class_reason(entry.reason)
             )
             if not snapshot:
                 continue

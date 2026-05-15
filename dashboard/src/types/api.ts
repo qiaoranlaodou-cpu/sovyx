@@ -1172,6 +1172,13 @@ export interface VoiceHealthQuarantineEntry {
   expires_at_monotonic: number;
   seconds_until_expiry: number;
   reason: string;
+  /**
+   * Mission C1 §T2.2 — verdict-driven reason class. Optional during the
+   * LENIENT v0.44.x cycle: pre-mission entries persisted with empty
+   * `derived_reason` parse cleanly. v0.45.0 STRICT flip promotes this
+   * field to required and drops the legacy `reason` field.
+   */
+  derived_reason?: string;
 }
 
 /** GET /api/voice/health/quarantine response. */
@@ -1462,7 +1469,13 @@ export type CaptureRestartReason =
   | "device_changed"
   | "apo_degraded"
   | "overflow"
-  | "manual";
+  | "manual"
+  // Mission C1 §20.K — closed-enum extension; see
+  // `CaptureRestartReasonSchema` in `schemas.ts` for the runtime
+  // validator that mirrors this union.
+  | "vad_frontend_dead"
+  | "format_mismatch"
+  | "driver_silent";
 
 export interface CaptureRestartFrame {
   // PipelineFrame base fields:

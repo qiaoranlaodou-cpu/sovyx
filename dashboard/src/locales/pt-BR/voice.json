@@ -351,6 +351,28 @@
         "replug": "Desconecte o dispositivo fisicamente por 5 segundos e reconecte. O Sovyx reage ao evento de hot-plug do SO e limpa a quarentena automaticamente.",
         "reboot": "Se religar não limpar o estado, reinicie o Windows — uma atualização de driver / pilha de áudio é necessária para rearmar o endpoint de áudio.",
         "watchdog": "Enquanto isso, o Sovyx faz failover para o próximo dispositivo de captura viável e recheca o endpoint em quarentena a cada poucos minutos."
+      },
+      "reasons": {
+        "apo_degraded": {
+          "label": "APO degradado",
+          "remediation": "Um realce de áudio (Voice Clarity APO no Windows, module-echo-cancel no Linux, Voice Isolation no macOS) está destruindo o sinal do microfone. Desabilite os realces por dispositivo nas configurações de som do SO."
+        },
+        "vad_frontend_dead": {
+          "label": "Frontend de VAD morto",
+          "remediation": "A detecção de atividade de voz não está respondendo ao áudio ao vivo. O Sovyx tentará uma reinicialização automática; se persistir, verifique o ganho do microfone e a versão do runtime ONNX do Silero."
+        },
+        "format_mismatch": {
+          "label": "Formato incompatível",
+          "remediation": "O formato do stream de captura não corresponde ao esperado pelo VAD (16 kHz mono int16). O FrameNormalizer foi solicitado a re-engajar; se não recuperar, tente selecionar outro dispositivo padrão de entrada ou re-conectar o atual."
+        },
+        "driver_silent": {
+          "label": "Driver silencioso",
+          "remediation": "O driver de áudio está aberto mas não está entregando áudio. O Sovyx tentará re-percorrer o cascade; se não recuperar, verifique se o microfone está mudo no SO / hardware."
+        },
+        "unknown": {
+          "label": "Desconhecido",
+          "remediation": ""
+        }
       }
     }
   },

@@ -274,6 +274,15 @@ class QuarantineEntryModel(BaseModel):
     Surfaces §4.4.7 kernel-invalidated quarantine to the dashboard so
     operators can see which capture endpoints sovyx has stopped probing
     and why.
+
+    Mission C1 §T2.2 — exposes both :attr:`reason` (legacy lifecycle
+    tag — ``"apo_degraded"`` / ``"watchdog_recheck"`` / …) and
+    :attr:`derived_reason` (verdict-driven class —
+    ``"apo_degraded"`` / ``"vad_frontend_dead"`` / ``"format_mismatch"`` /
+    ``"driver_silent"``). Frontend prefers ``derived_reason`` when
+    non-empty; falls back to ``reason``. The v0.45.0 STRICT flip
+    promotes ``derived_reason`` to ``reason`` and drops the legacy
+    field.
     """
 
     endpoint_guid: str
@@ -284,6 +293,7 @@ class QuarantineEntryModel(BaseModel):
     expires_at_monotonic: float
     seconds_until_expiry: float
     reason: str
+    derived_reason: str = ""
 
     @classmethod
     def from_domain(
@@ -312,6 +322,7 @@ class QuarantineEntryModel(BaseModel):
             expires_at_monotonic=entry.expires_at_monotonic,
             seconds_until_expiry=min(quarantine_s, max(0.0, raw)),
             reason=entry.reason,
+            derived_reason=entry.derived_reason,
         )
 
 

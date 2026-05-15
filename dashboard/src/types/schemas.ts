@@ -876,6 +876,11 @@ export const VoiceHealthQuarantineEntrySchema = z.object({
   expires_at_monotonic: z.number(),
   seconds_until_expiry: z.number(),
   reason: z.string(),
+  // Mission C1 §T2.2 — verdict-driven reason class. Optional during the
+  // LENIENT v0.44.x cycle: pre-mission entries persisted with empty
+  // ``derived_reason`` parse cleanly; v0.45.0 STRICT flip promotes
+  // this field to required (and drops the legacy ``reason`` field).
+  derived_reason: z.string().optional(),
 });
 
 export const VoiceHealthQuarantineSnapshotResponseSchema = z.object({
@@ -1233,6 +1238,15 @@ export const CaptureRestartReasonSchema = z.enum([
   "apo_degraded",
   "overflow",
   "manual",
+  // Mission C1 §20.K — closed-enum extension. New verdict-driven
+  // reasons emitted by capture restarts MUST be listed here or the
+  // frontend zod parser REJECTS the response. ``vad_frontend_dead``
+  // and ``format_mismatch`` are the v0.44.0 additions; ``driver_silent``
+  // surfaces on the cascade-reevaluation path from the coordinator
+  // dispatch (T1.3).
+  "vad_frontend_dead",
+  "format_mismatch",
+  "driver_silent",
 ]);
 
 export const CaptureRestartFrameSchema = z.object({

@@ -21,6 +21,7 @@ import type {
   VoiceHealthPinResponse,
   VoiceHealthProbeMode,
   VoiceHealthProbeResult,
+  VoiceHealthQuarantineSnapshotResponse,
   VoiceHealthReprobeRequest,
   VoiceHealthReprobeResponse,
   VoiceHealthSnapshotResponse,
@@ -31,6 +32,7 @@ import {
   MixerKbValidateResponseSchema,
   VoiceHealthForgetResponseSchema,
   VoiceHealthPinResponseSchema,
+  VoiceHealthQuarantineSnapshotResponseSchema,
   VoiceHealthReprobeResponseSchema,
   VoiceHealthSnapshotResponseSchema,
 } from "@/types/schemas";
@@ -46,6 +48,15 @@ export interface VoiceHealthSlice {
   voiceHealthLastProbe: Record<string, VoiceHealthProbeResult>;
   /** Per-endpoint in-flight action flag — disables buttons while a mutation is pending. */
   voiceHealthBusy: Record<string, boolean>;
+  /**
+   * Mission C1 §T2.2 — quarantine snapshot. Distinct from
+   * `voiceHealthSnapshot` (which only carries an aggregate
+   * `quarantine_count`); this is the full entry list for the
+   * `QuarantineSection` rendering component.
+   */
+  voiceHealthQuarantine: VoiceHealthQuarantineSnapshotResponse | null;
+  voiceHealthQuarantineLoading: boolean;
+  voiceHealthQuarantineError: string | null;
 
   /** Mixer-KB list response keyed off the /kb/profiles endpoint. */
   mixerKbList: MixerKbListResponse | null;
@@ -56,6 +67,8 @@ export interface VoiceHealthSlice {
 
   // ── Actions ──
   fetchVoiceHealth: (signal?: AbortSignal) => Promise<void>;
+  /** Mission C1 §T2.2 — fetch the live quarantine snapshot. */
+  fetchVoiceHealthQuarantine: (signal?: AbortSignal) => Promise<void>;
   reprobeVoiceEndpoint: (
     body: VoiceHealthReprobeRequest,
   ) => Promise<VoiceHealthProbeResult | null>;
@@ -88,6 +101,9 @@ export const createVoiceHealthSlice: StateCreator<
   voiceHealthError: null,
   voiceHealthLastProbe: {},
   voiceHealthBusy: {},
+  voiceHealthQuarantine: null,
+  voiceHealthQuarantineLoading: false,
+  voiceHealthQuarantineError: null,
   mixerKbList: null,
   mixerKbLoading: false,
   mixerKbError: null,
@@ -113,6 +129,45 @@ export const createVoiceHealthSlice: StateCreator<
             ? err.message
             : String(err);
       set({ voiceHealthLoading: false, voiceHealthError: msg });
+    }
+  },
+
+  /**
+   * Mission C1 §T2.2 — fetch the quarantine snapshot for the
+   * `QuarantineSection` component on `/voice/health`. Distinct from
+   * `fetchVoiceHealth` (which exposes only an aggregate count) so the
+   * page can refresh the list on its own cadence without re-pulling
+   * the combo store + override list.
+   */
+  fetchVoiceHealthQuarantine: async (signal?: AbortSignal) => {
+    set({
+      voiceHealthQuarantineLoading: true,
+      voiceHealthQuarantineError: null,
+    });
+    try {
+      const data = await api.get<VoiceHealthQuarantineSnapshotResponse>(
+        "/api/voice/health/quarantine",
+        { signal, schema: VoiceHealthQuarantineSnapshotResponseSchema },
+      );
+      set({
+        voiceHealthQuarantine: data,
+        voiceHealthQuarantineLoading: false,
+      });
+    } catch (err) {
+      if (isAbortError(err)) {
+        set({ voiceHealthQuarantineLoading: false });
+        return;
+      }
+      const msg =
+        err instanceof ApiError
+          ? `HTTP ${err.status}: ${err.message}`
+          : err instanceof Error
+            ? err.message
+            : String(err);
+      set({
+        voiceHealthQuarantineLoading: false,
+        voiceHealthQuarantineError: msg,
+      });
     }
   },
 

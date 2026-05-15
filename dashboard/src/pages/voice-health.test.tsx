@@ -24,6 +24,10 @@ const mockClearError = vi.fn();
 const mockFetchMixerKbList = vi.fn();
 const mockFetchMixerKbDetail = vi.fn();
 const mockValidateMixerKb = vi.fn();
+// Mission C1 §T2.2 — store action wired by the new QuarantineSection
+// component. Stubbed to a resolved Promise so the page's useEffect can
+// invoke it without crashing the test mount.
+const mockFetchVoiceHealthQuarantine = vi.fn().mockResolvedValue(undefined);
 
 let mockState: Record<string, unknown> = {};
 
@@ -145,6 +149,13 @@ function setStore(
     fetchMixerKbList: mockFetchMixerKbList,
     fetchMixerKbDetail: mockFetchMixerKbDetail,
     validateMixerKbProfile: mockValidateMixerKb,
+    // Mission C1 §T2.2 — QuarantineSection state defaults: empty list,
+    // no error, action stubbed. Individual tests can override via
+    // ``extras`` when exercising quarantine-specific behaviour.
+    voiceHealthQuarantine: null,
+    voiceHealthQuarantineLoading: false,
+    voiceHealthQuarantineError: null,
+    fetchVoiceHealthQuarantine: mockFetchVoiceHealthQuarantine,
     ...extras,
   };
 }
@@ -157,6 +168,7 @@ beforeEach(() => {
   mockClearError.mockReset();
   mockFetchMixerKbList.mockReset().mockResolvedValue(undefined);
   mockFetchMixerKbDetail.mockReset().mockResolvedValue(null);
+  mockFetchVoiceHealthQuarantine.mockReset().mockResolvedValue(undefined);
   mockValidateMixerKb.mockReset().mockResolvedValue({
     ok: true,
     profile_id: null,

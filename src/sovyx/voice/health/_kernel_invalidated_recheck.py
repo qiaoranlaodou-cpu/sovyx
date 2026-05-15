@@ -40,6 +40,7 @@ from sovyx.voice.health._quarantine import (
     EndpointQuarantine,
     QuarantineEntry,
     get_default_quarantine,
+    is_recheck_eligible,
 )
 from sovyx.voice.health.contract import Diagnosis, ProbeResult
 
@@ -164,7 +165,20 @@ class KernelInvalidatedRechecker:
                 logger.error("voice_kernel_invalidated_recheck_round_raised", exc_info=True)
 
     async def _round(self) -> None:
-        snapshot = self._quarantine.snapshot()
+        # Mission C1 §T2.1.a + §20.H — filter to entries whose reason
+        # class is RECHECK-eligible. VAD-frontend ladder verdicts
+        # (``vad_frontend_dead``, ``format_mismatch``) recover BEFORE
+        # quarantine via the in-pipeline reset ladder; once they hit
+        # quarantine they are NOT cold-probe-recoverable, and waking
+        # them up for a recheck would (a) waste probe budget on a
+        # known-unrecoverable verdict class and (b) misroute the
+        # ``recheck_still_invalid`` → ``recheck_recovered`` event
+        # stream by attributing VAD-frontend faults to the kernel
+        # path. ``is_recheck_eligible`` is the single-source-of-truth
+        # classifier (helpers at ``_quarantine.py``).
+        snapshot = tuple(
+            entry for entry in self._quarantine.snapshot() if is_recheck_eligible(entry.reason)
+        )
         if not snapshot:
             return
         logger.debug(

@@ -351,6 +351,28 @@
         "replug": "Desconecta físicamente el dispositivo por 5 segundos y vuelve a conectarlo. Sovyx reacciona al evento hot-plug del SO y limpia la cuarentena automáticamente.",
         "reboot": "Si re-enchufar no limpia el estado, reinicia Windows — se requiere una actualización del driver / pila de audio para rearmar el endpoint de audio.",
         "watchdog": "Mientras tanto, Sovyx hace failover al siguiente dispositivo de captura viable y re-chequea el endpoint en cuarentena cada pocos minutos."
+      },
+      "reasons": {
+        "apo_degraded": {
+          "label": "APO degradado",
+          "remediation": "Una mejora de audio (Voice Clarity APO en Windows, module-echo-cancel en Linux, Voice Isolation en macOS) está destruyendo la señal del micrófono. Desactiva las mejoras por dispositivo en la configuración de sonido del SO."
+        },
+        "vad_frontend_dead": {
+          "label": "Frontend VAD muerto",
+          "remediation": "La detección de actividad de voz no responde al audio en vivo. Sovyx intentará un reinicio automático; si persiste, revisa la ganancia del micrófono y la versión del runtime ONNX de Silero."
+        },
+        "format_mismatch": {
+          "label": "Formato incompatible",
+          "remediation": "El formato del flujo de captura no coincide con el esperado por VAD (16 kHz mono int16). Se solicitó re-engagement del FrameNormalizer; si no recupera, intenta seleccionar otro dispositivo de entrada predeterminado o re-conectar el actual."
+        },
+        "driver_silent": {
+          "label": "Driver silencioso",
+          "remediation": "El driver de audio está abierto pero no entrega audio. Sovyx intentará re-caminar el cascade; si no recupera, verifica si el micrófono está silenciado a nivel de SO / hardware."
+        },
+        "unknown": {
+          "label": "Desconocido",
+          "remediation": ""
+        }
       }
     }
   },

@@ -43,6 +43,7 @@ import type {
   VoiceHealthComboEntry,
   VoiceHealthOverrideEntry,
   VoiceHealthProbeResult,
+  VoiceHealthQuarantineEntry,
   VoiceHealthRemediationSeverity,
 } from "@/types/api";
 
@@ -741,6 +742,169 @@ function MixerKbCard() {
   );
 }
 
+/* ── Quarantine section (Mission C1 §T2.2 / §20.G) ── */
+
+/**
+ * Render the human-readable verdict reason for a quarantine entry.
+ *
+ * Prefers `derived_reason` (verdict-driven class shipped in Mission C1
+ * v0.44.0) over the legacy `reason` field, which during the LENIENT
+ * v0.44.x cycle is pinned to `"apo_degraded"` on every entry regardless
+ * of the actual verdict. Falls back to `reason` on entries persisted
+ * before the mission landed (empty `derived_reason`).
+ */
+function QuarantineReasonBadge({
+  entry,
+}: {
+  entry: VoiceHealthQuarantineEntry;
+}) {
+  const { t } = useTranslation("voice");
+  const reasonKey = entry.derived_reason || entry.reason;
+  const label = reasonKey
+    ? t(`health.quarantine.reasons.${reasonKey}.label`, {
+        defaultValue: reasonKey,
+      })
+    : t("health.quarantine.reasons.unknown.label");
+  return (
+    <span
+      className="inline-flex items-center rounded-full border border-[var(--svx-color-border)] bg-[var(--svx-color-surface-secondary)] px-2 py-0.5 font-mono text-[10px] text-[var(--svx-color-text-secondary)]"
+      data-testid={`quarantine-reason-${entry.endpoint_guid}`}
+      title={reasonKey || ""}
+    >
+      {label}
+    </span>
+  );
+}
+
+function QuarantineRow({ entry }: { entry: VoiceHealthQuarantineEntry }) {
+  const { t } = useTranslation("voice");
+  const reasonKey = entry.derived_reason || entry.reason || "unknown";
+  const remediation = t(`health.quarantine.reasons.${reasonKey}.remediation`, {
+    defaultValue: "",
+  });
+  return (
+    <article
+      data-testid={`quarantine-row-${entry.endpoint_guid}`}
+      className="rounded-[var(--svx-radius-lg)] border border-[var(--svx-color-border)] bg-[var(--svx-color-surface-primary)] p-4"
+    >
+      <header className="mb-2 flex flex-wrap items-start justify-between gap-3">
+        <div className="min-w-0 space-y-1">
+          <h3 className="flex items-center gap-2 text-sm font-semibold text-[var(--svx-color-text-primary)]">
+            <span className="truncate">{entry.device_friendly_name}</span>
+            <QuarantineReasonBadge entry={entry} />
+          </h3>
+          <p className="truncate font-mono text-[11px] text-[var(--svx-color-text-tertiary)]">
+            {entry.endpoint_guid}
+          </p>
+        </div>
+      </header>
+      <dl className="grid grid-cols-1 gap-x-4 gap-y-1 text-xs sm:grid-cols-3">
+        <div>
+          <dt className="text-[var(--svx-color-text-tertiary)]">
+            {t("health.quarantine.hostApi")}
+          </dt>
+          <dd className="font-mono">{entry.host_api || "—"}</dd>
+        </div>
+        <div>
+          <dt className="text-[var(--svx-color-text-tertiary)]">
+            {t("health.quarantine.reason")}
+          </dt>
+          <dd className="font-mono">
+            {entry.derived_reason || entry.reason || "—"}
+          </dd>
+        </div>
+        <div>
+          <dt className="text-[var(--svx-color-text-tertiary)]">
+            {t("health.quarantine.expiresIn")}
+          </dt>
+          <dd className="font-mono">
+            {t("health.quarantine.secondsShort", {
+              seconds: Math.max(0, Math.round(entry.seconds_until_expiry)),
+            })}
+          </dd>
+        </div>
+      </dl>
+      {remediation && (
+        <p
+          className="mt-2 rounded-[var(--svx-radius-sm)] border border-[var(--svx-color-status-amber)]/40 bg-[var(--svx-color-status-amber)]/10 px-2 py-1.5 text-xs text-[var(--svx-color-text-secondary)]"
+          data-testid={`quarantine-remediation-${entry.endpoint_guid}`}
+        >
+          {remediation}
+        </p>
+      )}
+    </article>
+  );
+}
+
+function QuarantineSection() {
+  const { t } = useTranslation("voice");
+  const snapshot = useDashboardStore((s) => s.voiceHealthQuarantine);
+  const loading = useDashboardStore((s) => s.voiceHealthQuarantineLoading);
+  const error = useDashboardStore((s) => s.voiceHealthQuarantineError);
+  const fetchQuarantine = useDashboardStore(
+    (s) => s.fetchVoiceHealthQuarantine,
+  );
+
+  useEffect(() => {
+    const controller = new AbortController();
+    void fetchQuarantine(controller.signal);
+    return () => controller.abort();
+  }, [fetchQuarantine]);
+
+  const entries = snapshot?.entries ?? [];
+
+  return (
+    <section aria-labelledby="quarantine-heading" className="space-y-3">
+      <div className="flex items-baseline justify-between">
+        <h2
+          id="quarantine-heading"
+          className="text-sm font-semibold uppercase tracking-wider text-[var(--svx-color-text-secondary)]"
+        >
+          {t("health.quarantine.sectionTitle")}
+        </h2>
+        <span className="font-mono text-[11px] text-[var(--svx-color-text-tertiary)]">
+          {entries.length}
+        </span>
+      </div>
+      <p className="text-xs text-[var(--svx-color-text-tertiary)]">
+        {t("health.quarantine.sectionHint")}
+      </p>
+      {loading && !snapshot && (
+        <div
+          className="flex items-center gap-2 text-xs text-[var(--svx-color-text-tertiary)]"
+          data-testid="quarantine-loading"
+        >
+          <Loader2Icon className="size-3.5 animate-spin" />
+          {t("health.loading")}
+        </div>
+      )}
+      {error && (
+        <div
+          className="rounded-[var(--svx-radius-md)] border border-[var(--svx-color-status-red)]/40 bg-[var(--svx-color-status-red)]/10 px-3 py-2 font-mono text-xs text-[var(--svx-color-status-red)]"
+          data-testid="quarantine-error"
+        >
+          {error}
+        </div>
+      )}
+      {snapshot && entries.length === 0 && (
+        <div
+          className="rounded-[var(--svx-radius-lg)] border border-dashed border-[var(--svx-color-border)] bg-[var(--svx-color-surface-secondary)] p-6 text-center text-sm text-[var(--svx-color-text-tertiary)]"
+          data-testid="quarantine-empty"
+        >
+          {t("health.quarantine.noEntries")}
+        </div>
+      )}
+      {entries.length > 0 && (
+        <div className="space-y-3">
+          {entries.map((entry) => (
+            <QuarantineRow key={entry.endpoint_guid} entry={entry} />
+          ))}
+        </div>
+      )}
+    </section>
+  );
+}
+
 /* ── Main page ── */
 
 export default function VoiceHealthPage() {
@@ -965,6 +1129,13 @@ export default function VoiceHealthPage() {
           </div>
         )}
       </section>
+
+      {/* Quarantine — Mission C1 §T2.2: live verdict-derived reason
+          per entry. Empty list state shows on healthy hosts; the
+          section fetches independently of `fetchVoiceHealth` so the
+          page can refresh quarantine without re-pulling the combo
+          store + override list. */}
+      <QuarantineSection />
 
       {/* Mixer KB — independent of cascade state; shows shipped + user
           profile pools plus an inline YAML-validate panel for reviewers. */}

@@ -100,6 +100,31 @@ _REMEDIATION_BY_DIAGNOSIS: dict[str, str] = {
         "strategies could not recover the signal automatically on "
         "this hardware."
     ),
+    # Mission C1 §T2.3 — verdict-driven quarantine reason classes.
+    # These keys are not :class:`Diagnosis` members; they flow from
+    # :attr:`QuarantineEntry.derived_reason` (set by the
+    # :class:`CaptureIntegrityCoordinator`'s verdict-router dispatch
+    # in T1.3 / T1.7) and reach this dict via the same string-keyed
+    # lookup as the cascade-side Diagnosis values. Wire-form strings
+    # are wire-form strings — whether the producer is a Diagnosis or
+    # a derived_reason classifier, the operator-facing remediation
+    # hint is the only thing this map cares about.
+    "vad_frontend_dead": (
+        "Voice activity detection is not responding to live audio. "
+        "Sovyx attempts an automatic reset ladder (Silero LSTM reset → "
+        "FrameNormalizer engage); if every step still fails, the "
+        "endpoint is quarantined. Investigate: check the microphone "
+        "gain (low signal can mimic VAD-frontend death), the Silero "
+        "ONNX runtime version, and rule out a stuck capture stream "
+        "via `sovyx doctor voice --full-diag`."
+    ),
+    "driver_silent": (
+        "The audio driver is open but not delivering audio. The "
+        "coordinator dispatched a cascade re-walk; if the failover "
+        "also fails, the driver is in a stuck state requiring a "
+        "physical replug or reboot. Check the OS mute state and the "
+        "physical hardware mute switch."
+    ),
     "vad_insensitive": (
         "Voice activity detection cannot reliably hear speech on this "
         "input. Likely causes: heavy background noise, a microphone "
