@@ -206,6 +206,7 @@ class CaptureIntegrityProbe:
         frames: npt.NDArray[np.int16],
         *,
         endpoint_guid: str,
+        history: Sequence[IntegrityResult] = (),
     ) -> IntegrityResult:
         """Classify an arbitrary frame buffer without ring-tapping.
 
@@ -221,6 +222,11 @@ class CaptureIntegrityProbe:
             frames: Post-apply audio snapshot (int16 mono @ 16 kHz).
             endpoint_guid: Stable GUID for the live endpoint, copied
                 into the result for telemetry correlation.
+            history: Mission C1 §T1.2 — recent probes for the same
+                endpoint, oldest first. Window-bounded by the caller
+                (coordinator owns the buffer per ADR-D5). Empty default
+                preserves pre-mission behavior: classifier never returns
+                VAD_FRONTEND_DEAD without explicit history wiring.
 
         Returns:
             An :class:`IntegrityResult` — never raises; tap / analysis
@@ -244,11 +250,14 @@ class CaptureIntegrityProbe:
             endpoint_guid,
             duration_s,
             tuning,
+            tuple(history),
         )
 
     async def probe_warm(
         self,
         capture_task: CaptureTaskProto,
+        *,
+        history: Sequence[IntegrityResult] = (),
     ) -> IntegrityResult:
         """Sample the live capture ring and classify the signal.
 
@@ -261,6 +270,11 @@ class CaptureIntegrityProbe:
         Args:
             capture_task: The live capture task. Must already be
                 running; a stopped task produces INCONCLUSIVE.
+            history: Mission C1 §T1.2 — recent probes for the same
+                endpoint, oldest first. Window-bounded by the caller
+                (coordinator owns the buffer per ADR-D5). Empty default
+                preserves pre-mission behavior: classifier never returns
+                VAD_FRONTEND_DEAD without explicit history wiring.
         """
         tuning = self._tuning if self._tuning is not None else _VoiceTuning()
         duration_s = max(0.0, float(tuning.integrity_probe_duration_s))
@@ -293,6 +307,7 @@ class CaptureIntegrityProbe:
             endpoint_guid,
             duration_s,
             tuning,
+            tuple(history),
         )
 
     # -- internals ------------------------------------------------------
@@ -303,6 +318,7 @@ class CaptureIntegrityProbe:
         endpoint_guid: str,
         duration_s: float,
         tuning: VoiceTuningConfig,
+        history: Sequence[IntegrityResult] = (),
     ) -> IntegrityResult:
         import numpy as np
 
@@ -341,6 +357,8 @@ class CaptureIntegrityProbe:
             flatness=flatness,
             rolloff_hz=rolloff_hz,
             tuning=tuning,
+            frames=frames,
+            history=history,
         )
         result = IntegrityResult(
             verdict=verdict,
@@ -374,13 +392,43 @@ class CaptureIntegrityProbe:
         flatness: float,
         rolloff_hz: float,
         tuning: VoiceTuningConfig,
+        frames: npt.NDArray[np.int16] | None = None,
+        history: Sequence[IntegrityResult] = (),
     ) -> IntegrityVerdict:
-        """Decision tree over the four metrics.
+        """Decision tree over the four metrics + history + frame shape.
 
-        The ordering matters: the HEALTHY early-exit avoids even
-        looking at spectral metrics when the VAD already proves the
-        pipeline is intact, which keeps the probe robust against
-        spurious spectral-envelope false positives in noisy offices.
+        The ordering matters:
+
+        1. HEALTHY early-exit avoids even looking at spectral metrics
+           when the VAD already proves the pipeline is intact.
+        2. DRIVER_SILENT short-circuits driver-not-delivering — distinct
+           fix path (cascade re-walk, not bypass).
+        3. FORMAT_MISMATCH short-circuits when the frame buffer reaching
+           the VAD has the wrong shape/dtype — fix is normalizer
+           engagement, not OS-layer bypass. Mission C1 §T1.2.
+        4. APO_DEGRADED for the classic spectral-envelope collapse —
+           OS DSP destroying signal.
+        5. VAD_FRONTEND_DEAD for sustained-silence-with-energy — Silero
+           or normalizer internal fault. Mission C1 §T1.2 + §2.3.
+           Distinct from benign VAD_MUTE by TRAJECTORY (history window).
+        6. VAD_MUTE as the benign fall-through.
+
+        Anti-pattern #39(a) — verdict-disjoint remediation: each
+        verdict above maps to its own ladder downstream.
+
+        Args:
+            rms_db, vad_max, flatness, rolloff_hz: probe metrics.
+            tuning: frozen tuning snapshot.
+            frames: raw int16 buffer the metrics were computed from.
+                Optional only for backward-compat with tests that build
+                the classifier inputs directly; production paths always
+                pass it via :meth:`_analyse_sync`. Used by
+                :meth:`_is_format_mismatch`.
+            history: oldest-first sequence of recent probes for this
+                endpoint. Empty default preserves pre-mission behavior:
+                without history, ``VAD_FRONTEND_DEAD`` cannot fire and
+                sustained-silence falls through to ``VAD_MUTE``. The
+                coordinator owns the buffer (ADR-D5) and feeds it here.
         """
         # Active speech through a clean pipeline — nothing to bypass.
         if vad_max >= tuning.integrity_vad_healthy_max_prob_floor:
@@ -390,6 +438,14 @@ class CaptureIntegrityProbe:
         # Distinct fix path: the watchdog must re-cascade, not bypass.
         if rms_db < tuning.integrity_driver_silent_rms_ceiling_db:
             return IntegrityVerdict.DRIVER_SILENT
+
+        # Mission C1 §T1.2 — frame shape/dtype mismatch surfaces BEFORE
+        # spectral classification because format errors poison every
+        # downstream metric (FFT on misaligned bytes / wrong-rate samples
+        # gives meaningless flatness + rolloff). Routes to normalizer
+        # engagement, not bypass.
+        if frames is not None and self._is_format_mismatch(frames):
+            return IntegrityVerdict.FORMAT_MISMATCH
 
         # RMS audible, VAD not responsive. Is the spectrum destroyed?
         spectrum_degraded = (
@@ -404,9 +460,93 @@ class CaptureIntegrityProbe:
         if apo_signature:
             return IntegrityVerdict.APO_DEGRADED
 
+        # Mission C1 §T1.2 + §2.3 — sustained energy with VAD silent
+        # across N consecutive probes indicates a frontend fault (Silero
+        # LSTM corruption / ONNX session-state / normalizer misalignment),
+        # NOT a user-silent moment. The trajectory check distinguishes:
+        # benign VAD_MUTE self-resolves within 2-3 probes when the user
+        # starts speaking; VAD_FRONTEND_DEAD stays dead across the full
+        # window regardless of input. Routes to the reset ladder (Silero
+        # reset → re-instantiate → normalizer engage → AGC2 floor lift
+        # → fallback VAD).
+        if self._is_vad_frontend_dead(history, tuning=tuning):
+            return IntegrityVerdict.VAD_FRONTEND_DEAD
+
         # RMS present but user is genuinely not speaking (noise floor
         # band with VAD quiet). Benign; re-probe later.
         return IntegrityVerdict.VAD_MUTE
+
+    @staticmethod
+    def _is_format_mismatch(frames: npt.NDArray[np.int16]) -> bool:
+        """Mission C1 §T1.2 — detect shape/dtype mismatch reaching the VAD.
+
+        Conservative scope for v0.44.0 foundation: only flags conditions
+        that are statically observable from the frame buffer itself
+        (dtype, dimensionality). Source-rate mismatch detection requires
+        capture-task config access and lands with the T1.4 normalizer
+        engagement step; this helper grows a ``tuning`` parameter when
+        that information arrives.
+
+        Args:
+            frames: int16 buffer fed to the spectral + VAD pipeline.
+
+        Returns:
+            True iff the buffer shape or dtype is incompatible with
+            Silero's 16 kHz mono int16 expectation. The VAD windowing
+            in :meth:`_analyse_sync` will produce zero-energy reads on
+            misaligned data — surfacing this as ``FORMAT_MISMATCH`` lets
+            the coordinator route to a force-reopen path rather than
+            (mis-)classifying the symptom as ``APO_DEGRADED`` or
+            ``VAD_MUTE``.
+        """
+        import numpy as np
+
+        return frames.dtype != np.int16 or frames.ndim != 1
+
+    @staticmethod
+    def _is_vad_frontend_dead(
+        history: Sequence[IntegrityResult],
+        *,
+        tuning: VoiceTuningConfig,
+    ) -> bool:
+        """Mission C1 §T1.2 + §2.3 — sustained-VAD-silence-with-energy across history.
+
+        Distinguishes :attr:`IntegrityVerdict.VAD_FRONTEND_DEAD` from
+        benign :attr:`IntegrityVerdict.VAD_MUTE` by trajectory. A working
+        Silero+normalizer recovers within 2-3 probes when the user
+        starts speaking; a corrupted frontend stays dead across the full
+        window regardless of input.
+
+        Args:
+            history: Recent probes for the SAME endpoint, oldest first.
+                Window-bounded by the coordinator (ADR-D5); this helper
+                does not re-bound. Short / empty history → returns False
+                (insufficient evidence; sustained silence falls through
+                to benign ``VAD_MUTE``).
+            tuning: frozen tuning snapshot for thresholds.
+
+        Returns:
+            True iff ``len(history) >= integrity_history_window_probes``
+            AND every entry has ``rms_db > integrity_apo_rms_floor_db``
+            AND every entry has ``vad_max_prob <
+            integrity_vad_dead_max_prob_ceiling``.
+
+            The first two conditions distinguish from
+            :attr:`IntegrityVerdict.DRIVER_SILENT` (energy below floor)
+            and :attr:`IntegrityVerdict.VAD_MUTE` (transient silence).
+        """
+        window = max(0, int(tuning.integrity_history_window_probes))
+        if window == 0 or len(history) < window:
+            return False
+        floor_db = float(tuning.integrity_apo_rms_floor_db)
+        dead_ceiling = float(tuning.integrity_vad_dead_max_prob_ceiling)
+        # Bound the scan to the window so callers passing a longer
+        # buffer (e.g. ring of 32 last probes) only get the recent slice
+        # evaluated. Take the LAST N entries — newest tail of the buffer.
+        recent = history[-window:]
+        return all(
+            entry.rms_db > floor_db and entry.vad_max_prob < dead_ceiling for entry in recent
+        )
 
     def _inconclusive(
         self,

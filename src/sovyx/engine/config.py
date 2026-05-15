@@ -1194,6 +1194,26 @@ class VoiceTuningConfig(BaseSettings):
     # we'd expect in practice.
     integrity_apo_rms_floor_db: float = -50.0
 
+    # ── Mission C1 (vad_mute reclassification) §T1.2 ──────────────────
+    # Probe-history window for distinguishing benign VAD_MUTE (user not
+    # speaking — self-resolves within 2-3 probes when speech resumes)
+    # from VAD_FRONTEND_DEAD (Silero LSTM corruption / ONNX session-state
+    # fault — stays dead across the full window regardless of input).
+    # The coordinator owns the history (per ADR-D5); the classifier reads
+    # the count from this knob to decide when sustained-VAD-silence-with-
+    # energy crosses into the new VAD_FRONTEND_DEAD class.
+    #
+    # Default 5 probes × integrity_probe_duration_s (3.0 s) = 15 s of
+    # sustained-dead evidence before declaring frontend-dead. Lower
+    # values risk false positives on legitimately quiet stretches; higher
+    # values delay the reset ladder. Calibrate during v0.44.2 telemetry
+    # window before STRICT flip.
+    #
+    # Anti-pattern #39(a) — verdict-disjoint remediation: VAD_FRONTEND_DEAD
+    # routes to the Silero/normalizer/AGC2 reset ladder, distinct from
+    # APO_DEGRADED's bypass-strategy ladder.
+    integrity_history_window_probes: int = 5
+
     # APO_DEGRADED quarantine — mirrors the KERNEL_INVALIDATED
     # precedent. When a strategy iterator exhausts without restoring
     # integrity, the endpoint is quarantined and the factory fails

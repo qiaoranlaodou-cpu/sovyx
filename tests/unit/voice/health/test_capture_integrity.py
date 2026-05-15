@@ -1066,3 +1066,426 @@ class TestInconclusiveRetry:
         retry_events = _records_named(caplog, "capture_integrity_inconclusive_retry")
         assert len(retry_events) == 1
         assert retry_events[0]["retry_recovered"] is False
+
+
+# ══════════════════════════════════════════════════════════════════════
+# Mission C1 §T1.2 — classifier extension regression suite.
+#
+# Mission anchor:
+#   docs-internal/missions/MISSION-c1-vad-mute-reclassification-2026-05-14.md
+#   §T1.2 + §9.1 + §20.O (Agent-4 audit-derived additions).
+#
+# These tests exercise the REAL CaptureIntegrityProbe._classify decision
+# tree + the two new static helpers (_is_format_mismatch,
+# _is_vad_frontend_dead). They do NOT route through the coordinator —
+# coordinator dispatch is T1.3 and lives in its own test file.
+#
+# All assertions use `.value ==` rather than `is` per ADR-D6 + §20.N
+# (anti-pattern #8 xdist-safety for NEW tests).
+# ══════════════════════════════════════════════════════════════════════
+
+
+def _classifier_only_probe() -> Any:
+    """Build a CaptureIntegrityProbe with a stub VAD.
+
+    _classify never touches the VAD instance; the constructor requires
+    ``vad`` only because _analyse_sync uses it. A plain ``object()``
+    suffices and keeps the test surface minimal.
+    """
+    from sovyx.voice.health.capture_integrity import CaptureIntegrityProbe
+
+    return CaptureIntegrityProbe(vad=object(), tuning=None)  # type: ignore[arg-type]
+
+
+def _history_entry(
+    *,
+    rms_db: float,
+    vad_max_prob: float,
+) -> IntegrityResult:
+    """Build a synthetic IntegrityResult for history-window tests.
+
+    Other fields are spec-stable placeholders — the dead-frontend check
+    only reads rms_db + vad_max_prob.
+    """
+    return IntegrityResult(
+        verdict=IntegrityVerdict.VAD_MUTE,
+        endpoint_guid="guid-history",
+        rms_db=rms_db,
+        vad_max_prob=vad_max_prob,
+        spectral_flatness=0.2,
+        spectral_rolloff_hz=5_000.0,
+        duration_s=3.0,
+        probed_at_utc=datetime.now(UTC),
+        raw_frames=int(3.0 * _SAMPLE_RATE),
+        detail="",
+    )
+
+
+class TestIsFormatMismatchHelper:
+    """Mission C1 T1.2 — _is_format_mismatch static helper contract."""
+
+    def test_wellformed_mono_int16_returns_false(self) -> None:
+        from sovyx.voice.health.capture_integrity import CaptureIntegrityProbe
+
+        frames = np.zeros(2048, dtype=np.int16)
+        assert CaptureIntegrityProbe._is_format_mismatch(frames) is False
+
+    def test_float32_dtype_returns_true(self) -> None:
+        from sovyx.voice.health.capture_integrity import CaptureIntegrityProbe
+
+        frames = np.zeros(2048, dtype=np.float32)
+        assert CaptureIntegrityProbe._is_format_mismatch(frames) is True  # type: ignore[arg-type]
+
+    def test_int32_dtype_returns_true(self) -> None:
+        from sovyx.voice.health.capture_integrity import CaptureIntegrityProbe
+
+        frames = np.zeros(2048, dtype=np.int32)
+        assert CaptureIntegrityProbe._is_format_mismatch(frames) is True  # type: ignore[arg-type]
+
+    def test_stereo_2d_shape_returns_true(self) -> None:
+        from sovyx.voice.health.capture_integrity import CaptureIntegrityProbe
+
+        # Mono int16 but in a (samples, channels) layout — Silero expects
+        # a 1-D buffer; the 2-D shape is a format mismatch.
+        frames = np.zeros((1024, 2), dtype=np.int16)
+        assert CaptureIntegrityProbe._is_format_mismatch(frames) is True
+
+
+class TestIsVadFrontendDeadHelper:
+    """Mission C1 T1.2 + §2.3 — _is_vad_frontend_dead trajectory check."""
+
+    def test_empty_history_returns_false(self) -> None:
+        from sovyx.voice.health.capture_integrity import CaptureIntegrityProbe
+
+        assert CaptureIntegrityProbe._is_vad_frontend_dead((), tuning=VoiceTuningConfig()) is False
+
+    def test_short_history_returns_false(self) -> None:
+        # 4 entries vs default window of 5 → insufficient evidence.
+        from sovyx.voice.health.capture_integrity import CaptureIntegrityProbe
+
+        history = tuple(_history_entry(rms_db=-30.0, vad_max_prob=0.001) for _ in range(4))
+        assert (
+            CaptureIntegrityProbe._is_vad_frontend_dead(
+                history,
+                tuning=VoiceTuningConfig(),
+            )
+            is False
+        )
+
+    def test_full_window_sustained_dead_returns_true(self) -> None:
+        # 5 consecutive probes all with RMS above APO floor + VAD at noise.
+        from sovyx.voice.health.capture_integrity import CaptureIntegrityProbe
+
+        history = tuple(_history_entry(rms_db=-30.0, vad_max_prob=0.001) for _ in range(5))
+        assert (
+            CaptureIntegrityProbe._is_vad_frontend_dead(
+                history,
+                tuning=VoiceTuningConfig(),
+            )
+            is True
+        )
+
+    def test_one_recent_healthy_probe_falsifies(self) -> None:
+        # 4 dead + 1 recovered → frontend can respond, not dead.
+        # The helper inspects the LAST `window` entries (recent slice).
+        from sovyx.voice.health.capture_integrity import CaptureIntegrityProbe
+
+        history = (
+            *(_history_entry(rms_db=-30.0, vad_max_prob=0.001) for _ in range(4)),
+            _history_entry(rms_db=-30.0, vad_max_prob=0.85),  # responsive
+        )
+        assert (
+            CaptureIntegrityProbe._is_vad_frontend_dead(
+                history,
+                tuning=VoiceTuningConfig(),
+            )
+            is False
+        )
+
+    def test_below_rms_floor_falsifies(self) -> None:
+        # Sustained VAD silence but with energy below the APO floor —
+        # this is DRIVER_SILENT territory, not frontend-dead. The helper
+        # must reject so the classifier routes to DRIVER_SILENT instead.
+        from sovyx.voice.health.capture_integrity import CaptureIntegrityProbe
+
+        history = tuple(_history_entry(rms_db=-90.0, vad_max_prob=0.001) for _ in range(5))
+        assert (
+            CaptureIntegrityProbe._is_vad_frontend_dead(
+                history,
+                tuning=VoiceTuningConfig(),
+            )
+            is False
+        )
+
+    def test_threshold_boundary_inclusive_vs_exclusive(self) -> None:
+        # rms_db AT floor (=-50.0) is NOT above floor (strict `>`). Helper
+        # rejects to avoid edge-of-floor false positives.
+        from sovyx.voice.health.capture_integrity import CaptureIntegrityProbe
+
+        tuning = VoiceTuningConfig()
+        history = tuple(
+            _history_entry(
+                rms_db=tuning.integrity_apo_rms_floor_db,  # exactly at floor
+                vad_max_prob=0.001,
+            )
+            for _ in range(5)
+        )
+        assert CaptureIntegrityProbe._is_vad_frontend_dead(history, tuning=tuning) is False
+
+    def test_buffer_longer_than_window_evaluates_recent_slice(self) -> None:
+        # 20-entry history, oldest 15 are healthy, newest 5 are dead.
+        # The helper must evaluate the recent 5 → DEAD.
+        from sovyx.voice.health.capture_integrity import CaptureIntegrityProbe
+
+        history = (
+            *(_history_entry(rms_db=-30.0, vad_max_prob=0.85) for _ in range(15)),
+            *(_history_entry(rms_db=-30.0, vad_max_prob=0.001) for _ in range(5)),
+        )
+        assert (
+            CaptureIntegrityProbe._is_vad_frontend_dead(
+                history,
+                tuning=VoiceTuningConfig(),
+            )
+            is True
+        )
+
+    def test_window_zero_returns_false(self) -> None:
+        # Defensive: a misconfigured window=0 must not fire (any history
+        # would "satisfy" len() >= 0 — protects against telemetry-only
+        # operator overrides that zero the knob).
+        from sovyx.voice.health.capture_integrity import CaptureIntegrityProbe
+
+        tuning = VoiceTuningConfig(integrity_history_window_probes=0)
+        history = tuple(_history_entry(rms_db=-30.0, vad_max_prob=0.001) for _ in range(5))
+        assert CaptureIntegrityProbe._is_vad_frontend_dead(history, tuning=tuning) is False
+
+
+class TestClassifyDecisionTree:
+    """Mission C1 T1.2 — _classify produces the right verdict per branch."""
+
+    def test_healthy_signal_takes_first_branch(self) -> None:
+        # Regression: HEALTHY classification still wins ahead of any other.
+        probe = _classifier_only_probe()
+        verdict = probe._classify(
+            rms_db=-25.0,
+            vad_max=0.85,  # responsive VAD
+            flatness=0.2,
+            rolloff_hz=6_500.0,
+            tuning=VoiceTuningConfig(),
+            frames=np.zeros(2048, dtype=np.int16),
+            history=(),
+        )
+        assert verdict.value == "healthy"
+
+    def test_driver_silent_below_rms_ceiling(self) -> None:
+        # Regression: very-low-RMS short-circuits to DRIVER_SILENT.
+        probe = _classifier_only_probe()
+        verdict = probe._classify(
+            rms_db=-95.0,
+            vad_max=0.001,
+            flatness=0.2,
+            rolloff_hz=6_500.0,
+            tuning=VoiceTuningConfig(),
+            frames=np.zeros(2048, dtype=np.int16),
+            history=(),
+        )
+        assert verdict.value == "driver_silent"
+
+    def test_format_mismatch_floats_to_new_verdict(self) -> None:
+        # Mission C1 new branch: wrong dtype short-circuits to
+        # FORMAT_MISMATCH BEFORE spectral classification.
+        probe = _classifier_only_probe()
+        verdict = probe._classify(
+            rms_db=-30.0,
+            vad_max=0.001,
+            flatness=0.5,  # would otherwise look APO-like
+            rolloff_hz=2_000.0,
+            tuning=VoiceTuningConfig(),
+            frames=np.zeros(2048, dtype=np.float32),  # type: ignore[arg-type]
+            history=(),
+        )
+        assert verdict.value == "format_mismatch"
+
+    def test_apo_signature_routes_to_apo_degraded(self) -> None:
+        # Regression: classic APO signature (loud carrier, dead VAD,
+        # collapsed rolloff) still classifies APO_DEGRADED.
+        probe = _classifier_only_probe()
+        verdict = probe._classify(
+            rms_db=-30.0,
+            vad_max=0.001,
+            flatness=0.4,  # > apo ceiling
+            rolloff_hz=2_500.0,  # < apo rolloff ceiling
+            tuning=VoiceTuningConfig(),
+            frames=np.zeros(2048, dtype=np.int16),
+            history=(),
+        )
+        assert verdict.value == "apo_degraded"
+
+    def test_vad_frontend_dead_with_full_dead_history(self) -> None:
+        # Mission C1 new branch: sustained-VAD-silence-with-energy across
+        # the configured window → VAD_FRONTEND_DEAD.
+        probe = _classifier_only_probe()
+        history = tuple(_history_entry(rms_db=-30.0, vad_max_prob=0.001) for _ in range(5))
+        verdict = probe._classify(
+            rms_db=-30.0,
+            vad_max=0.001,
+            flatness=0.15,  # clean speech-band → NOT apo_signature
+            rolloff_hz=6_500.0,
+            tuning=VoiceTuningConfig(),
+            frames=np.zeros(2048, dtype=np.int16),
+            history=history,
+        )
+        assert verdict.value == "vad_frontend_dead"
+
+    def test_vad_mute_when_history_empty_regression(self) -> None:
+        # Mission C1 §T1.2 acceptance: empty history + sustained-quiet
+        # signal must STILL return VAD_MUTE (default behavior preserved
+        # for coordinator paths that don't pass history yet).
+        probe = _classifier_only_probe()
+        verdict = probe._classify(
+            rms_db=-30.0,
+            vad_max=0.001,
+            flatness=0.15,
+            rolloff_hz=6_500.0,
+            tuning=VoiceTuningConfig(),
+            frames=np.zeros(2048, dtype=np.int16),
+            history=(),
+        )
+        assert verdict.value == "vad_mute"
+
+    def test_vad_mute_falls_through_with_partial_history(self) -> None:
+        # 3 dead entries < window of 5 → insufficient evidence → benign.
+        probe = _classifier_only_probe()
+        history = tuple(_history_entry(rms_db=-30.0, vad_max_prob=0.001) for _ in range(3))
+        verdict = probe._classify(
+            rms_db=-30.0,
+            vad_max=0.001,
+            flatness=0.15,
+            rolloff_hz=6_500.0,
+            tuning=VoiceTuningConfig(),
+            frames=np.zeros(2048, dtype=np.int16),
+            history=history,
+        )
+        assert verdict.value == "vad_mute"
+
+    def test_format_mismatch_wins_over_dead_history(self) -> None:
+        # Mission C1 decision-tree ordering: FORMAT_MISMATCH fires BEFORE
+        # VAD_FRONTEND_DEAD. A buffer with wrong shape AND a dead history
+        # → FORMAT_MISMATCH (fix the input shape first; only then can VAD
+        # health be evaluated meaningfully).
+        probe = _classifier_only_probe()
+        history = tuple(_history_entry(rms_db=-30.0, vad_max_prob=0.001) for _ in range(5))
+        verdict = probe._classify(
+            rms_db=-30.0,
+            vad_max=0.001,
+            flatness=0.15,
+            rolloff_hz=6_500.0,
+            tuning=VoiceTuningConfig(),
+            frames=np.zeros(2048, dtype=np.float32),  # type: ignore[arg-type]
+            history=history,
+        )
+        assert verdict.value == "format_mismatch"
+
+    def test_classify_without_frames_skips_format_check(self) -> None:
+        # Backward compat: pre-mission callers that pass frames=None
+        # (or rely on the default) must still reach a verdict; the
+        # format check is a no-op without frames.
+        probe = _classifier_only_probe()
+        verdict = probe._classify(
+            rms_db=-30.0,
+            vad_max=0.001,
+            flatness=0.15,
+            rolloff_hz=6_500.0,
+            tuning=VoiceTuningConfig(),
+            frames=None,
+            history=(),
+        )
+        # Falls through to VAD_MUTE (benign) with no history.
+        assert verdict.value == "vad_mute"
+
+
+class TestClassifierPropertyInvariants:
+    """Mission C1 §9.3 — _classify must never raise on any input combination."""
+
+    @given(
+        rms_db=st.floats(min_value=-150.0, max_value=10.0, allow_nan=False, allow_infinity=False),
+        vad_max=st.floats(min_value=0.0, max_value=1.0, allow_nan=False, allow_infinity=False),
+        flatness=st.floats(min_value=0.0, max_value=1.0, allow_nan=False, allow_infinity=False),
+        rolloff_hz=st.floats(
+            min_value=0.0,
+            max_value=16_000.0,
+            allow_nan=False,
+            allow_infinity=False,
+        ),
+        history_size=st.integers(min_value=0, max_value=20),
+    )
+    @hp_settings(max_examples=50, deadline=None)
+    def test_classify_never_raises_and_returns_known_verdict(
+        self,
+        rms_db: float,
+        vad_max: float,
+        flatness: float,
+        rolloff_hz: float,
+        history_size: int,
+    ) -> None:
+        probe = _classifier_only_probe()
+        history = tuple(
+            _history_entry(rms_db=rms_db, vad_max_prob=vad_max) for _ in range(history_size)
+        )
+        verdict = probe._classify(
+            rms_db=rms_db,
+            vad_max=vad_max,
+            flatness=flatness,
+            rolloff_hz=rolloff_hz,
+            tuning=VoiceTuningConfig(),
+            frames=np.zeros(2048, dtype=np.int16),
+            history=history,
+        )
+        # Invariant: classifier output is always a known StrEnum member.
+        assert verdict.value in {
+            "healthy",
+            "apo_degraded",
+            "driver_silent",
+            "vad_mute",
+            "vad_frontend_dead",
+            "format_mismatch",
+            "inconclusive",  # Defensive — currently unreachable from _classify.
+        }
+
+
+class TestProbeApiHistoryKwarg:
+    """Mission C1 T1.2 — probe_warm / analyse_raw accept the new `history` kwarg."""
+
+    @pytest.mark.asyncio()
+    async def test_analyse_raw_accepts_history_keyword(self) -> None:
+        # Smoke test: the new keyword-only `history` is accepted by
+        # analyse_raw without raising TypeError. Real classification is
+        # exercised by the _classify tests above; here we just pin the
+        # public surface.
+        from sovyx.voice.health.capture_integrity import CaptureIntegrityProbe
+
+        probe = CaptureIntegrityProbe(vad=object(), tuning=None)  # type: ignore[arg-type]
+        # Buffer below _MIN_SAMPLES_FOR_ANALYSIS — analyse_raw exits via
+        # the INCONCLUSIVE branch before touching the VAD, so no real
+        # VAD wiring is needed.
+        frames = np.zeros(64, dtype=np.int16)
+        history = (_history_entry(rms_db=-30.0, vad_max_prob=0.001),)
+        result = await probe.analyse_raw(
+            frames,
+            endpoint_guid="guid-test",
+            history=history,
+        )
+        assert result.verdict.value == "inconclusive"
+
+    @pytest.mark.asyncio()
+    async def test_probe_warm_accepts_history_keyword(self) -> None:
+        from sovyx.voice.health.capture_integrity import CaptureIntegrityProbe
+
+        probe = CaptureIntegrityProbe(vad=object(), tuning=None)  # type: ignore[arg-type]
+        # Fake capture returning an underrun buffer → INCONCLUSIVE.
+        capture = _FakeCaptureTask(post_apply_frames=np.zeros(64, dtype=np.int16))
+        result = await probe.probe_warm(
+            capture,  # type: ignore[arg-type]
+            history=(),
+        )
+        assert result.verdict.value == "inconclusive"
