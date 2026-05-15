@@ -288,11 +288,29 @@ class IntegrityResult:
 
 
 class BypassVerdict(StrEnum):
-    """Outcome of one :meth:`PlatformBypassStrategy.apply` invocation.
+    """Outcome of one :meth:`PlatformBypassStrategy.apply` invocation
+    **OR** one coordinator-level dispatch decision (Mission C1 T1.5+).
 
-    A strategy reports exactly one verdict per ``apply``. The
-    coordinator reads the verdict + the post-apply :class:`IntegrityResult`
-    to decide whether to stop, advance to the next strategy, or revert.
+    The legacy 5 values describe strategy attempts: a strategy reports
+    exactly one of them per ``apply`` and the coordinator reads the
+    verdict + the post-apply :class:`IntegrityResult` to decide whether
+    to stop, advance, or revert.
+
+    The 4 Mission-C1 values describe NON-strategy outcomes that the
+    coordinator returns from its pre-bypass dispatch (T1.3) or from the
+    VAD-frontend reset ladder (T1.4). They are NOT strategy outcomes:
+
+    * They do not pass through :class:`PlatformBypassStrategy`.
+    * They MUST NOT inflate :mod:`_bypass_tier_state` tier counters
+      (see :func:`_bypass_tier_state.mark_strategy_verdict` defensive
+      early-return for the explicit allow-list).
+    * They route through dedicated telemetry helpers
+      (:func:`record_vad_frontend_reset_outcome` /
+      :func:`record_coordinator_outcome`) rather than
+      :func:`record_bypass_strategy_verdict`.
+
+    Anti-pattern #39(a) — verdict-disjoint remediation: each outcome
+    maps to a disjoint downstream handler in the factory consumer.
 
     Members:
         APPLIED_HEALTHY: Strategy applied AND the subsequent integrity
@@ -307,6 +325,31 @@ class BypassVerdict(StrEnum):
             restart verdict reported failure. Coordinator advances.
         REVERTED: ``apply`` succeeded but ``revert`` was called
             subsequently (strategy B proved strictly better than A).
+        VAD_FRONTEND_RESET_APPLIED_HEALTHY: One step of the Mission C1
+            T1.4 VAD-frontend reset ladder (Silero reset → re-instantiate
+            → normalizer engage → AGC2 floor lift → fallback VAD) ran
+            AND the post-ladder integrity re-probe returned HEALTHY.
+            Terminal success — coordinator does NOT latch terminated
+            (the pipeline is healthy again; future heartbeats welcome).
+            New in v0.44.0.
+        VAD_FRONTEND_RESET_APPLIED_STILL_DEAD: One step of the ladder
+            applied cleanly but the re-probe still classifies the signal
+            as VAD_FRONTEND_DEAD. Coordinator advances to the next
+            ladder step (eventually quarantining with reason
+            ``"vad_frontend_dead"`` if all steps exhaust). New in v0.44.0.
+        CASCADE_REEVALUATION_REQUESTED: Coordinator dispatched on a
+            :attr:`IntegrityVerdict.DRIVER_SILENT` verdict; the driver is
+            open but not delivering. Cascade re-walk is the correct fix
+            (not bypass). The factory consumer triggers cascade
+            re-evaluation; coordinator does NOT latch terminated.
+            New in v0.44.0.
+        NORMALIZER_ENGAGEMENT_REQUESTED: Coordinator dispatched on a
+            :attr:`IntegrityVerdict.FORMAT_MISMATCH` verdict; frame
+            shape / dtype reaching the VAD is wrong. The factory
+            consumer calls
+            :meth:`AudioCaptureTask.engage_frame_normalizer` (T1.8) to
+            force a stream re-open; coordinator does NOT latch terminated.
+            New in v0.44.0.
     """
 
     APPLIED_HEALTHY = "applied_healthy"
@@ -314,6 +357,10 @@ class BypassVerdict(StrEnum):
     NOT_APPLICABLE = "not_applicable"
     FAILED_TO_APPLY = "failed_to_apply"
     REVERTED = "reverted"
+    VAD_FRONTEND_RESET_APPLIED_HEALTHY = "vad_frontend_reset_applied_healthy"
+    VAD_FRONTEND_RESET_APPLIED_STILL_DEAD = "vad_frontend_reset_applied_still_dead"
+    CASCADE_REEVALUATION_REQUESTED = "cascade_reevaluation_requested"
+    NORMALIZER_ENGAGEMENT_REQUESTED = "normalizer_engagement_requested"
 
 
 @dataclass(frozen=True, slots=True)

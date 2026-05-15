@@ -544,10 +544,60 @@ class MetricsRegistry:
         self.voice_health_capture_integrity_verdicts = self._counter(
             "sovyx.voice.health.capture_integrity.verdicts",
             "Warm integrity-probe classifications (labels: verdict="
-            "healthy|apo_degraded|driver_silent|vad_mute|inconclusive, "
+            "healthy|apo_degraded|driver_silent|vad_mute|"
+            "vad_frontend_dead|format_mismatch|inconclusive, "
             "phase=pre_bypass|post_bypass|recheck). OS-agnostic "
             "degradation signal derived from RMS + spectral flatness "
-            "+ energy rolloff + Silero VAD max probability.",
+            "+ energy rolloff + Silero VAD max probability. "
+            "Mission C1 v0.44.0 added vad_frontend_dead + "
+            "format_mismatch — see contract/_bypass.py IntegrityVerdict.",
+        )
+        # Mission C1 §T1.9 — VAD-frontend reset ladder telemetry. Per-step
+        # counter for the Silero reset → re-instantiate → FrameNormalizer
+        # engage → AGC2 floor lift → fallback VAD ladder that recovers
+        # IntegrityVerdict.VAD_FRONTEND_DEAD. Labels split L1..L5 steps
+        # so dashboards can compute per-step success rates and tune the
+        # ladder ordering against operator-hardware data.
+        self.voice_health_vad_frontend_reset_outcomes = self._counter(
+            "sovyx.voice.health.vad_frontend_reset.outcomes",
+            "VAD-frontend reset ladder per-step outcomes (labels: step="
+            "silero_reset|silero_reinstantiate|normalizer_engage|"
+            "agc2_floor_lift|fallback_vad, success=true|false, reason). "
+            "Fires once per attempted ladder step inside the Mission C1 "
+            "T1.4 _vad_frontend_recovery module. Dashboards: per-step "
+            "success rate to detect Silero session-state corruption "
+            "patterns on operator hardware.",
+        )
+        # Mission C1 §T1.9 — coordinator-outcome counter for non-strategy
+        # verdicts (BypassVerdict.CASCADE_REEVALUATION_REQUESTED,
+        # NORMALIZER_ENGAGEMENT_REQUESTED, benign VAD_MUTE skips). These
+        # outcomes do NOT belong to any PlatformBypassStrategy + MUST NOT
+        # inflate _bypass_tier_state counters. Kept separate from
+        # voice_health_bypass_strategy_verdicts so dashboards segment
+        # strategy attempts from coordinator dispatch decisions cleanly.
+        self.voice_health_coordinator_outcomes = self._counter(
+            "sovyx.voice.health.coordinator.outcomes",
+            "Coordinator dispatch outcomes that do NOT pass through a "
+            "PlatformBypassStrategy (labels: kind=benign_skip|"
+            "cascade_reevaluation_requested|normalizer_engagement_"
+            "requested, verdict, reason). Operators read this to see "
+            "what the coordinator chose to do INSTEAD of running the "
+            "strategy ladder.",
+        )
+        # Mission C1 §T1.9 — quarantine reason dual-emit calibration
+        # counter (TEMPORARY — removed in v0.45.0 STRICT flip). Fires
+        # once per quarantine event during the LENIENT phase whenever
+        # the derived reason differs from the legacy "apo_degraded"
+        # value, so operators can validate the verdict→reason mapping
+        # before the STRICT flip drops the legacy field.
+        self.voice_health_quarantine_reason_dual_emit = self._counter(
+            "sovyx.voice.health.quarantine.reason_dual_emit",
+            "Mission C1 LENIENT-phase calibration counter (TEMP — "
+            "removed in v0.45.0). Fires when quarantine reason "
+            "verdict-derivation produces a non-legacy value (labels: "
+            "legacy_reason, derived_reason). Used to validate the "
+            "verdict→reason map before STRICT flip drops the legacy "
+            "apo_degraded default. See mission §4.2 ADR-D2.",
         )
         self.voice_health_bypass_probe_wait_ms = self._histogram(
             "sovyx.voice.health.bypass.probe_wait_ms",

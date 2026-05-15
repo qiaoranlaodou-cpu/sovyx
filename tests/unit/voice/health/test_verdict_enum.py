@@ -80,27 +80,63 @@ class TestIntegrityVerdict:
 
 
 class TestBypassVerdict:
-    """Mission C1 — BypassVerdict regression guard (T1.5 will extend this).
+    """Mission C1 — BypassVerdict regression guard post-T1.5.
 
-    This guard pins the v0.43.x value set BEFORE the T1.5 extension lands so
-    the addition is observable as a deliberate diff to this set.
+    Pins the v0.44.0 BypassVerdict value set. The 4 new variants
+    (VAD_FRONTEND_RESET_APPLIED_HEALTHY / VAD_FRONTEND_RESET_APPLIED_STILL_DEAD
+    / CASCADE_REEVALUATION_REQUESTED / NORMALIZER_ENGAGEMENT_REQUESTED) are
+    routed through telemetry helpers OTHER than record_bypass_strategy_verdict
+    — see _C1_NON_STRATEGY_VERDICTS in _bypass_tier_state.py + the
+    BypassVerdict docstring for the routing contract.
     """
 
     def test_is_strenum(self) -> None:
         assert issubclass(BypassVerdict, str)
         assert BypassVerdict.APPLIED_HEALTHY == "applied_healthy"
 
-    def test_value_set_present_pre_t1_5(self) -> None:
-        # Pre-T1.5 BypassVerdict value set. T1.5 will widen this with
-        # VAD_FRONTEND_RESET_APPLIED_HEALTHY / VAD_FRONTEND_RESET_APPLIED_STILL_DEAD
-        # / CASCADE_REEVALUATION_REQUESTED / NORMALIZER_ENGAGEMENT_REQUESTED.
-        # When that commit lands, this test must be updated to the new set;
-        # the diff IS the regression record.
+    def test_value_set_present(self) -> None:
+        # Mission C1 T1.5 — closed-set guard for the v0.44.0 BypassVerdict
+        # value set. Any drop / rename is a breaking contract change for
+        # downstream telemetry dashboards and the _bypass_tier_state
+        # filter constants. Adding a new value requires extending this
+        # set in the same commit + classifying the new value as
+        # strategy-tier eligible OR non-strategy per the BypassVerdict
+        # docstring routing contract.
         expected = {
+            # Legacy 5 — strategy attempt outcomes routed through
+            # record_bypass_strategy_verdict + _bypass_tier_state.
             "applied_healthy",
             "applied_still_dead",
             "not_applicable",
             "failed_to_apply",
             "reverted",
+            # Mission C1 T1.5 — VAD-frontend reset ladder step outcomes.
+            # Routed through record_vad_frontend_reset_outcome.
+            "vad_frontend_reset_applied_healthy",
+            "vad_frontend_reset_applied_still_dead",
+            # Mission C1 T1.5 — coordinator dispatch decisions.
+            # Routed through record_coordinator_outcome.
+            "cascade_reevaluation_requested",
+            "normalizer_engagement_requested",
         }
         assert {v.value for v in BypassVerdict} == expected
+
+    def test_new_members_constructible_by_value(self) -> None:
+        # Round-trip — confirms StrEnum value-constructor lookup and
+        # identity stability for the new T1.5 members.
+        assert (
+            BypassVerdict("vad_frontend_reset_applied_healthy")
+            is BypassVerdict.VAD_FRONTEND_RESET_APPLIED_HEALTHY
+        )
+        assert (
+            BypassVerdict("vad_frontend_reset_applied_still_dead")
+            is BypassVerdict.VAD_FRONTEND_RESET_APPLIED_STILL_DEAD
+        )
+        assert (
+            BypassVerdict("cascade_reevaluation_requested")
+            is BypassVerdict.CASCADE_REEVALUATION_REQUESTED
+        )
+        assert (
+            BypassVerdict("normalizer_engagement_requested")
+            is BypassVerdict.NORMALIZER_ENGAGEMENT_REQUESTED
+        )

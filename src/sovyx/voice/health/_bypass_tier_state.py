@@ -80,6 +80,23 @@ _TIER2_COMBINED_SUCCESS_VERDICT = "rotated_then_exclusive_engaged"
 _TIER3_STRATEGY_NAME = "win.wasapi_exclusive"
 _TIER3_SUCCESS_VERDICT = "applied_healthy"
 
+# Mission C1 §T1.5 + §20.M T1.9.a — BypassVerdict values introduced in
+# v0.44.0 that describe NON-strategy outcomes (coordinator dispatch
+# decisions + VAD-frontend reset ladder steps). These MUST NOT inflate
+# tier counters even if a caller accidentally passes them with the
+# Tier 3 strategy name. The tier system models Windows APO-bypass
+# strategy attempts only; reset-ladder + dispatch outcomes route
+# through record_coordinator_outcome / record_vad_frontend_reset_outcome
+# in _metrics_bypass_coordinator.py.
+_C1_NON_STRATEGY_VERDICTS = frozenset(
+    {
+        "vad_frontend_reset_applied_healthy",
+        "vad_frontend_reset_applied_still_dead",
+        "cascade_reevaluation_requested",
+        "normalizer_engagement_requested",
+    },
+)
+
 
 _state = BypassTierSnapshot()
 _lock = threading.Lock()
@@ -142,10 +159,24 @@ def mark_strategy_verdict(*, strategy: str, verdict: str) -> None:
     an attempt, so we skip it (matches the semantics of
     ``record_tier1_raw_attempted`` which fires only after eligibility
     passes).
+
+    Mission C1 §T1.5 + §20.M T1.9.a defensive early-return: even if a
+    caller accidentally pairs a non-strategy BypassVerdict
+    (``vad_frontend_reset_*``, ``cascade_reevaluation_requested``,
+    ``normalizer_engagement_requested``) with the Tier 3 strategy name,
+    this helper rejects it. Those verdicts describe coordinator
+    dispatch / reset-ladder outcomes that have no place in the
+    strategy-tier model; routing them here would silently inflate
+    ``tier3_wasapi_exclusive_attempted``. The
+    :class:`BypassVerdict` docstring documents the routing contract
+    on the producer side; this guard enforces it on the consumer side.
     """
     if strategy != _TIER3_STRATEGY_NAME:
         return
     if verdict == "not_applicable":
+        return
+    # Mission C1 §T1.5 defensive guard — see _C1_NON_STRATEGY_VERDICTS docstring.
+    if verdict in _C1_NON_STRATEGY_VERDICTS:
         return
     with _lock:
         _state.tier3_wasapi_exclusive_attempted += 1

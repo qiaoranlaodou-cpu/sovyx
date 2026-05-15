@@ -39,6 +39,10 @@ METRIC_BYPASS_PROBE_WAIT_MS = "sovyx.voice.health.bypass.probe_wait_ms"
 METRIC_BYPASS_PROBE_WINDOW_CONTAMINATED = "sovyx.voice.health.bypass.probe_window_contaminated"
 METRIC_BYPASS_IMPROVEMENT_RESOLUTION = "sovyx.voice.health.bypass.improvement_resolution"
 METRIC_CAPTURE_INTEGRITY_VERDICTS = "sovyx.voice.health.capture_integrity.verdicts"
+# Mission C1 §T1.9 metric constants — see MetricsRegistry definitions.
+METRIC_VAD_FRONTEND_RESET_OUTCOMES = "sovyx.voice.health.vad_frontend_reset.outcomes"
+METRIC_COORDINATOR_OUTCOMES = "sovyx.voice.health.coordinator.outcomes"
+METRIC_QUARANTINE_REASON_DUAL_EMIT = "sovyx.voice.health.quarantine.reason_dual_emit"
 
 
 # ── Record helpers ──────────────────────────────────────────────────
@@ -144,7 +148,9 @@ def record_capture_integrity_verdict(
     Args:
         verdict: :class:`IntegrityVerdict` value — ``"healthy"`` |
             ``"apo_degraded"`` | ``"driver_silent"`` | ``"vad_mute"`` |
-            ``"inconclusive"``.
+            ``"vad_frontend_dead"`` | ``"format_mismatch"`` |
+            ``"inconclusive"``. Mission C1 v0.44.0 added the two
+            middle values — see :class:`IntegrityVerdict` docstring.
         phase: ``"pre_bypass"`` (coordinator probe before apply),
             ``"post_bypass"`` (coordinator probe after apply + settle),
             ``"recheck"`` (watchdog APO recheck loop). Low-cardinality.
@@ -161,15 +167,198 @@ def record_capture_integrity_verdict(
     )
 
 
+# ── Mission C1 §T1.9 — new helpers ──────────────────────────────────
+
+
+def record_vad_frontend_reset_outcome(
+    *,
+    step: str,
+    success: bool,
+    elapsed_ms: float,
+    reason: str = "",
+) -> None:
+    """Record one step of the VAD-frontend reset ladder (Mission C1 T1.4).
+
+    The ladder runs L1..L5 in order (Silero reset → re-instantiate →
+    FrameNormalizer engage → AGC2 floor lift → fallback VAD) and stops
+    on the first step whose post-step integrity re-probe returns
+    HEALTHY. This helper fires once per attempted step so dashboards
+    can compute per-step success rates and tune the ladder ordering
+    against operator-hardware data.
+
+    Args:
+        step: ``"silero_reset"`` | ``"silero_reinstantiate"`` |
+            ``"normalizer_engage"`` | ``"agc2_floor_lift"`` |
+            ``"fallback_vad"``. Low-cardinality (5 values).
+        success: True iff the post-step integrity re-probe returned
+            HEALTHY (or, for the terminal fallback_vad step, iff the
+            pipeline accepted the fallback). False otherwise.
+        elapsed_ms: Wall-clock time the step took. Used to compute
+            ladder-step latency distributions.
+        reason: Optional low-cardinality tag — failure-mode token when
+            ``success=False`` (e.g. ``"onnx_session_init_failed"``,
+            ``"normalizer_already_engaged"``). Empty when ``success=True``.
+    """
+    counter = getattr(get_metrics(), "voice_health_vad_frontend_reset_outcomes", None)
+    if counter is None:
+        return
+    counter.add(
+        1,
+        attributes={
+            "step": step or "unknown",
+            "success": "true" if success else "false",
+            "reason": reason or "",
+            "elapsed_ms_bucket": _bucket_elapsed_ms(elapsed_ms),
+        },
+    )
+
+
+def record_coordinator_benign_skip(*, verdict: str, reason: str = "") -> None:
+    """Record a coordinator early-exit on a benign verdict (Mission C1 T1.3).
+
+    Fires when :meth:`CaptureIntegrityCoordinator.handle_deaf_signal`
+    returns empty outcomes because the pre-bypass probe classified the
+    signal as benign (HEALTHY false-alarm or VAD_MUTE — user not
+    speaking). Distinct from
+    :func:`record_bypass_strategy_verdict` because no strategy ran;
+    distinct from :func:`record_coordinator_outcome` because no
+    BypassOutcome was emitted at all.
+
+    Args:
+        verdict: :class:`IntegrityVerdict` value that triggered the
+            skip (``"healthy"`` for false-alarm, ``"vad_mute"`` for
+            user-not-speaking).
+        reason: Optional low-cardinality tag (``"false_alarm"`` |
+            ``"user_not_speaking"``).
+    """
+    counter = getattr(get_metrics(), "voice_health_coordinator_outcomes", None)
+    if counter is None:
+        return
+    counter.add(
+        1,
+        attributes={
+            "kind": "benign_skip",
+            "verdict": verdict or "unknown",
+            "reason": reason or "",
+        },
+    )
+
+
+def record_coordinator_outcome(*, verdict: str, reason: str = "") -> None:
+    """Record a coordinator non-strategy outcome (Mission C1 T1.3 + T1.6).
+
+    Fires when :meth:`CaptureIntegrityCoordinator.handle_deaf_signal`
+    returns a :class:`BypassOutcome` whose verdict is NOT a strategy
+    outcome — specifically
+    :attr:`BypassVerdict.CASCADE_REEVALUATION_REQUESTED` or
+    :attr:`BypassVerdict.NORMALIZER_ENGAGEMENT_REQUESTED`. These are
+    coordinator dispatch decisions, not strategy attempts; they MUST
+    NOT route through :func:`record_bypass_strategy_verdict` because
+    that helper mirrors to :mod:`_bypass_tier_state` and would falsely
+    inflate strategy attempt counters.
+
+    Args:
+        verdict: :class:`BypassVerdict` value
+            (``"cascade_reevaluation_requested"`` |
+            ``"normalizer_engagement_requested"``).
+        reason: Optional low-cardinality tag — typically the
+            :class:`IntegrityVerdict` that triggered the dispatch
+            (``"driver_silent"`` → cascade reevaluation,
+            ``"format_mismatch"`` → normalizer engagement).
+    """
+    counter = getattr(get_metrics(), "voice_health_coordinator_outcomes", None)
+    if counter is None:
+        return
+    counter.add(
+        1,
+        attributes={
+            "kind": verdict or "unknown",
+            "verdict": verdict or "unknown",
+            "reason": reason or "",
+        },
+    )
+
+
+def record_quarantine_reason_dual_emit(
+    *,
+    legacy_reason: str,
+    derived_reason: str,
+) -> None:
+    """Mission C1 §T1.7 LENIENT-phase calibration counter — TEMPORARY.
+
+    Fires once per quarantine event during the v0.44.x LENIENT phase
+    whenever the verdict-derived reason differs from the legacy
+    ``"apo_degraded"`` default. Operators read this to validate the
+    verdict→reason map before the v0.45.0 STRICT flip drops the legacy
+    field.
+
+    **Removal scheduled for v0.45.0** — both this helper and the
+    underlying :attr:`MetricsRegistry.voice_health_quarantine_reason_dual_emit`
+    counter are deleted in the STRICT-flip commit.
+
+    Args:
+        legacy_reason: The pre-mission default (typically
+            ``"apo_degraded"`` for the duration of LENIENT — kept on
+            :class:`QuarantineEntry.reason` so downstream consumers
+            don't break).
+        derived_reason: The verdict-derived value (``"apo_degraded"``
+            | ``"vad_frontend_dead"`` | ``"format_mismatch"``). Stored
+            on :class:`QuarantineEntry.derived_reason`.
+    """
+    if legacy_reason == derived_reason:
+        # No drift — nothing to calibrate. The counter only fires when
+        # the mapping diverges from the legacy default.
+        return
+    counter = getattr(get_metrics(), "voice_health_quarantine_reason_dual_emit", None)
+    if counter is None:
+        return
+    counter.add(
+        1,
+        attributes={
+            "legacy_reason": legacy_reason or "unknown",
+            "derived_reason": derived_reason or "unknown",
+        },
+    )
+
+
+# ── Internal helpers ────────────────────────────────────────────────
+
+
+def _bucket_elapsed_ms(elapsed_ms: float) -> str:
+    """Bucket elapsed-ms into low-cardinality label values.
+
+    Histogram instruments are the right home for raw latency
+    distributions, but the per-step counter benefits from a coarse
+    bucket label so dashboards can split "fast success" from "slow
+    success" without a histogram aggregation. Buckets follow the
+    standard OTel low-latency convention: <10ms, <100ms, <1s, >=1s.
+    """
+    elapsed_ms = max(0.0, float(elapsed_ms))
+    if elapsed_ms < 10.0:
+        return "lt_10ms"
+    if elapsed_ms < 100.0:
+        return "lt_100ms"
+    if elapsed_ms < 1_000.0:
+        return "lt_1s"
+    return "gte_1s"
+
+
 __all__ = [
     "METRIC_BYPASS_IMPROVEMENT_RESOLUTION",
     "METRIC_BYPASS_PROBE_WAIT_MS",
     "METRIC_BYPASS_PROBE_WINDOW_CONTAMINATED",
     "METRIC_BYPASS_STRATEGY_VERDICTS",
     "METRIC_CAPTURE_INTEGRITY_VERDICTS",
+    "METRIC_COORDINATOR_OUTCOMES",
+    "METRIC_QUARANTINE_REASON_DUAL_EMIT",
+    "METRIC_VAD_FRONTEND_RESET_OUTCOMES",
     "record_bypass_improvement_resolution",
     "record_bypass_probe_wait_ms",
     "record_bypass_probe_window_contaminated",
     "record_bypass_strategy_verdict",
     "record_capture_integrity_verdict",
+    "record_coordinator_benign_skip",
+    "record_coordinator_outcome",
+    "record_quarantine_reason_dual_emit",
+    "record_vad_frontend_reset_outcome",
 ]
