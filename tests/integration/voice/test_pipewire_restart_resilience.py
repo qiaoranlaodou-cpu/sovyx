@@ -15,6 +15,16 @@ Three branches covered:
    → UP emitted exactly once.
 3. **DOWN never gated**: DOWN transitions are NOT subject to the
    pactl gate (pactl can't be queried if the daemon is dead).
+
+Timing budget: ``poll_interval_s=0.05`` and ``await asyncio.sleep(0.25)``
+(or 0.4 for the retry test) — per CLAUDE.md anti-pattern #22 Windows
+``time.monotonic()`` ticks at ~15.6 ms, so the previous 0.01 / 0.06 s
+budget was below the coarse-clock floor and surfaced as flake on
+loaded Windows hosts (test passed in isolation, failed mid-suite at
+~9 min mark of the full pytest run). 50 ms poll × 3 rounds = 150 ms
+budget; 250 ms sleep leaves ~100 ms margin for event-loop scheduling
+under load. Linux CI is unaffected (sub-µs sleep) — the bump only
+raises the floor on platforms that need it.
 """
 
 from __future__ import annotations
@@ -55,7 +65,7 @@ class TestUpGate:
         states = iter(["inactive", "active", "active", "active"])
         monitor = LinuxAudioServiceMonitor(
             services_to_monitor=frozenset({"pipewire.service"}),
-            poll_interval_s=0.01,
+            poll_interval_s=0.05,
             query=_scripted_query(states),
         )
 
@@ -68,8 +78,8 @@ class TestUpGate:
         monitor._post_up_health_check = AsyncMock(return_value=True)  # type: ignore[method-assign]
 
         await monitor.start(collect)
-        # Two poll intervals = baseline + transition.
-        await asyncio.sleep(0.06)
+        # Two poll intervals = baseline + transition (anti-pattern #22).
+        await asyncio.sleep(0.25)
         await monitor.stop()
 
         up_events = [e for e in events if e.kind is AudioServiceEventKind.UP]
@@ -82,7 +92,7 @@ class TestUpGate:
         states = iter(["inactive", "active", "active", "active", "active", "active"])
         monitor = LinuxAudioServiceMonitor(
             services_to_monitor=frozenset({"pipewire.service"}),
-            poll_interval_s=0.01,
+            poll_interval_s=0.05,
             query=_scripted_query(states),
         )
 
@@ -97,8 +107,9 @@ class TestUpGate:
         monitor._post_up_health_check = health  # type: ignore[method-assign]
 
         await monitor.start(collect)
-        # Allow several poll rounds so the retry path engages.
-        await asyncio.sleep(0.15)
+        # Allow several poll rounds so the retry path engages
+        # (anti-pattern #22: ≥ 4 × poll_interval_s for Windows margin).
+        await asyncio.sleep(0.4)
         await monitor.stop()
 
         up_events = [e for e in events if e.kind is AudioServiceEventKind.UP]
@@ -115,7 +126,7 @@ class TestUpGate:
         states = iter(["active", "inactive", "inactive", "inactive"])
         monitor = LinuxAudioServiceMonitor(
             services_to_monitor=frozenset({"pipewire.service"}),
-            poll_interval_s=0.01,
+            poll_interval_s=0.05,
             query=_scripted_query(states),
         )
 
@@ -128,7 +139,8 @@ class TestUpGate:
         monitor._post_up_health_check = health  # type: ignore[method-assign]
 
         await monitor.start(collect)
-        await asyncio.sleep(0.06)
+        # Anti-pattern #22: ≥ 4 × poll_interval_s for Windows margin.
+        await asyncio.sleep(0.25)
         await monitor.stop()
 
         down_events = [e for e in events if e.kind is AudioServiceEventKind.DOWN]
