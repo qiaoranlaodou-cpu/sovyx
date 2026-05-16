@@ -1,4 +1,34 @@
-"""Tests for sovyx.engine.bootstrap — Bootstrap + MindManager."""
+"""Tests for sovyx.engine.bootstrap — Bootstrap + MindManager.
+
+Bootstrap is the heavy end-to-end async path that wires DB +
+observability + LLM router + bridge + cognitive loop. Per-test
+``@pytest.mark.timeout(N)`` budgets MUST account for the slowest
+supported CI runner.
+
+The original 15-second budget was set against local-developer
+runs (~3-4 s typical on Windows 11 / Linux). GitHub Actions
+``windows-latest`` runners run ~2x slower than local: v0.44.2 CI
+measured ``test_auto_detect_ollama_no_cloud_keys`` at 6.3 s,
+already half-way to the 15 s ceiling. Phase 2 of Mission C2
+(commit 37de8167) added a few ms of overhead via the
+``ObservabilityTuningConfig`` 5-field extension + ``AnomalyDetector``
+``__slots__`` growth, which combined with GHA Windows variance was
+enough to push the test past 15 s and trigger the
+``pytest.mark.timeout`` watchdog. Because the hang is inside
+``asyncio.windows_events._poll`` (IOCP wait), pytest-timeout
+cannot preempt cleanly and the full pytest run hung until the
+job's wall-clock cap fired — producing the
+``pytest did not produce a summary; run likely hung before tests
+completed`` v0.44.3 + v0.45.0 CI failures.
+
+The fix is environmental, not semantic: bump every heavy
+bootstrap-real-path test's per-test timeout to 30 s (matches the
+global ``--timeout=30`` flag CI passes to pytest). 30 s gives a
+5x cushion over the v0.44.2 CI baseline; a genuine 5x perf
+regression would still fail-loud and demand investigation.
+
+Mission anchor: docs-internal/missions/MISSION-c2-voice-status-response-contract-2026-05-16.md §post-ship.
+"""
 
 from __future__ import annotations
 
@@ -324,7 +354,7 @@ class TestBootstrapCoverageGaps:
             await bootstrap(config, [])
 
     @pytest.mark.asyncio(loop_scope="function")
-    @pytest.mark.timeout(15)
+    @pytest.mark.timeout(30)
     async def test_openai_provider_included(self, tmp_path: Path) -> None:
         """When OPENAI_API_KEY is set, OpenAI provider is in the router."""
         config = EngineConfig(database=DatabaseConfig(data_dir=tmp_path))
@@ -343,7 +373,7 @@ class TestBootstrapCoverageGaps:
         await router.stop()
 
     @pytest.mark.asyncio(loop_scope="function")
-    @pytest.mark.timeout(15)
+    @pytest.mark.timeout(30)
     async def test_telegram_channel_registered(self, tmp_path: Path) -> None:
         """When SOVYX_TELEGRAM_TOKEN is set, Telegram channel is registered."""
         from unittest.mock import MagicMock
@@ -374,7 +404,7 @@ class TestBootstrapCoverageGaps:
         assert len(bridge._adapters) >= 1  # noqa: SLF001
 
     @pytest.mark.asyncio(loop_scope="function")
-    @pytest.mark.timeout(15)
+    @pytest.mark.timeout(30)
     async def test_cleanup_on_failure(self, tmp_path: Path) -> None:
         """On bootstrap failure, closable resources are cleaned up."""
         config = EngineConfig(database=DatabaseConfig(data_dir=tmp_path))
@@ -392,7 +422,7 @@ class TestBootstrapCoverageGaps:
             await bootstrap(config, [mind])
 
     @pytest.mark.asyncio(loop_scope="function")
-    @pytest.mark.timeout(15)
+    @pytest.mark.timeout(30)
     async def test_cleanup_failure_suppressed(self, tmp_path: Path) -> None:
         """When cleanup itself fails, original error still propagates."""
         from sovyx.llm.router import LLMRouter
@@ -583,7 +613,7 @@ class TestBootstrapOllamaAutoDetect:
             monkeypatch.delenv(key, raising=False)
 
     @pytest.mark.asyncio(loop_scope="function")
-    @pytest.mark.timeout(15)
+    @pytest.mark.timeout(30)
     async def test_auto_detect_ollama_no_cloud_keys(
         self,
         tmp_path: Path,
@@ -622,7 +652,7 @@ class TestBootstrapOllamaAutoDetect:
         await db.stop()
 
     @pytest.mark.asyncio(loop_scope="function")
-    @pytest.mark.timeout(15)
+    @pytest.mark.timeout(30)
     async def test_no_auto_detect_with_cloud_keys(self, tmp_path: Path) -> None:
         """Cloud keys present → no Ollama auto-detection."""
         from sovyx.llm.providers.ollama import OllamaProvider
@@ -645,7 +675,7 @@ class TestBootstrapOllamaAutoDetect:
         await db.stop()
 
     @pytest.mark.asyncio(loop_scope="function")
-    @pytest.mark.timeout(15)
+    @pytest.mark.timeout(30)
     async def test_ollama_not_reachable(
         self,
         tmp_path: Path,
@@ -667,7 +697,7 @@ class TestBootstrapOllamaAutoDetect:
         await db.stop()
 
     @pytest.mark.asyncio(loop_scope="function")
-    @pytest.mark.timeout(15)
+    @pytest.mark.timeout(30)
     async def test_ollama_running_no_models(
         self,
         tmp_path: Path,
@@ -699,7 +729,7 @@ class TestBootstrapOllamaAutoDetect:
         await db.stop()
 
     @pytest.mark.asyncio(loop_scope="function")
-    @pytest.mark.timeout(15)
+    @pytest.mark.timeout(30)
     async def test_fast_model_fallback(self, tmp_path: Path) -> None:
         """fast_model is set to default_model when empty."""
         from sovyx.llm.providers.ollama import OllamaProvider
@@ -721,7 +751,7 @@ class TestBootstrapOllamaAutoDetect:
         await db.stop()
 
     @pytest.mark.asyncio(loop_scope="function")
-    @pytest.mark.timeout(15)
+    @pytest.mark.timeout(30)
     async def test_persist_auto_detected_config(
         self,
         tmp_path: Path,
