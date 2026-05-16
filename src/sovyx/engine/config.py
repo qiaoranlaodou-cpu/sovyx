@@ -2600,6 +2600,27 @@ class ObservabilityTuningConfig(BaseSettings):
     anomaly_memory_growth_pct: float = Field(default=10.0, ge=1.0, le=100.0)
     anomaly_cooldown_s: int = Field(default=60, ge=1, le=3600)
 
+    # ── Mission C2 §T2.5 — path-keyed HTTP 5xx rate spike ──
+    #
+    # Distinct from ``anomaly_error_rate_*`` above (which counts
+    # ALL error-level structlog entries globally): this detector
+    # observes the ``HttpTelemetryMiddleware`` emit
+    # (``net.http.response`` with ``net.status_code >= 500``) and
+    # buckets by ``net.path`` so a fast-500 storm on one endpoint
+    # surfaces as a single targeted event rather than being lost
+    # in global noise. Closes M2 from the v0.43.1 forensic audit
+    # (HttpTelemetryMiddleware logs 5xx at WARNING which the global
+    # detector's ``error|critical`` filter never sees).
+    #
+    # Default-on; bounded count + window + cooldown. Path-set
+    # cardinality bounded via ``http_error_rate_spike_path_cap``
+    # (anti-pattern #15 — never unbounded dict-of-deques).
+    http_error_rate_spike_enabled: bool = True
+    http_error_rate_spike_count: int = Field(default=5, ge=1, le=10_000)
+    http_error_rate_spike_window_s: int = Field(default=30, ge=5, le=3600)
+    http_error_rate_spike_cooldown_s: int = Field(default=300, ge=1, le=3600)
+    http_error_rate_spike_path_cap: int = Field(default=512, ge=2, le=65_536)
+
     # ── Synthetic canary (§27.3) ──
     # Period between ``meta.canary.tick`` records. Bounded ``ge=5`` so
     # tests can exercise the loop quickly; ``le=3600`` so a misconfigured

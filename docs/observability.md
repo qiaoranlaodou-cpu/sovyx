@@ -209,7 +209,19 @@ tail and flags:
 * level escalations (an event whose default level was `INFO` but is
   now arriving at `WARNING`/`ERROR`),
 * missing heartbeats (`meta.canary.tick` overdue),
-* sudden cardinality spikes on `event` or `logger`.
+* sudden cardinality spikes on `event` or `logger`,
+* **path-keyed HTTP 5xx storms** — `anomaly.http_error_rate_spike`
+  fires when a single endpoint sees `>= http_error_rate_spike_count`
+  (default 5) responses with `net.status_code >= 500` within
+  `http_error_rate_spike_window_s` (default 30 s). Distinct from the
+  global `anomaly.error_rate_spike` which keys on `level == error`;
+  the path-keyed variant observes the WARNING-level
+  `net.http.response` emit `HttpTelemetryMiddleware` publishes, so
+  fast-500 storms (e.g. C2's `/api/voice/status` ValidationError
+  cascade pre-v0.44.2) surface as one targeted event per (path, 5 min)
+  rather than being lost in global noise. Path-set cardinality
+  bounded via `http_error_rate_spike_path_cap` (default 512) per
+  anti-pattern #15.
 
 Detected anomalies surface in `GET /api/logs/anomalies` and in the
 dashboard's *Anomalies* drawer.

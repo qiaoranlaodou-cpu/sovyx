@@ -51,6 +51,7 @@ _DETECTOR_EVENTS: frozenset[str] = frozenset(
         "anomaly.first_occurrence",
         "anomaly.latency_spike",
         "anomaly.error_rate_spike",
+        "anomaly.http_error_rate_spike",
         "anomaly.memory_growth",
     }
 )
@@ -127,6 +128,12 @@ class AnomalyDetector:
         "_error_factor",
         "_error_window",
         "_error_window_s",
+        "_http_error_cooldown_s",
+        "_http_error_count_threshold",
+        "_http_error_enabled",
+        "_http_error_path_cap",
+        "_http_error_per_path",
+        "_http_error_window_s",
         "_last_anomaly_ts",
         "_latency_factor",
         "_latency_per_event",
@@ -149,6 +156,13 @@ class AnomalyDetector:
         self._memory_growth_pct = tuning.anomaly_memory_growth_pct
         self._cooldown_s = tuning.anomaly_cooldown_s
 
+        # Mission C2 §T2.5 — path-keyed HTTP 5xx rate spike state.
+        self._http_error_enabled = tuning.http_error_rate_spike_enabled
+        self._http_error_count_threshold = tuning.http_error_rate_spike_count
+        self._http_error_window_s = tuning.http_error_rate_spike_window_s
+        self._http_error_cooldown_s = tuning.http_error_rate_spike_cooldown_s
+        self._http_error_path_cap = tuning.http_error_rate_spike_path_cap
+
         self._seen_events: set[str] = set()
         self._latency_per_event: dict[str, StreamingPercentile] = {}
         # Timestamps of error-or-worse entries for rate-spike detection.
@@ -159,6 +173,12 @@ class AnomalyDetector:
         self._rss_history: deque[tuple[float, int]] = deque(
             maxlen=max(20, self._memory_window_s // 5)
         )
+        # Path-keyed 5xx timestamps. Bounded by ``_http_error_path_cap``
+        # via LRU eviction at insert time (anti-pattern #15: never
+        # ``defaultdict(deque)`` unbounded). Each deque sized at 2×
+        # threshold so the "exactly threshold within window" predicate
+        # never loses a hit to deque eviction within the window.
+        self._http_error_per_path: dict[str, deque[float]] = {}
         self._last_anomaly_ts: dict[str, float] = {}
         self._lock = threading.Lock()
 
@@ -204,6 +224,21 @@ class AnomalyDetector:
         rss = event_dict.get("system.rss_bytes")
         if isinstance(rss, int) and rss > 0:
             self._observe_rss(rss, now)
+
+        # 5. Mission C2 §T2.5 — path-keyed HTTP 5xx spike. Triggered
+        #    by ``HttpTelemetryMiddleware``'s ``net.http.response``
+        #    structured emit (logs 5xx at WARNING level, which the
+        #    global error_rate_spike's ``error|critical`` filter at
+        #    step 3 never sees — closing M2 from the v0.43.1
+        #    forensic audit). Disjoint from step 3: this bucket is
+        #    per-``net.path`` with an absolute-count threshold,
+        #    NOT a ratio-against-baseline.
+        if self._http_error_enabled and event_name == "net.http.response":
+            status_code = event_dict.get("net.status_code")
+            if isinstance(status_code, int) and status_code >= 500:  # noqa: PLR2004
+                path = event_dict.get("net.path")
+                if isinstance(path, str) and path:
+                    self._observe_http_error(path, status_code, now)
 
         return event_dict
 
@@ -330,20 +365,80 @@ class AnomalyDetector:
         *,
         level: str,
         fields: dict[str, Any],
+        cooldown_s_override: int | None = None,
     ) -> None:
-        """Emit *anomaly_event* respecting per-key cooldown."""
+        """Emit *anomaly_event* respecting per-key cooldown.
+
+        ``cooldown_s_override`` lets Mission C2's path-keyed
+        ``http_error_rate_spike`` honor its own
+        ``http_error_rate_spike_cooldown_s`` (300 s default) instead
+        of the global ``anomaly_cooldown_s`` (60 s default) — a
+        sustained outage should produce one event per 5 min per
+        path, not one per minute.
+        """
         # The cooldown key combines the anomaly type with its scope so
         # ``latency_spike`` for two different events doesn't collide,
         # while ``error_rate_spike`` (always ``_global``) still rate-limits.
         key = f"{anomaly_event}::{cooldown_key}"
+        cooldown = self._cooldown_s if cooldown_s_override is None else cooldown_s_override
         with self._lock:
             last = self._last_anomaly_ts.get(key)
-            if last is not None and (now - last) < self._cooldown_s:
+            if last is not None and (now - last) < cooldown:
                 return
             self._last_anomaly_ts[key] = now
 
         emit = logger.info if level == "info" else logger.warning
         emit(anomaly_event, **fields)
+
+    def _observe_http_error(self, path: str, status_code: int, now: float) -> None:
+        """Record a 5xx event for *path*; emit on threshold.
+
+        Mission C2 §T2.5. Path-keyed deques bounded by
+        ``_http_error_path_cap``; threshold-triggered (not
+        ratio-baselined). Cooldown is per (path, anomaly_type)
+        so concurrent storms on multiple endpoints surface
+        independently.
+        """
+        with self._lock:
+            bucket = self._http_error_per_path.get(path)
+            if bucket is None:
+                if len(self._http_error_per_path) >= self._http_error_path_cap:
+                    # Anti-pattern #15: evict the LEAST-recently-added
+                    # path (insertion-order via dict's stable iteration)
+                    # to keep cardinality bounded without an external
+                    # LRU dep. Fairness sacrifices recency precision for
+                    # cardinality safety — acceptable for an alerting
+                    # signal that already cooldown-throttles.
+                    oldest = next(iter(self._http_error_per_path))
+                    del self._http_error_per_path[oldest]
+                # Sized at 2× threshold + one safety slot so the
+                # in-window count below never under-reports due to
+                # deque eviction during a steady storm.
+                bucket = deque(maxlen=max(8, self._http_error_count_threshold * 2 + 1))
+                self._http_error_per_path[path] = bucket
+            bucket.append(now)
+            window_start = now - self._http_error_window_s
+            # Count entries that fall within the current window.
+            # Anti-pattern #24: use ``>=`` (inclusive) so a tick-aligned
+            # boundary timestamp counts on coarse Windows clocks.
+            current = sum(1 for ts in bucket if ts >= window_start)
+
+        if current < self._http_error_count_threshold:
+            return
+        self._emit(
+            "anomaly.http_error_rate_spike",
+            path,
+            now,
+            level="warning",
+            fields={
+                "anomaly.path": path,
+                "anomaly.status_code_sample": status_code,
+                "anomaly.window_s": self._http_error_window_s,
+                "anomaly.count": current,
+                "anomaly.threshold": self._http_error_count_threshold,
+            },
+            cooldown_s_override=self._http_error_cooldown_s,
+        )
 
 
 __all__ = [
