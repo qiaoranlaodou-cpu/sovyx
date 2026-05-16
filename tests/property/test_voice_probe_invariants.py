@@ -657,3 +657,194 @@ class TestClassifyOpenErrorTotality:
 
         result = _classify_open_error(_BareError())
         assert result is Diagnosis.DRIVER_ERROR
+
+
+# ── CaptureIntegrityProbe._classify (Mission C1 §9.3) ─────────────────────
+
+
+class TestIntegrityProbeClassifyExhaustiveness:
+    """Mission C1 §9.3 — property guard for the integrity-probe classifier.
+
+    The classifier consumes ``(rms_db, vad_max, flatness, rolloff_hz,
+    frames, history, tuning)`` and dispatches to one of the seven
+    :class:`IntegrityVerdict` members. Mission §9.3 acceptance: across
+    the full continuous input space the classifier MUST be **total** —
+    never raise, always return a valid enum member. The shrinker
+    concentrates failure cases far more efficiently than random brute
+    force, so 200 examples is ample to surface any latent
+    division-by-zero / nan-propagation / list-index-out-of-range
+    branch that example-based tests miss.
+
+    Bound: the classifier is a static method so no instance state is
+    needed; we call it directly off the class. The ``frames`` and
+    ``history`` arguments have closed shapes (int16 buffer + sequence
+    of :class:`IntegrityResult`) — Hypothesis builds both via custom
+    strategies below.
+    """
+
+    # Static fixed timestamp — datetime.now() inside Hypothesis loops
+    # is unnecessarily expensive on Windows coarse-clock hosts; the
+    # classifier doesn't read timestamps, so a pinned value works.
+    _FIXED_TS = None  # populated lazily below
+
+    @staticmethod
+    def _build_history(
+        verdicts: list[str],
+        rms_dbs: list[float],
+        vad_probs: list[float],
+    ):  # type: ignore[no-untyped-def]
+        """Build an :class:`IntegrityResult` history list from three parallel
+        synthesis lists. Lengths MUST match — caller is responsible.
+        """
+        from datetime import UTC, datetime
+
+        from sovyx.voice.health.contract import IntegrityResult, IntegrityVerdict
+
+        ts = datetime(2026, 5, 15, 0, 0, 0, tzinfo=UTC)
+        verdict_map = {v.value: v for v in IntegrityVerdict}
+        results = []
+        for verdict_str, rms_db, vad_max in zip(verdicts, rms_dbs, vad_probs, strict=True):
+            results.append(
+                IntegrityResult(
+                    verdict=verdict_map.get(verdict_str, IntegrityVerdict.INCONCLUSIVE),
+                    endpoint_guid="g",
+                    rms_db=rms_db,
+                    vad_max_prob=vad_max,
+                    spectral_flatness=0.2,
+                    spectral_rolloff_hz=4000.0,
+                    duration_s=3.0,
+                    probed_at_utc=ts,
+                    raw_frames=48_000,
+                ),
+            )
+        return results
+
+    @given(
+        rms_db=st.floats(min_value=-120.0, max_value=0.0, allow_nan=False, allow_infinity=False),
+        vad_max=st.floats(min_value=0.0, max_value=1.0, allow_nan=False, allow_infinity=False),
+        flatness=st.floats(min_value=0.0, max_value=1.0, allow_nan=False, allow_infinity=False),
+        rolloff_hz=st.floats(
+            min_value=0.0, max_value=8000.0, allow_nan=False, allow_infinity=False
+        ),
+        history_size=st.integers(min_value=0, max_value=10),
+        history_rms_db=st.floats(
+            min_value=-120.0, max_value=0.0, allow_nan=False, allow_infinity=False
+        ),
+        history_vad=st.floats(min_value=0.0, max_value=1.0, allow_nan=False, allow_infinity=False),
+    )
+    @settings(
+        max_examples=200,
+        deadline=None,
+        suppress_health_check=[HealthCheck.too_slow],
+    )
+    def test_classify_never_raises_returns_valid_verdict(
+        self,
+        rms_db: float,
+        vad_max: float,
+        flatness: float,
+        rolloff_hz: float,
+        history_size: int,
+        history_rms_db: float,
+        history_vad: float,
+    ) -> None:
+        """Across the full input space _classify is TOTAL — no raises,
+        always a valid :class:`IntegrityVerdict` member.
+
+        The history is built with uniform RMS / VAD across N entries
+        (Hypothesis-bound 0..10); this is enough to exercise the
+        ``_is_vad_frontend_dead`` trajectory branch (history_size ≥
+        ``integrity_history_window_probes`` default 5) AND the empty
+        / partial-history branches.
+        """
+        from sovyx.engine.config import VoiceTuningConfig
+        from sovyx.voice.health.capture_integrity import CaptureIntegrityProbe
+        from sovyx.voice.health.contract import IntegrityVerdict
+
+        history = self._build_history(
+            ["vad_mute"] * history_size,
+            [history_rms_db] * history_size,
+            [history_vad] * history_size,
+        )
+
+        # Synthesise a small int16 buffer; the classifier's frames param
+        # is consumed by ``_is_format_mismatch`` which only inspects
+        # shape + dtype. Zero-len buffer covers the "no frames" edge.
+        frames = np.zeros(0, dtype=np.int16)
+
+        # Instantiate via __new__ to skip the __init__ probe-VAD load —
+        # _classify is purely arithmetic and reads no instance state.
+        probe = CaptureIntegrityProbe.__new__(CaptureIntegrityProbe)
+        result = probe._classify(  # noqa: SLF001 — exercising classifier
+            rms_db=rms_db,
+            vad_max=vad_max,
+            flatness=flatness,
+            rolloff_hz=rolloff_hz,
+            tuning=VoiceTuningConfig(),
+            frames=frames,
+            history=history,
+        )
+        assert isinstance(result, IntegrityVerdict)
+        # Membership in the closed verdict set — any future enum
+        # addition without a matching dispatch branch would surface as
+        # a value-set drift here even if the classifier accidentally
+        # returned None.
+        assert result.value in {
+            "healthy",
+            "apo_degraded",
+            "driver_silent",
+            "vad_mute",
+            "vad_frontend_dead",
+            "format_mismatch",
+            "inconclusive",
+        }
+
+    @given(
+        # Sustained-energy floor edge — exercises the boundary at
+        # ``integrity_apo_rms_floor_db``.
+        rms_db=st.floats(min_value=-55.0, max_value=-45.0, allow_nan=False, allow_infinity=False),
+        # Sustained-VAD-silent floor — at / around the
+        # ``integrity_vad_dead_max_prob_ceiling`` boundary.
+        vad_max=st.floats(min_value=0.0, max_value=0.10, allow_nan=False, allow_infinity=False),
+        history_size=st.integers(min_value=0, max_value=8),
+    )
+    @settings(
+        max_examples=100,
+        deadline=None,
+        suppress_health_check=[HealthCheck.too_slow],
+    )
+    def test_classify_terminates_on_history_boundary(
+        self,
+        rms_db: float,
+        vad_max: float,
+        history_size: int,
+    ) -> None:
+        """Boundary fuzz around the ``_is_vad_frontend_dead`` trajectory
+        gate — small RMS / VAD windows that span the dead-criterion
+        boundary, history sizes around the default window of 5.
+
+        The classifier MUST terminate (no infinite recursion in the
+        history walk; no exception on history boundary edges) for ANY
+        combination here. Asserts only termination + verdict shape —
+        the SEMANTIC routing is example-tested elsewhere.
+        """
+        from sovyx.engine.config import VoiceTuningConfig
+        from sovyx.voice.health.capture_integrity import CaptureIntegrityProbe
+        from sovyx.voice.health.contract import IntegrityVerdict
+
+        history = self._build_history(
+            ["vad_mute"] * history_size,
+            [rms_db] * history_size,
+            [vad_max] * history_size,
+        )
+        frames = np.zeros(0, dtype=np.int16)
+        probe = CaptureIntegrityProbe.__new__(CaptureIntegrityProbe)
+        result = probe._classify(  # noqa: SLF001
+            rms_db=rms_db,
+            vad_max=vad_max,
+            flatness=0.2,
+            rolloff_hz=4000.0,
+            tuning=VoiceTuningConfig(),
+            frames=frames,
+            history=history,
+        )
+        assert isinstance(result, IntegrityVerdict)
