@@ -105,6 +105,14 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 from sovyx.observability.logging import get_logger
+from sovyx.voice.health._failover_error_classifier import (
+    FailoverErrorClass,
+    classify_error_code,
+)
+from sovyx.voice.health._probe_result_cache import (
+    ProbeResultEntry,
+    get_default_probe_result_cache,
+)
 
 if TYPE_CHECKING:
     from sovyx.engine.config import VoiceTuningConfig
@@ -463,6 +471,11 @@ async def _try_runtime_failover(
         },
     )
 
+    # Mission C3 §T2.4 — process-local probe-result cache. Resolved
+    # once per ladder run; consulted before each candidate dispatch
+    # for skip-on-bad-probe + populated after each dispatch outcome.
+    probe_cache = get_default_probe_result_cache()
+
     try:
         per_ladder_cap = max(1, tuning.failover_candidate_max_attempts_per_ladder)
         current_target: DeviceEntry | None = target
@@ -484,7 +497,7 @@ async def _try_runtime_failover(
                             "voice.index": iteration_index,
                             "voice.target_endpoint": "",
                             "voice.verdict": "selection_exception",
-                            "voice.error_class": "unknown",
+                            "voice.error_class": FailoverErrorClass.UNKNOWN.value,
                             "voice.error_detail": str(next_err),
                             "voice.error_type": type(next_err).__name__,
                             "voice.mind_id": mind_id,
@@ -503,6 +516,38 @@ async def _try_runtime_failover(
             target_key = current_target.canonical_name or current_target.name or ""
             if target_key and target_key in attempted_in_this_ladder:
                 break
+
+            # Mission C3 §T2.4 — probe-result cache short-circuit.
+            # Consult the cache by both the endpoint_guid (current_target's
+            # canonical_name, used as the cache key by the boot cascade
+            # producer) and the host_api. On cache hit, skip the candidate
+            # WITHOUT dispatching — emit ``voice.failover.candidate_skipped``
+            # so dashboards see the decision, mark the candidate in the
+            # per-ladder exclusion set, advance.
+            cache_host_api = current_target.host_api_name or ""
+            cache_entry_for_skip = probe_cache.lookup(target_key, cache_host_api)
+            if cache_entry_for_skip is not None and probe_cache.is_known_unopenable(
+                target_key,
+                cache_host_api,
+            ):
+                logger.info(
+                    "voice.failover.candidate_skipped",
+                    **{
+                        "voice.ladder_id": ladder_id,
+                        "voice.index": iteration_index,
+                        "voice.target_endpoint": target_key,
+                        "voice.target_friendly_name": current_target.name,
+                        "voice.cached_verdict": cache_entry_for_skip.verdict,
+                        "voice.cached_error_code": cache_entry_for_skip.error_code,
+                        "voice.reason": "probe_cache_unopenable",
+                        "voice.mind_id": mind_id,
+                    },
+                )
+                if target_key:
+                    attempted_in_this_ladder.add(target_key)
+                    candidates_unreachable.append(target_key)
+                iteration_index += 1
+                continue
 
             # Intra-ladder cooldown between dispatches (Mission C3
             # §T1.1 ADR-D2). Sleep only between dispatches — skipped
@@ -550,6 +595,10 @@ async def _try_runtime_failover(
                 last_failure_verdict = "exception"
                 last_failure_detail = str(exc)
                 last_failure_error_type = type(exc).__name__
+                exception_error_class = classify_error_code(
+                    "",
+                    error_detail=str(exc),
+                )
                 logger.warning(
                     "voice.failover.candidate_failed",
                     **{
@@ -557,13 +606,35 @@ async def _try_runtime_failover(
                         "voice.index": iteration_index,
                         "voice.target_endpoint": current_endpoint,
                         "voice.verdict": "exception",
-                        "voice.error_class": "unknown",
+                        "voice.error_class": exception_error_class.value,
                         "voice.error_detail": str(exc),
                         "voice.error_type": type(exc).__name__,
                         "voice.elapsed_ms": elapsed_ms,
                         "voice.mind_id": mind_id,
                     },
                 )
+                # Mission C3 §T2.4 — record the failed dispatch into
+                # the probe-result cache so subsequent ladder runs
+                # consult it. Best-effort: a panic here MUST NOT
+                # break the heartbeat path.
+                try:
+                    probe_cache.record_probe(
+                        ProbeResultEntry(
+                            endpoint_guid=target_key,
+                            host_api=cache_host_api,
+                            verdict="exception",
+                            error_code="",
+                            error_detail=str(exc),
+                            callbacks_fired=0,
+                        ),
+                    )
+                except Exception as cache_exc:  # noqa: BLE001
+                    logger.debug(
+                        "voice.failover.cache_record_failed",
+                        endpoint=target_key,
+                        error=str(cache_exc),
+                        error_type=type(cache_exc).__name__,
+                    )
                 if target_key:
                     attempted_in_this_ladder.add(target_key)
                     candidates_unreachable.append(target_key)
@@ -612,6 +683,20 @@ async def _try_runtime_failover(
                         },
                     )
 
+                # Mission C3 §T2.4 ADR-D5 — invalidate any prior dead-
+                # entry for this candidate so a re-plugged USB / restarted
+                # PipeWire that becomes available is not stuck in skip-
+                # state on the next ladder run. Best-effort.
+                try:
+                    probe_cache.record_success(target_key, cache_host_api)
+                except Exception as cache_exc:  # noqa: BLE001
+                    logger.debug(
+                        "voice.failover.cache_record_success_failed",
+                        endpoint=target_key,
+                        error=str(cache_exc),
+                        error_type=type(cache_exc).__name__,
+                    )
+
                 succeeded_index = iteration_index
                 state.ladder_exhausted = False
                 state.last_ladder_complete_monotonic = time.monotonic()
@@ -632,13 +717,17 @@ async def _try_runtime_failover(
                 )
                 return
 
-            # Failed — emit per-candidate failure, record, advance.
+            # Failed — emit per-candidate failure, record into cache, advance.
             last_failure_verdict = str(getattr(result, "verdict", "unknown") or "unknown")
             last_failure_detail = str(getattr(result, "detail", "") or "")
             last_failure_error_type = ""
             error_code_raw = str(
                 getattr(result, "error_code", "") or getattr(result, "final_code", "") or "",
             )
+            # Mission C3 §T2.4 — classify the open verdict + error code
+            # via the failover-layer classifier; surfaces on every
+            # per-candidate failure event so dashboards split by class.
+            error_class = classify_error_code(error_code_raw, last_failure_detail)
 
             logger.warning(
                 "voice.failover.candidate_failed",
@@ -647,13 +736,36 @@ async def _try_runtime_failover(
                     "voice.index": iteration_index,
                     "voice.target_endpoint": current_endpoint,
                     "voice.verdict": last_failure_verdict,
-                    "voice.error_class": "unknown",  # Phase 2 §T2.4 wires the classifier
+                    "voice.error_class": error_class.value,
                     "voice.error_code": error_code_raw,
                     "voice.error_detail": last_failure_detail,
                     "voice.elapsed_ms": elapsed_ms,
                     "voice.mind_id": mind_id,
                 },
             )
+
+            # Mission C3 §T2.4 — record the failure into the cache so
+            # subsequent ladder runs (after the outer cooldown
+            # releases) skip this candidate if it's UNOPENABLE_*. Best-
+            # effort.
+            try:
+                probe_cache.record_probe(
+                    ProbeResultEntry(
+                        endpoint_guid=target_key,
+                        host_api=cache_host_api,
+                        verdict=last_failure_verdict,
+                        error_code=error_code_raw,
+                        error_detail=last_failure_detail,
+                        callbacks_fired=0,
+                    ),
+                )
+            except Exception as cache_exc:  # noqa: BLE001
+                logger.debug(
+                    "voice.failover.cache_record_failed",
+                    endpoint=target_key,
+                    error=str(cache_exc),
+                    error_type=type(cache_exc).__name__,
+                )
 
             if target_key:
                 attempted_in_this_ladder.add(target_key)

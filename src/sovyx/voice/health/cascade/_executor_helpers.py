@@ -174,7 +174,16 @@ def _log_probe_result(
     combo: Combo,
     result: ProbeResult,
 ) -> None:
-    """Emit ``voice_cascade_probe_result`` after every probe invocation (T1)."""
+    """Emit ``voice_cascade_probe_result`` after every probe invocation (T1).
+
+    Mission C3 §T2.4 — also writes the result into the process-local
+    :class:`ProbeResultCache` so the runtime failover ladder body can
+    consult it (via ``select_alternative_endpoint(recent_probe_results=...)``)
+    to skip candidates that probed dead at boot without paying the
+    open-thrash per skipped device. The cache write is best-effort —
+    a failure here MUST NOT block the probe-result logging path
+    (which is the historically-load-bearing observability surface).
+    """
     logger.info(
         "voice_cascade_probe_result",
         endpoint=endpoint_guid,
@@ -188,6 +197,33 @@ def _log_probe_result(
         duration_ms=result.duration_ms,
         error_detail=_truncate_detail(result.error),
     )
+
+    # Mission C3 §T2.4 — populate the runtime probe-result cache so
+    # the failover loop body has a queryable history. Lazy import so
+    # this module stays loadable when probe-cache is absent (test
+    # fixtures that mock out the voice.health surface). Best-effort:
+    # any exception is swallowed via ``contextlib.suppress`` per
+    # anti-pattern #27.
+    import contextlib
+
+    with contextlib.suppress(Exception):
+        from sovyx.voice.health._probe_result_cache import (
+            ProbeResultEntry,
+            get_default_probe_result_cache,
+        )
+
+        cache = get_default_probe_result_cache()
+        cache.record_probe(
+            ProbeResultEntry(
+                endpoint_guid=endpoint_guid,
+                host_api=combo.host_api or "",
+                verdict=str(result.diagnosis),
+                error_code="",  # boot cascade probe doesn't surface PA codes
+                error_detail=result.error or "",
+                callbacks_fired=result.callbacks_fired,
+                rms_db=result.rms_db,
+            ),
+        )
 
 
 __all__ = [
