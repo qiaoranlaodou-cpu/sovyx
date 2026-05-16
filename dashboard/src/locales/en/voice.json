@@ -782,5 +782,32 @@
       "invalidRequest": "Request rejected by the server.",
       "fallback": "Playback failed."
     }
+  },
+  "failoverHistory": {
+    "title": "Failover History",
+    "subtitle": "Recent runtime failover ladder runs (Mission C3 §T2.9).",
+    "empty": "No failover ladder has run yet on this daemon process.",
+    "ringCapacity": "Ring capacity",
+    "ladderId": "Ladder",
+    "verdict": {
+      "succeeded": "Succeeded",
+      "exhausted": "Exhausted",
+      "in_progress": "In progress"
+    },
+    "candidateVerdict": {
+      "succeeded": "engaged",
+      "failed": "failed",
+      "skipped": "skipped"
+    },
+    "candidates": "Candidates",
+    "elapsed": "Elapsed",
+    "succeededAt": "Succeeded on candidate",
+    "errorClass": "Error class",
+    "degradedBanner": {
+      "title": "Voice failover exhausted",
+      "body": "Every alternative capture device was unreachable. Try reconnecting your USB microphone or restarting Sovyx.",
+      "candidatesTried": "Candidates tried",
+      "unreachable": "Unreachable devices"
+    }
   }
 }

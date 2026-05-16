@@ -3,6 +3,8 @@ import {
   CancelJobResponseSchema,
   CaptureRestartFrameSchema,
   CaptureRestartReasonSchema,
+  FailoverHistoryEntrySchema,
+  FailoverHistoryResponseSchema,
   ForgetMindResponseSchema,
   OnboardingCompleteResponseSchema,
   PruneRetentionResponseSchema,
@@ -1283,6 +1285,133 @@ describe("VoiceModelsResponseSchema (F2-H02)", () => {
     const result = VoiceModelsResponseSchema.safeParse({
       ...SAMPLE_VOICE_MODELS,
       available_tiers: {},
+    });
+    expect(result.success).toBe(true);
+  });
+});
+
+// Mission C3 §T2.9 — failover-history zod twin tests.
+
+describe("FailoverHistoryResponseSchema (Mission C3 §T2.9)", () => {
+  it("safeParse accepts empty history", () => {
+    const result = FailoverHistoryResponseSchema.safeParse({
+      entries: [],
+      ring_capacity: 32,
+    });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.entries).toEqual([]);
+      expect(result.data.ring_capacity).toBe(32);
+    }
+  });
+
+  it("safeParse accepts a 3-candidate exhausted ladder", () => {
+    const candidates = [
+      {
+        index: 0,
+        target_endpoint: "hd-audio-generic",
+        target_friendly_name: "HD-Audio Generic",
+        verdict: "failed" as const,
+        error_class: "unopenable_this_boot",
+        error_detail: "AlsaOpen failed",
+        elapsed_ms: 1050,
+        skipped_reason: null,
+      },
+      {
+        index: 1,
+        target_endpoint: "pipewire-virtual",
+        target_friendly_name: "pipewire",
+        verdict: "skipped" as const,
+        error_class: "unopenable_this_boot",
+        error_detail: "",
+        elapsed_ms: null,
+        skipped_reason: "probe_cache_unopenable",
+      },
+      {
+        index: 2,
+        target_endpoint: "os-default",
+        target_friendly_name: "OS Default",
+        verdict: "failed" as const,
+        error_class: "transient_retryable_same_device",
+        error_detail: "",
+        elapsed_ms: 320,
+        skipped_reason: null,
+      },
+    ];
+    const entry = {
+      ladder_id: "abc123def456",
+      started_monotonic: 1000.0,
+      completed_monotonic: 1001.5,
+      verdict: "exhausted" as const,
+      candidates_tried: 3,
+      succeeded_index: null,
+      candidates,
+      from_endpoint: "razer-blackshark-v2-pro",
+      elapsed_ms: 1500,
+      derived_reason: "vad_frontend_dead",
+      mind_id: "jonny",
+    };
+    const result = FailoverHistoryResponseSchema.safeParse({
+      entries: [entry],
+      ring_capacity: 32,
+    });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.entries[0]?.verdict).toBe("exhausted");
+      expect(result.data.entries[0]?.candidates.length).toBe(3);
+    }
+  });
+
+  it("safeParse accepts succeeded ladder with succeeded_index", () => {
+    const entry = {
+      ladder_id: "good00000001",
+      started_monotonic: 100.0,
+      completed_monotonic: 100.3,
+      verdict: "succeeded" as const,
+      candidates_tried: 2,
+      succeeded_index: 1,
+      candidates: [
+        {
+          index: 0,
+          target_endpoint: "dev_a",
+          verdict: "failed" as const,
+          error_class: "unopenable_this_boot",
+          elapsed_ms: 100,
+        },
+        {
+          index: 1,
+          target_endpoint: "dev_b",
+          verdict: "succeeded" as const,
+          elapsed_ms: 50,
+        },
+      ],
+      ring_capacity: 32,
+    };
+    const result = FailoverHistoryEntrySchema.safeParse(entry);
+    expect(result.success).toBe(true);
+  });
+
+  it("safeParse rejects invalid verdict literal", () => {
+    const broken = {
+      entries: [
+        {
+          ladder_id: "abc",
+          started_monotonic: 1,
+          verdict: "completely_made_up_verdict",
+          candidates: [],
+        },
+      ],
+      ring_capacity: 32,
+    };
+    const result = FailoverHistoryResponseSchema.safeParse(broken);
+    expect(result.success).toBe(false);
+  });
+
+  it("safeParse accepts extra forward-additive fields (passthrough)", () => {
+    const result = FailoverHistoryResponseSchema.safeParse({
+      entries: [],
+      ring_capacity: 16,
+      future_field_for_c4: "banner_dismissed",
     });
     expect(result.success).toBe(true);
   });

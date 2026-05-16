@@ -1813,6 +1813,48 @@ const VoiceStatusDegradedSchema = z
   })
   .passthrough();
 
+/* Mission C3 §T2.9 — Failover-history zod twin.
+ *
+ * Mirrors ``FailoverHistoryResponse`` + ``FailoverHistoryEntryModel`` +
+ * ``FailoverCandidateModel`` in ``src/sovyx/dashboard/routes/voice_health.py``.
+ * ``.passthrough()`` matches the backend's ``extra="allow"``.
+ */
+export const FailoverCandidateSchema = z
+  .object({
+    index: z.number().int().nonnegative(),
+    target_endpoint: z.string(),
+    target_friendly_name: z.string().optional().default(""),
+    verdict: z.enum(["succeeded", "failed", "skipped"]),
+    error_class: z.string().optional().default(""),
+    error_detail: z.string().optional().default(""),
+    elapsed_ms: z.number().nullable().optional(),
+    skipped_reason: z.string().nullable().optional(),
+  })
+  .passthrough();
+
+export const FailoverHistoryEntrySchema = z
+  .object({
+    ladder_id: z.string(),
+    started_monotonic: z.number(),
+    completed_monotonic: z.number().nullable().optional(),
+    verdict: z.enum(["in_progress", "succeeded", "exhausted"]),
+    candidates_tried: z.number().int().nonnegative().optional().default(0),
+    succeeded_index: z.number().int().nullable().optional(),
+    candidates: z.array(FailoverCandidateSchema).optional().default([]),
+    from_endpoint: z.string().optional().default(""),
+    elapsed_ms: z.number().nullable().optional(),
+    derived_reason: z.string().optional().default(""),
+    mind_id: z.string().optional().default(""),
+  })
+  .passthrough();
+
+export const FailoverHistoryResponseSchema = z
+  .object({
+    entries: z.array(FailoverHistoryEntrySchema).optional().default([]),
+    ring_capacity: z.number().int().positive(),
+  })
+  .passthrough();
+
 export const VoiceStatusResponseSchema = z
   .object({
     pipeline: VoiceStatusPipelineSchema,

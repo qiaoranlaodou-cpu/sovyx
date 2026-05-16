@@ -782,5 +782,32 @@
       "invalidRequest": "Requisição rejeitada pelo servidor.",
       "fallback": "Falha na reprodução."
     }
+  },
+  "failoverHistory": {
+    "title": "Histórico de Failover",
+    "subtitle": "Execuções recentes da escada de failover em tempo real (Mission C3 §T2.9).",
+    "empty": "Nenhum failover foi executado ainda neste processo do daemon.",
+    "ringCapacity": "Capacidade do anel",
+    "ladderId": "Escada",
+    "verdict": {
+      "succeeded": "Sucesso",
+      "exhausted": "Esgotado",
+      "in_progress": "Em andamento"
+    },
+    "candidateVerdict": {
+      "succeeded": "engajou",
+      "failed": "falhou",
+      "skipped": "ignorado"
+    },
+    "candidates": "Candidatos",
+    "elapsed": "Tempo",
+    "succeededAt": "Sucesso no candidato",
+    "errorClass": "Classe de erro",
+    "degradedBanner": {
+      "title": "Failover de voz esgotado",
+      "body": "Todos os dispositivos alternativos de captura estão inalcançáveis. Tente reconectar seu microfone USB ou reinicie o Sovyx.",
+      "candidatesTried": "Candidatos tentados",
+      "unreachable": "Dispositivos inalcançáveis"
+    }
   }
 }
