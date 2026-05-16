@@ -42,6 +42,7 @@ if TYPE_CHECKING:
 
     from sovyx.voice._apo_detector import CaptureApoReport
     from sovyx.voice.device_enum import DeviceEntry
+    from sovyx.voice.health._probe_result_cache import ProbeResultCache
     from sovyx.voice.health.contract import CascadeResult
 
 
@@ -172,6 +173,7 @@ def select_alternative_endpoint(
     exclude_endpoint_guids: Iterable[str] = (),
     exclude_physical_device_ids: Iterable[str] = (),
     quarantine: EndpointQuarantine | None = None,
+    recent_probe_results: ProbeResultCache | None = None,
 ) -> DeviceEntry | None:
     """Pick a non-quarantined alternative ``DeviceEntry`` for fail-over.
 
@@ -215,6 +217,18 @@ def select_alternative_endpoint(
             microphone is rejected atomically.
         quarantine: §4.4.7 store. ``None`` falls back to the process
             singleton.
+        recent_probe_results: Mission C3 §T2.2 — optional
+            :class:`ProbeResultCache` instance. When provided, every
+            candidate is consulted via
+            :meth:`ProbeResultCache.is_known_unopenable` and skipped
+            (in addition to the explicit exclusion sets) if the
+            cache says the candidate's last probe-or-open verdict is
+            in the ``UNOPENABLE_*`` class. Default ``None`` preserves
+            pre-Mission-C3 behaviour for callers that don't yet
+            consult the cache. The failover loop body
+            (``_runtime_failover.py``, §T2.4) is the primary consumer;
+            the boot cascade does NOT pass the cache (boot is the
+            POPULATION phase, not the consumption phase).
 
     Returns ``None`` when no viable alternative exists (every device
     quarantined, or no input devices at all). Caller treats that as
@@ -245,7 +259,35 @@ def select_alternative_endpoint(
         physical = entry.canonical_name
         if physical and physical in excluded_physical:
             return True
-        return bool(physical and q.is_quarantined_physical(physical))
+        if physical and q.is_quarantined_physical(physical):
+            return True
+        # Mission C3 §T2.2 — probe-result cache consult. Skip the
+        # candidate if its last probe-or-open verdict says it is
+        # structurally unopenable (UNOPENABLE_PERMANENT) or known-
+        # unopenable this boot (UNOPENABLE_THIS_BOOT). Both verdict
+        # (NO_SIGNAL/INOPERATIVE) and error_code paths are consulted
+        # inside ``is_known_unopenable`` per ADR-D4.
+        if recent_probe_results is not None and recent_probe_results.is_known_unopenable(
+            guid,
+            entry.host_api_name or "",
+        ):
+            return True
+        # Also probe the cache by physical canonical_name + host_api
+        # because the ladder's exclusion set may key on canonical_name
+        # (the loop's defensive duplicate-guard) while the cache may
+        # have been populated with either the GUID or the canonical
+        # form depending on the producer site. Belt-and-suspenders:
+        # both lookups are O(1) dict probes.
+        if (
+            recent_probe_results is not None
+            and physical
+            and recent_probe_results.is_known_unopenable(
+                physical,
+                entry.host_api_name or "",
+            )
+        ):
+            return True
+        return False
 
     candidates = [e for e in entries if not _is_skippable(e)]
     # v0.38.3 — exclude DeviceKind.OS_DEFAULT virtual aliases from
