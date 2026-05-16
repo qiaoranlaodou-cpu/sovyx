@@ -761,18 +761,30 @@ class VoiceCaptureWatchdog:
     ) -> None:
         """Emit the correct telemetry surface for a hotplug-clear event.
 
-        APO-degraded entries emit the :func:`record_apo_degraded_event`
-        counter so the Phase 1 APO dashboards attribute the recovery
-        path correctly. Everything else (kernel-invalidated,
-        factory-integration, probe_*) continues to emit
-        :func:`record_kernel_invalidated_event` as before — preserving
-        the pre-Phase-1 metric contract.
+        APO-class entries (legacy ``apo_degraded`` + Mission C1
+        ``vad_frontend_dead`` / ``format_mismatch`` per
+        ``_APO_CLASS_REASONS``) emit the
+        :func:`record_apo_degraded_event` counter so the Phase 1 APO
+        dashboards attribute the recovery path correctly. Everything
+        else (kernel-invalidated, factory-integration, probe_*)
+        continues to emit :func:`record_kernel_invalidated_event` as
+        before — preserving the pre-Phase-1 metric contract.
+
+        Mission C1 §20.M T1.9.a — widened from literal
+        ``reason == "apo_degraded"`` to the centralized
+        :func:`is_apo_class_reason` classifier so future APO-class
+        verdict additions land in the loop without per-call-site
+        edits. Consulting ``derived_reason or reason`` matches the
+        c5791e40 fix pattern: at LENIENT v0.44.x the ``reason``
+        field is pinned to the legacy ``apo_degraded`` regardless of
+        the verdict class, so the bare-reason read would always
+        match. The verdict class lives on ``derived_reason``.
         """
         platform = self._platform_key_for_metric()
         host_api = entry.host_api if entry is not None and entry.host_api else "unknown"
-        reason = entry.reason if entry is not None else ""
+        reason_key = (entry.derived_reason or entry.reason) if entry is not None else ""
         endpoint = entry.endpoint_guid if entry is not None else (event.endpoint_guid or "")
-        if reason == "apo_degraded":
+        if is_apo_class_reason(reason_key):
             record_apo_degraded_event(
                 platform=platform,
                 action="hotplug_clear",
@@ -782,6 +794,7 @@ class VoiceCaptureWatchdog:
                 endpoint=endpoint,
                 kind=event.kind.value,
                 matched_by=matched_by,
+                reason=reason_key,
             )
             return
         record_kernel_invalidated_event(

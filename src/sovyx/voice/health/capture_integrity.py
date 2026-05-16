@@ -796,6 +796,32 @@ class CaptureIntegrityCoordinator:
                     )
                     if recovered:
                         return ladder_outcomes
+                    # Mission C1 §20.M T1.9.b — ladder exhaustion is the
+                    # sibling of the strategy-iteration "all NOT_APPLICABLE"
+                    # T6.15 unrecoverable branch below. Emit the
+                    # parallel ``voice_capture_integrity_unrecoverable``
+                    # event with ``subreason="vad_frontend_dead"`` so
+                    # monitoring tooling sees the more-specific
+                    # diagnostic upstream of the routine
+                    # ``capture_integrity_coordinator_quarantined`` log
+                    # line. Operator-facing hint is sourced from
+                    # :func:`_unrecoverable_remediation_hint` with the
+                    # subreason kwarg.
+                    if ladder_outcomes:
+                        logger.error(
+                            "voice_capture_integrity_unrecoverable",
+                            endpoint_guid=context.endpoint_guid,
+                            friendly_name=self._capture_task.active_device_name,
+                            host_api=self._capture_task.host_api_name or "",
+                            platform=self._platform_key,
+                            strategies_tried=[o.strategy_name for o in ladder_outcomes],
+                            strategy_count=len(ladder_outcomes),
+                            subreason="vad_frontend_dead",
+                            remediation=_unrecoverable_remediation_hint(
+                                self._platform_key,
+                                subreason="vad_frontend_dead",
+                            ),
+                        )
                     self._quarantine_endpoint(
                         before,
                         tuning,
@@ -1254,13 +1280,25 @@ class CaptureIntegrityCoordinator:
         )
 
 
-def _unrecoverable_remediation_hint(platform_key: str) -> str:
-    """Return the operator-facing remediation hint for T6.15.
+def _unrecoverable_remediation_hint(
+    platform_key: str,
+    *,
+    subreason: str = "",
+) -> str:
+    """Return the operator-facing remediation hint for T6.15 / Mission C1
+    §20.M T1.9.b ladder exhaustion.
 
-    Each platform has a distinct upstream audio-enhancement chain that
-    no in-process bypass strategy can disable cleanly. The hint surfaces
-    via ``voice_capture_integrity_unrecoverable`` so monitors can route
-    the alert to platform-appropriate remediation:
+    ``subreason`` selects between the canonical T6.15 hint set (all
+    bypass strategies returned ``NOT_APPLICABLE`` — empty subreason)
+    and the Mission C1 §20.M T1.9.b
+    ``subreason="vad_frontend_dead"`` variant (the VAD-frontend reset
+    ladder exhausted without restoring VAD responsiveness on a
+    healthy capture stream — the fault is Sovyx-internal, not an OS
+    DSP issue, so the operator action is daemon-restart / model-
+    refresh, not OS audio-enhancement disablement).
+
+    Each T6.15 platform has a distinct upstream audio-enhancement
+    chain that no in-process bypass strategy can disable cleanly:
 
     * **Windows** — Voice Clarity APO (``VocaEffectPack``,
       ``voiceclarityep``) + per-device "Audio enhancements" toggle.
@@ -1276,6 +1314,24 @@ def _unrecoverable_remediation_hint(platform_key: str) -> str:
     Unknown platforms get a generic hint pointing at OS-level audio
     settings — better than silence but less actionable.
     """
+    if subreason == "vad_frontend_dead":
+        # Mission C1 §20.M T1.9.b — ladder-exhaustion hint. Platform-
+        # neutral because the fault is in Sovyx's own VAD frontend
+        # (Silero ONNX session) + FrameNormalizer state, not in the
+        # OS audio enhancement chain. Operator action is daemon-
+        # internal: restart, then file an issue with the doctor
+        # output if the symptom recurs.
+        return (
+            "VAD-frontend reset ladder exhausted on this endpoint. "
+            "Sovyx attempted every recovery step (Silero LSTM reset, "
+            "FrameNormalizer engagement) without restoring VAD "
+            "responsiveness on a healthy capture stream. Operator "
+            "action: restart the Sovyx daemon to drop the ONNX "
+            "session state. If the symptom recurs after restart, "
+            "file an issue with the output of `sovyx doctor voice "
+            "--full-diag` — likely a Silero ONNX runtime version "
+            "mismatch or a model file corruption."
+        )
     if platform_key == "win32":
         return (
             "All bypass strategies returned NOT_APPLICABLE. The upstream "
