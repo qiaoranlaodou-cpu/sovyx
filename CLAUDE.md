@@ -41,13 +41,13 @@ Sovereign Minds Engine — persistent AI companion with real memory, cognitive l
 
 ```bash
 ./scripts/install_hooks.sh    # one-time per clone — installs pre-push hook
-./scripts/verify_gates.sh     # runs all 8 gates + writes .git/.last-gates-pass marker
+./scripts/verify_gates.sh     # runs all 9 gates + writes .git/.last-gates-pass marker
 git push                      # hook validates marker fresh + HEAD-matched, else REJECTS
 ```
 
 The hook at `.githooks/pre-push` (activated by `install_hooks.sh` via `git config core.hooksPath .githooks`) checks `.git/.last-gates-pass` for a HEAD-matching marker within 30 min (override: `SOVYX_GATES_MAX_AGE_SEC`). Escape hatch `git push --no-verify` requires explicit operator approval + commit-body rationale.
 
-The 8 gates (in order):
+The 9 gates (in order):
 
 ```bash
 uv run ruff check src/ tests/                                          # 1. lint
@@ -58,6 +58,7 @@ uv run python -m pytest tests/ --ignore=tests/smoke --timeout=30 -q    # 5. test
 npx tsc -b tsconfig.app.json                                           # 6. dashboard type (from dashboard/)
 npx vitest run --reporter=dot                                          # 7. dashboard tests (from dashboard/)
 uv run python scripts/dev/check_boundary_round_trip_coverage.py        # 8. boundary round-trip (Mission C2 §T4.1)
+uv run python scripts/dev/check_ladder_iteration_discipline.py         # 9. ladder iteration (Mission C3 §T4.1)
 ```
 
 Plus `uv lock --check` when bumping versions. If running gates ad-hoc, grep the summary line — never trust the harness exit code alone. Pre-v0.42.2 the pattern `pytest ... 2>&1 | tail -N` masked 6 real failures across 4 cycles (`feedback_ci_preflight.md` + `feedback_no_speculation.md` Addendum 2026-05-14).
@@ -145,7 +146,7 @@ Each entry is **rule + why + pointer**. Forensic detail lives in the referenced 
 - **Cross-Platform:** 21, 22, 24
 - **Voice Subsystem:** 25, 26, 27, 28, 29, 39
 - **Tests:** 8, 9, 10, 12, 31
-- **Architecture & Design:** 13, 16, 18, 19, 32, 33, 34, 37, 39, 40
+- **Architecture & Design:** 13, 16, 18, 19, 32, 33, 34, 37, 39, 40, 41
 
 ---
 
@@ -193,6 +194,7 @@ Each entry is **rule + why + pointer**. Forensic detail lives in the referenced 
 
     **(b) Cross-platform event-name drift.** Cross-platform event names MUST be neutral; platform-specific terminology (`apo.*`, `wasapi.*`, `dsound.*`) MUST be `sys.platform`-gated or live behind a neutral wrapper. Strategies can be platform-specific without the wrapping event needing to be. Sibling of #21. Pre-H2 mission: `audio.apo.bypassed` + `voice_apo_bypass_ineffective` fired on Linux hosts where `voice_clarity_active=False`. Generalizes: an event's name is part of its public API for operators, dashboards, and downstream triage tooling. Mission anchor: separate v0.43.3 mission (sibling of C1).
 40. **Typed response boundary drifts from producer dict shape when both evolve independently:** a `Model.model_validate(helper_dict)` call at a route boundary is only as strict as the LAST round-trip test that exercised the producer's real prod shape. Helper functions returning `dict[str, Any]` provide no static cross-boundary type check, so the producer can grow new field shapes (int alongside str, additional enum values, optional → required) without the boundary noticing. The forward-additive policy on response models (`model_config = {"extra": "allow"}`) is load-bearing — closing it off would break Phase 5.D's freedom to ship new SLI fields without route migrations — but that flexibility MUST be paired with a producer→boundary round-trip test, else drift escapes CI. Reference: Mission C2 — `VoiceStatusResponse.capture.input_device: str | None` narrowed at commit `aee85844` (Phase 5.D v0.32.7); producer always emitted `int | str | None` via `AudioCaptureTask._input_device` rebound to `info.device_index` at `_capture_task.py:694`. Every `/api/voice/status` request 500'd in production until C2 widened the union at commit `00cb6e72`. Quality Gate 8 (`scripts/dev/check_boundary_round_trip_coverage.py`) enforces the round-trip pairing AST-mechanically: every `.model_validate(...)` call in `routes/voice.py` MUST have a paired test under `tests/dashboard/` calling either `Model.model_validate(...)` directly OR `assert_boundary_accepts(Model, ...)`. Mission anchor: `docs-internal/missions/MISSION-c2-voice-status-response-contract-2026-05-16.md`.
+41. **Candidate-list dispatch loop MUST iterate the full list within a single attempt window before collapsing to a fallback.** When a function receives or computes a list of remediation candidates (devices, channels, endpoints, brokers, plugins), the dispatch site MUST iterate every non-excluded candidate **within a single closure invocation** before declaring exhaustion or downgrading to a source. Single-shot dispatch — pick one, fail, return, hope the next heartbeat picks a different one — is an anti-shape because (a) cross-invocation state synchronization is hard (typically a global cooldown blocks the second attempt for tens of seconds), (b) the upstream caller may latch into a terminal state before the second invocation can fire, and (c) downstream consumers of the dispatch event lose the per-candidate observability they need for triage. Reference: Mission C3 — `src/sovyx/voice/health/_runtime_failover.py:109` pre-mission single-shot dispatch left the operator's Razer USB mic quarantined for 3600 s while two healthy fallback candidates were never tried (operator log L1015 → L1063, 2026-05-14). **Safe patterns:** (a) **loop-in-place with per-candidate cooldown + per-ladder cap** (the C3 fix at `_runtime_failover.py` — separate intra-ladder vs inter-invocation cooldown knobs); (b) **structured per-candidate telemetry** (`voice.failover.candidate_attempted` / `_failed` / `_skipped` / ladder-scoped `ladder_id`) so dashboards correlate full ladder runs; (c) **shared exclusion set** passed to the candidate-selection helper so the same candidate cannot be re-picked within one ladder run; (d) **probe-result cache consult** (`ProbeResultCache.is_known_unopenable`) before each candidate dispatch so unopenable devices are skipped without paying the ~1 s open-thrash per skipped device. Quality Gate 9 (`scripts/dev/check_ladder_iteration_discipline.py`) mechanically rejects the anti-shape in `voice/health/` by AST-scanning for any function that receives a candidate-set parameter (`candidates`, `targets`, `entries`, `endpoints`) AND calls a dispatch helper outside a loop. **Generalizes:** any subsystem with a list-of-candidates pattern — bridge channels, plugin loaders, retry-broker routers — falls under the same rule. Mission anchor: `docs-internal/missions/MISSION-c3-failover-ladder-iteration-2026-05-16.md`. **Sibling of #39(a)** (verdict-disjoint remediation): #39 governs how the verdict routes to a specific ladder; #41 governs how the ladder iterates its candidate set once chosen.
 
 ## Testing Patterns
 

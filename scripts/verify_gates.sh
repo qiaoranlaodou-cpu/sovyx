@@ -45,7 +45,7 @@ else
 fi
 
 GATE_NUM=0
-GATE_TOTAL=8
+GATE_TOTAL=9
 FAILURES=()
 
 ok() {
@@ -206,6 +206,21 @@ if uv run python scripts/dev/check_boundary_round_trip_coverage.py >"$LOG" 2>&1;
     fi
 else
     bad "boundary round-trip coverage — uncovered model(s) detected; log: $LOG"
+fi
+
+# ── Gate 9: ladder iteration discipline (Mission C3 §T4.1) ───────────
+GATE_NUM=9
+LOG="$LOG_DIR/09-ladder-iteration.log"
+if uv run python scripts/dev/check_ladder_iteration_discipline.py >"$LOG" 2>&1; then
+    # Success line format:
+    # "Quality Gate 9 — ladder iteration discipline: no anti-shape detected."
+    if grep -q "no anti-shape detected" "$LOG"; then
+        ok "ladder iteration discipline — no anti-pattern #41 sites"
+    else
+        bad "ladder iteration discipline — exit 0 but no summary line; log: $LOG"
+    fi
+else
+    bad "ladder iteration discipline — anti-pattern #41 detected; log: $LOG"
 fi
 
 # ── Final verdict ────────────────────────────────────────────────────
