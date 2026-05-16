@@ -5,6 +5,12 @@
   "error": "Failed to load voice status",
   "retry": "Retry",
   "notConfigured": "Voice pipeline is not configured. Enable it in your Sovyx config to see status here.",
+  "poller": {
+    "degraded": {
+      "title": "Voice status temporarily unavailable",
+      "detail": "The /api/voice/status endpoint has returned errors on {{count}} consecutive polls. Polling has slowed to 10 s; the page will recover automatically when the endpoint responds normally."
+    }
+  },
   "linuxMicGain": {
     "title": "Microphone input gain (Linux)",
     "checking": "Checking ALSA mixer...",

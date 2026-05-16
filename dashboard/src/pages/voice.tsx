@@ -27,6 +27,7 @@ import {
   RefreshCwIcon,
 } from "lucide-react";
 import { api, isAbortError } from "@/lib/api";
+import { useVoiceStatusPoller } from "@/hooks/use-voice-status-poller";
 import {
   VoiceModelsResponseSchema,
   VoiceStatusResponseSchema,
@@ -479,34 +480,19 @@ export default function VoicePage() {
     void fetchPerMindStatus();
   }, [fetchPerMindStatus]);
 
-  // While the pipeline is running, poll /api/voice/status at ~2 Hz so
-  // the VU-meter reflects live capture RMS. A fast fetch avoids the
-  // complexity of a second WS endpoint (the existing /voice/test/input
-  // stream rejects when the pipeline is active), and 500 ms is enough
-  // resolution for a human reading a level bar.
+  // Mission C2 §T2.3 — circuit-breaker poller replaces the
+  // pre-mission ``setInterval(... 500)`` block that hammered the
+  // backend 960× over 480 s with NO backoff when /api/voice/status
+  // 500'd every poll (operator forensic log v0.43.1 §C2 + §H8).
+  // The hook returns the latest status + an ``error: "degraded"``
+  // banner after 11 consecutive 5xx; a single 2xx resets to baseline.
   const captureRunning = status?.capture?.running ?? false;
+  const poller = useVoiceStatusPoller({ enabled: captureRunning });
   useEffect(() => {
-    if (!captureRunning) return;
-    const controller = new AbortController();
-    let cancelled = false;
-    const tick = async () => {
-      try {
-        const s = await api.get<VoiceStatus>("/api/voice/status", {
-          signal: controller.signal,
-        });
-        if (!cancelled) setStatus(s);
-      } catch (err) {
-        if (isAbortError(err)) return;
-        // Swallow transient errors — the main fetch will surface persistent ones.
-      }
-    };
-    const id = setInterval(() => void tick(), 500);
-    return () => {
-      cancelled = true;
-      controller.abort();
-      clearInterval(id);
-    };
-  }, [captureRunning]);
+    if (poller.status !== null) {
+      setStatus(poller.status as unknown as VoiceStatus);
+    }
+  }, [poller.status]);
 
   /* ── Loading state ── */
   if (loading && !status) {
@@ -562,6 +548,28 @@ export default function VoicePage() {
           <p className="text-sm text-[var(--svx-color-text-secondary)]">{t("notConfigured")}</p>
           <div className="mt-3">
             <VoiceSetupModal />
+          </div>
+        </div>
+      )}
+
+      {/* Mission C2 §T2.3 — circuit-breaker degraded banner. Surfaces
+          when the /api/voice/status poller hits 11 consecutive 5xx.
+          The poller continues at a 10 s cadence so recovery still
+          self-detects without operator action. */}
+      {poller.error === "degraded" && (
+        <div
+          role="alert"
+          aria-live="polite"
+          className="rounded-[var(--svx-radius-lg)] border border-[var(--svx-color-status-amber)] bg-[var(--svx-color-surface-secondary)] p-4"
+        >
+          <div className="flex items-start gap-3">
+            <AlertTriangleIcon className="mt-0.5 size-5 text-[var(--svx-color-status-amber)]" />
+            <div className="flex-1">
+              <p className="text-sm font-medium">{t("poller.degraded.title")}</p>
+              <p className="mt-1 text-xs text-[var(--svx-color-text-secondary)]">
+                {t("poller.degraded.detail", { count: poller.consecutive5xx })}
+              </p>
+            </div>
           </div>
         </div>
       )}

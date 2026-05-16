@@ -5,6 +5,12 @@
   "error": "Falló al cargar el estado de voz",
   "retry": "Reintentar",
   "notConfigured": "El pipeline de voz no está configurado. Habilítalo en tu config Sovyx para ver el estado aquí.",
+  "poller": {
+    "degraded": {
+      "title": "Estado de voz temporalmente no disponible",
+      "detail": "El endpoint /api/voice/status devolvió errores en {{count}} sondeos consecutivos. El sondeo bajó a 10 s; la página se recuperará automáticamente cuando el endpoint vuelva a responder normalmente."
+    }
+  },
   "linuxMicGain": {
     "title": "Ganancia de entrada del micrófono (Linux)",
     "checking": "Verificando mixer ALSA...",
