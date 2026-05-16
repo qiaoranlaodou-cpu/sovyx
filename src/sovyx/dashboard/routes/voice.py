@@ -144,7 +144,15 @@ class VoiceStatusCapture(BaseModel):
     model_config = {"extra": "allow"}
 
     running: bool = False
-    input_device: str | None = None
+    # Mission C2 — accept both PortAudio int device-handles (the
+    # ``info.device_index`` shape rebound at ``_capture_task.py:694``
+    # on every stream open) and operator-picked str device names. The
+    # producer constructor at ``_capture_task.py:279`` types this as
+    # ``int | str | None`` and the frontend zod twin at
+    # ``dashboard/src/types/schemas.ts:1757`` matches; pre-mission this
+    # boundary narrowed to ``str | None`` and 500'd every poll once
+    # capture opened against a real device. Anti-pattern #40.
+    input_device: int | str | None = None
     host_api: str | None = None
     sample_rate: int | None = None
     frames_delivered: int = 0

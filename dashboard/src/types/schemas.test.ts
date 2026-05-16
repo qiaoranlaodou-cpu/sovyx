@@ -1199,6 +1199,57 @@ describe("VoiceStatusResponseSchema (F2-H02)", () => {
     const result = VoiceStatusResponseSchema.safeParse(broken);
     expect(result.success).toBe(false);
   });
+
+  // ── Mission C2 §T1.4 — int variant of capture.input_device ──
+  //
+  // The backend pydantic boundary pre-v0.44.2 was narrowed to
+  // ``str | None``; the PortAudio device-index int (the steady-state
+  // shape after capture opens — operator's Razer at idx=7 per the
+  // v0.43.1 forensic audit) round-tripped through zod fine but 500'd
+  // at the pydantic boundary. Post-mission both layers accept the
+  // union. These tests pin the zod contract so a future narrowing
+  // of ``VoiceStatusCaptureSchema.input_device`` surfaces here.
+  //
+  // Mission: docs-internal/missions/MISSION-c2-voice-status-response-contract-2026-05-16.md §T1.4
+
+  it("safeParse accepts capture.input_device as integer (C2 prod shape)", () => {
+    const intShape = {
+      ...SAMPLE_VOICE_STATUS,
+      capture: {
+        ...SAMPLE_VOICE_STATUS.capture,
+        input_device: 7, // ← PortAudio int handle from forensic L1444
+      },
+    };
+    const result = VoiceStatusResponseSchema.safeParse(intShape);
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.capture?.input_device).toBe(7);
+    }
+  });
+
+  it("safeParse accepts capture.input_device as null (no capture device)", () => {
+    const nullShape = {
+      ...SAMPLE_VOICE_STATUS,
+      capture: { ...SAMPLE_VOICE_STATUS.capture, input_device: null },
+    };
+    const result = VoiceStatusResponseSchema.safeParse(nullShape);
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.capture?.input_device).toBeNull();
+    }
+  });
+
+  it("safeParse rejects capture.input_device as boolean (outside union)", () => {
+    // Guards against the union accidentally widening to ``any``
+    // during a future refactor — zod must reject shapes that are
+    // NEITHER int nor str nor null.
+    const boolShape = {
+      ...SAMPLE_VOICE_STATUS,
+      capture: { ...SAMPLE_VOICE_STATUS.capture, input_device: true },
+    };
+    const result = VoiceStatusResponseSchema.safeParse(boolShape);
+    expect(result.success).toBe(false);
+  });
 });
 
 describe("VoiceModelsResponseSchema (F2-H02)", () => {
