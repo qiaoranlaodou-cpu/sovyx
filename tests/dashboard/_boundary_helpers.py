@@ -79,8 +79,7 @@ def assert_boundary_accepts(
             for segment in dotted_path.split("."):
                 actual = getattr(actual, segment)
             assert actual == expected, (
-                f"boundary round-trip drift: {dotted_path}={actual!r} "
-                f"!= expected {expected!r}"
+                f"boundary round-trip drift: {dotted_path}={actual!r} != expected {expected!r}"
             )
     return instance
 

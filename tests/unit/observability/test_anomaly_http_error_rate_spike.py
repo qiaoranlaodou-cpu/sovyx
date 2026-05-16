@@ -74,7 +74,9 @@ class TestHttpErrorRateSpikeBasics:
         with patch("sovyx.observability.anomaly.logger.warning") as mock_warn:
             for _ in range(4):
                 detector(None, "warning", _response_entry("/api/voice/status", 500))
-            emits = [c for c in mock_warn.call_args_list if c.args[0] == "anomaly.http_error_rate_spike"]
+            emits = [
+                c for c in mock_warn.call_args_list if c.args[0] == "anomaly.http_error_rate_spike"
+            ]
             assert emits == []
 
     def test_at_threshold_emits_once(self) -> None:
@@ -83,7 +85,9 @@ class TestHttpErrorRateSpikeBasics:
         with patch("sovyx.observability.anomaly.logger.warning") as mock_warn:
             for _ in range(5):
                 detector(None, "warning", _response_entry("/api/voice/status", 500))
-            emits = [c for c in mock_warn.call_args_list if c.args[0] == "anomaly.http_error_rate_spike"]
+            emits = [
+                c for c in mock_warn.call_args_list if c.args[0] == "anomaly.http_error_rate_spike"
+            ]
             assert len(emits) == 1
             fields = emits[0].kwargs
             assert fields["anomaly.path"] == "/api/voice/status"
@@ -106,7 +110,9 @@ class TestHttpErrorRateSpikeBasics:
             # Burst 2: still inside cooldown
             for _ in range(10):
                 detector(None, "warning", _response_entry("/api/voice/status", 500))
-            emits = [c for c in mock_warn.call_args_list if c.args[0] == "anomaly.http_error_rate_spike"]
+            emits = [
+                c for c in mock_warn.call_args_list if c.args[0] == "anomaly.http_error_rate_spike"
+            ]
             assert len(emits) == 1
 
     def test_4xx_does_not_count(self) -> None:
@@ -115,7 +121,9 @@ class TestHttpErrorRateSpikeBasics:
         with patch("sovyx.observability.anomaly.logger.warning") as mock_warn:
             for code in (400, 401, 403, 404, 422):
                 detector(None, "warning", _response_entry("/api/voice/status", code))
-            emits = [c for c in mock_warn.call_args_list if c.args[0] == "anomaly.http_error_rate_spike"]
+            emits = [
+                c for c in mock_warn.call_args_list if c.args[0] == "anomaly.http_error_rate_spike"
+            ]
             assert emits == []
 
     def test_2xx_does_not_count(self) -> None:
@@ -124,7 +132,9 @@ class TestHttpErrorRateSpikeBasics:
         with patch("sovyx.observability.anomaly.logger.warning") as mock_warn:
             for _ in range(50):
                 detector(None, "info", _response_entry("/api/voice/status", 200))
-            emits = [c for c in mock_warn.call_args_list if c.args[0] == "anomaly.http_error_rate_spike"]
+            emits = [
+                c for c in mock_warn.call_args_list if c.args[0] == "anomaly.http_error_rate_spike"
+            ]
             assert emits == []
 
     def test_503_504_500_504_500_triggers(self) -> None:
@@ -133,7 +143,9 @@ class TestHttpErrorRateSpikeBasics:
         with patch("sovyx.observability.anomaly.logger.warning") as mock_warn:
             for code in (503, 504, 500, 504, 500):
                 detector(None, "warning", _response_entry("/api/voice/status", code))
-            emits = [c for c in mock_warn.call_args_list if c.args[0] == "anomaly.http_error_rate_spike"]
+            emits = [
+                c for c in mock_warn.call_args_list if c.args[0] == "anomaly.http_error_rate_spike"
+            ]
             assert len(emits) == 1
             # ``status_code_sample`` is the LAST status_code that
             # pushed over the threshold — surface as evidence.
@@ -151,7 +163,9 @@ class TestHttpErrorRateSpikePathIsolation:
                 detector(None, "warning", _response_entry("/api/voice/status", 500))
             for _ in range(3):
                 detector(None, "warning", _response_entry("/api/voice/models", 503))
-            emits = [c for c in mock_warn.call_args_list if c.args[0] == "anomaly.http_error_rate_spike"]
+            emits = [
+                c for c in mock_warn.call_args_list if c.args[0] == "anomaly.http_error_rate_spike"
+            ]
             assert len(emits) == 2
             paths = {e.kwargs["anomaly.path"] for e in emits}
             assert paths == {"/api/voice/status", "/api/voice/models"}
@@ -165,7 +179,9 @@ class TestHttpErrorRateSpikePathIsolation:
             # Single 500 on a different path — must NOT emit (only 1
             # in the path-B bucket).
             detector(None, "warning", _response_entry("/api/voice/models", 500))
-            emits = [c for c in mock_warn.call_args_list if c.args[0] == "anomaly.http_error_rate_spike"]
+            emits = [
+                c for c in mock_warn.call_args_list if c.args[0] == "anomaly.http_error_rate_spike"
+            ]
             paths = [e.kwargs["anomaly.path"] for e in emits]
             assert paths == ["/api/voice/status"]
 
@@ -193,12 +209,16 @@ class TestHttpErrorRateSpikeBoundedCardinality:
             # starts from count=1, threshold=2 → 1 more emit
             # needed to trigger.
             detector(None, "warning", _response_entry("/api/p0", 500))
-            emits = [c for c in mock_warn.call_args_list if c.args[0] == "anomaly.http_error_rate_spike"]
+            emits = [
+                c for c in mock_warn.call_args_list if c.args[0] == "anomaly.http_error_rate_spike"
+            ]
             # Single 500 on each path: nothing crosses threshold=2 yet.
             assert emits == []
             # Second 500 on /api/p0 (now re-seeded) triggers.
             detector(None, "warning", _response_entry("/api/p0", 500))
-            emits = [c for c in mock_warn.call_args_list if c.args[0] == "anomaly.http_error_rate_spike"]
+            emits = [
+                c for c in mock_warn.call_args_list if c.args[0] == "anomaly.http_error_rate_spike"
+            ]
             assert len(emits) == 1
             assert emits[0].kwargs["anomaly.path"] == "/api/p0"
 
@@ -214,7 +234,9 @@ class TestHttpErrorRateSpikeDisabledKnob:
         with patch("sovyx.observability.anomaly.logger.warning") as mock_warn:
             for _ in range(50):
                 detector(None, "warning", _response_entry("/api/voice/status", 500))
-            emits = [c for c in mock_warn.call_args_list if c.args[0] == "anomaly.http_error_rate_spike"]
+            emits = [
+                c for c in mock_warn.call_args_list if c.args[0] == "anomaly.http_error_rate_spike"
+            ]
             assert emits == []
 
 
@@ -242,7 +264,9 @@ class TestHttpErrorRateSpikeSelfRecursionGuard:
                     "net.path": "/api/voice/status",
                 },
             )
-            emits = [c for c in mock_warn.call_args_list if c.args[0] == "anomaly.http_error_rate_spike"]
+            emits = [
+                c for c in mock_warn.call_args_list if c.args[0] == "anomaly.http_error_rate_spike"
+            ]
             assert emits == []
 
 
@@ -257,7 +281,9 @@ class TestHttpErrorRateSpikeMalformedEntries:
                 "warning",
                 {"event": "net.http.response", "net.status_code": 500},
             )
-            emits = [c for c in mock_warn.call_args_list if c.args[0] == "anomaly.http_error_rate_spike"]
+            emits = [
+                c for c in mock_warn.call_args_list if c.args[0] == "anomaly.http_error_rate_spike"
+            ]
             assert emits == []
 
     def test_status_code_not_int_does_not_emit(self) -> None:
@@ -272,7 +298,9 @@ class TestHttpErrorRateSpikeMalformedEntries:
                     "net.path": "/api/voice/status",
                 },
             )
-            emits = [c for c in mock_warn.call_args_list if c.args[0] == "anomaly.http_error_rate_spike"]
+            emits = [
+                c for c in mock_warn.call_args_list if c.args[0] == "anomaly.http_error_rate_spike"
+            ]
             assert emits == []
 
     def test_path_empty_string_does_not_emit(self) -> None:
@@ -287,5 +315,7 @@ class TestHttpErrorRateSpikeMalformedEntries:
                     "net.path": "",
                 },
             )
-            emits = [c for c in mock_warn.call_args_list if c.args[0] == "anomaly.http_error_rate_spike"]
+            emits = [
+                c for c in mock_warn.call_args_list if c.args[0] == "anomaly.http_error_rate_spike"
+            ]
             assert emits == []
