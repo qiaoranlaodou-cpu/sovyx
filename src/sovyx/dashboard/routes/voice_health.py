@@ -54,6 +54,7 @@ from sovyx.voice.health._factory_integration import (
     resolve_capture_overrides_path,
     resolve_combo_store_path,
 )
+from sovyx.voice.health._failover_history import get_default_failover_history
 
 if TYPE_CHECKING:
     from sovyx.engine.config import EngineConfig
@@ -333,6 +334,68 @@ class QuarantineSnapshotResponse(BaseModel):
     count: int
 
 
+# ── Mission C3 §T2.9 — failover-history models ──────────────────────────
+
+
+class FailoverCandidateModel(BaseModel):
+    """Per-candidate detail within a ladder run.
+
+    Mirrors ``FailoverCandidateRecord`` from
+    ``voice/health/_failover_history.py``. ``extra="allow"`` matches
+    the ``VoiceStatusResponse`` forward-additive policy so future
+    fields land without a schema migration.
+    """
+
+    model_config = {"extra": "allow"}
+
+    index: int
+    target_endpoint: str
+    target_friendly_name: str = ""
+    verdict: str  # "succeeded" | "failed" | "skipped"
+    error_class: str = ""
+    error_detail: str = ""
+    elapsed_ms: int | None = None
+    skipped_reason: str | None = None
+
+
+class FailoverHistoryEntryModel(BaseModel):
+    """One ladder invocation captured for the dashboard widget.
+
+    Mirrors ``FailoverLadderRunRecord`` from
+    ``voice/health/_failover_history.py``.
+    """
+
+    model_config = {"extra": "allow"}
+
+    ladder_id: str
+    started_monotonic: float
+    completed_monotonic: float | None = None
+    verdict: str  # "in_progress" | "succeeded" | "exhausted"
+    candidates_tried: int = 0
+    succeeded_index: int | None = None
+    candidates: list[FailoverCandidateModel] = Field(default_factory=list)
+    from_endpoint: str = ""
+    elapsed_ms: int | None = None
+    derived_reason: str = ""
+    mind_id: str = ""
+
+
+class FailoverHistoryResponse(BaseModel):
+    """Failover-history snapshot. Mission C3 §T2.9.
+
+    Returned by ``GET /api/voice/health/failover-history``. ``entries``
+    are sorted newest-first (most recent ladder run first). The ring
+    is bounded by ``VoiceTuningConfig.failover_history_ring_capacity``
+    (default 32); operators read the full ring; the dashboard widget
+    renders the most recent 16.
+    """
+
+    model_config = {"extra": "allow"}
+
+    entries: list[FailoverHistoryEntryModel] = Field(default_factory=list)
+    ring_capacity: int
+
+
 class HealthSnapshotResponse(BaseModel):
     combo_store: list[ComboEntryModel]
     overrides: list[OverrideEntryModel]
@@ -578,6 +641,62 @@ async def get_voice_health_quarantine(request: Request) -> QuarantineSnapshotRes
     )
 
 
+@router.get("/failover-history", response_model=FailoverHistoryResponse)
+async def get_voice_failover_history(
+    request: Request,  # noqa: ARG001 — kept for symmetry + future auth context
+) -> FailoverHistoryResponse:
+    """Return the runtime failover-ladder history ring (Mission C3 §T2.9).
+
+    The ring is populated by
+    :func:`sovyx.voice.health._runtime_failover._try_runtime_failover`
+    on every ladder completion. Each entry carries:
+
+    * ``ladder_id`` — uuid4 hex (12 chars) for correlation with the
+      ``voice.failover.*`` LogEvents in ``sovyx.log``.
+    * ``verdict`` — ``"succeeded" | "exhausted" | "in_progress"``.
+    * ``candidates`` — per-candidate detail with verdict, error_class,
+      elapsed_ms, and skipped_reason where applicable.
+
+    Returns 200 with an empty ``entries`` list when no ladder has yet
+    run (common on a fresh daemon boot — the ring is process-local).
+    """
+    history = get_default_failover_history()
+    entries = [
+        FailoverHistoryEntryModel.model_validate(
+            {
+                "ladder_id": run.ladder_id,
+                "started_monotonic": run.started_monotonic,
+                "completed_monotonic": run.completed_monotonic,
+                "verdict": run.verdict,
+                "candidates_tried": run.candidates_tried,
+                "succeeded_index": run.succeeded_index,
+                "candidates": [
+                    {
+                        "index": c.index,
+                        "target_endpoint": c.target_endpoint,
+                        "target_friendly_name": c.target_friendly_name,
+                        "verdict": c.verdict,
+                        "error_class": c.error_class,
+                        "error_detail": c.error_detail,
+                        "elapsed_ms": c.elapsed_ms,
+                        "skipped_reason": c.skipped_reason,
+                    }
+                    for c in run.candidates
+                ],
+                "from_endpoint": run.from_endpoint,
+                "elapsed_ms": run.elapsed_ms,
+                "derived_reason": run.derived_reason,
+                "mind_id": run.mind_id,
+            },
+        )
+        for run in history.entries()
+    ]
+    return FailoverHistoryResponse(
+        entries=entries,
+        ring_capacity=history.capacity,
+    )
+
+
 @router.post("/reprobe", response_model=ReprobeResponse)
 async def post_voice_reprobe(
     request: Request,
@@ -782,6 +901,9 @@ __all__ = [
     "ForgetRequest",
     "ForgetResponse",
     "HealthSnapshotResponse",
+    "FailoverCandidateModel",
+    "FailoverHistoryEntryModel",
+    "FailoverHistoryResponse",
     "OverrideEntryModel",
     "PinRequest",
     "PinResponse",

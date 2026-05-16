@@ -109,6 +109,11 @@ from sovyx.voice.health._failover_error_classifier import (
     FailoverErrorClass,
     classify_error_code,
 )
+from sovyx.voice.health._failover_history import (
+    FailoverCandidateRecord,
+    FailoverLadderRunRecord,
+    get_default_failover_history,
+)
 from sovyx.voice.health._probe_result_cache import (
     ProbeResultEntry,
     get_default_probe_result_cache,
@@ -476,6 +481,18 @@ async def _try_runtime_failover(
     # for skip-on-bad-probe + populated after each dispatch outcome.
     probe_cache = get_default_probe_result_cache()
 
+    # Mission C3 §T2.9 — ladder-history ring buffer. Single record
+    # per ladder, with per-candidate detail appended in the loop body.
+    history_ring = get_default_failover_history()
+    history_record = FailoverLadderRunRecord(
+        ladder_id=ladder_id,
+        started_monotonic=ladder_started_monotonic,
+        from_endpoint=from_endpoint,
+        derived_reason=derived_reason,
+        mind_id=mind_id,
+    )
+    history_ring.record_ladder(history_record)
+
     try:
         per_ladder_cap = max(1, tuning.failover_candidate_max_attempts_per_ladder)
         current_target: DeviceEntry | None = target
@@ -542,6 +559,21 @@ async def _try_runtime_failover(
                         "voice.reason": "probe_cache_unopenable",
                         "voice.mind_id": mind_id,
                     },
+                )
+                # Mission C3 §T2.9 — record the skipped candidate in
+                # the failover-history ring for dashboard rendering.
+                history_record.add_candidate(
+                    FailoverCandidateRecord(
+                        index=iteration_index,
+                        target_endpoint=target_key,
+                        target_friendly_name=current_target.name,
+                        verdict="skipped",
+                        skipped_reason="probe_cache_unopenable",
+                        error_class=classify_error_code(
+                            cache_entry_for_skip.error_code,
+                            cache_entry_for_skip.error_detail,
+                        ).value,
+                    ),
                 )
                 if target_key:
                     attempted_in_this_ladder.add(target_key)
@@ -635,6 +667,18 @@ async def _try_runtime_failover(
                         error=str(cache_exc),
                         error_type=type(cache_exc).__name__,
                     )
+                # Mission C3 §T2.9 — record exception in history.
+                history_record.add_candidate(
+                    FailoverCandidateRecord(
+                        index=iteration_index,
+                        target_endpoint=current_endpoint,
+                        target_friendly_name=current_friendly,
+                        verdict="failed",
+                        error_class=exception_error_class.value,
+                        error_detail=str(exc),
+                        elapsed_ms=elapsed_ms,
+                    ),
+                )
                 if target_key:
                     attempted_in_this_ladder.add(target_key)
                     candidates_unreachable.append(target_key)
@@ -697,6 +741,17 @@ async def _try_runtime_failover(
                         error_type=type(cache_exc).__name__,
                     )
 
+                # Mission C3 §T2.9 — record successful candidate.
+                history_record.add_candidate(
+                    FailoverCandidateRecord(
+                        index=iteration_index,
+                        target_endpoint=current_endpoint,
+                        target_friendly_name=current_friendly,
+                        verdict="succeeded",
+                        elapsed_ms=elapsed_ms,
+                    ),
+                )
+
                 succeeded_index = iteration_index
                 state.ladder_exhausted = False
                 state.last_ladder_complete_monotonic = time.monotonic()
@@ -735,6 +790,19 @@ async def _try_runtime_failover(
                     mind_id=mind_id,
                 )
 
+                # Mission C3 §T2.9 — finalize the history record.
+                elapsed_total_ms = int(
+                    (time.monotonic() - ladder_started_monotonic) * 1000,
+                )
+                history_ring.update_in_progress(
+                    ladder_id,
+                    verdict="succeeded",
+                    completed_monotonic=time.monotonic(),
+                    succeeded_index=succeeded_index,
+                    candidates_tried=candidates_tried,
+                    elapsed_ms=elapsed_total_ms,
+                )
+
                 logger.info(
                     "voice.failover.ladder_complete",
                     **{
@@ -742,9 +810,7 @@ async def _try_runtime_failover(
                         "voice.verdict": "succeeded",
                         "voice.succeeded_index": succeeded_index,
                         "voice.candidates_tried": candidates_tried,
-                        "voice.elapsed_ms": int(
-                            (time.monotonic() - ladder_started_monotonic) * 1000,
-                        ),
+                        "voice.elapsed_ms": elapsed_total_ms,
                         "voice.mind_id": mind_id,
                     },
                 )
@@ -800,6 +866,19 @@ async def _try_runtime_failover(
                     error_type=type(cache_exc).__name__,
                 )
 
+            # Mission C3 §T2.9 — record failed candidate in history.
+            history_record.add_candidate(
+                FailoverCandidateRecord(
+                    index=iteration_index,
+                    target_endpoint=current_endpoint,
+                    target_friendly_name=current_friendly,
+                    verdict="failed",
+                    error_class=error_class.value,
+                    error_detail=last_failure_detail,
+                    elapsed_ms=elapsed_ms,
+                ),
+            )
+
             if target_key:
                 attempted_in_this_ladder.add(target_key)
                 candidates_unreachable.append(target_key)
@@ -854,6 +933,19 @@ async def _try_runtime_failover(
             mind_id=mind_id,
         )
 
+        # Mission C3 §T2.9 — finalize the history record for exhausted.
+        elapsed_total_ms_exhausted = int(
+            (time.monotonic() - ladder_started_monotonic) * 1000,
+        )
+        history_ring.update_in_progress(
+            ladder_id,
+            verdict="exhausted",
+            completed_monotonic=time.monotonic(),
+            succeeded_index=None,
+            candidates_tried=candidates_tried,
+            elapsed_ms=elapsed_total_ms_exhausted,
+        )
+
         logger.info(
             "voice.failover.ladder_complete",
             **{
@@ -861,9 +953,7 @@ async def _try_runtime_failover(
                 "voice.verdict": "exhausted",
                 "voice.succeeded_index": None,
                 "voice.candidates_tried": candidates_tried,
-                "voice.elapsed_ms": int(
-                    (time.monotonic() - ladder_started_monotonic) * 1000,
-                ),
+                "voice.elapsed_ms": elapsed_total_ms_exhausted,
                 "voice.mind_id": mind_id,
             },
         )

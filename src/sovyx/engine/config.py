@@ -1370,6 +1370,21 @@ class VoiceTuningConfig(BaseSettings):
     [10, 600] — zero would disable the throttle entirely
     (diagnostic only)."""
 
+    failover_history_ring_capacity: int = 32
+    """Mission C3 §T2.9 — capacity of the failover-history FIFO ring
+    surfaced at ``GET /api/voice/failover-history`` + the
+    ``sovyx doctor voice`` CLI surface.
+
+    The ring stores the most recent N ladder runs (each with full
+    per-candidate detail). Default 32 covers ≈ a full day of normal
+    operator usage on the v0.43.1 hardware (typical: 1-3 ladder runs
+    per session, < 1 per hour in steady state). Bounded [4, 512]; the
+    upper bound is observability-budget conservative.
+
+    Dashboard widget renders the most recent 16; the remaining 16
+    serve the ``sovyx doctor voice`` triage flow. Override via
+    ``SOVYX_TUNING__VOICE__FAILOVER_HISTORY_RING_CAPACITY=64``."""
+
     # ── Mission MISSION-voice-linux-silent-mic-remediation-2026-05-04
     # §Phase 2 T2.1 + T2.2 + T2.3 — two new Linux bypass strategies
     # that automate the two canonical Linux+PipeWire silent-mic
