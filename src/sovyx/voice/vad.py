@@ -512,6 +512,14 @@ class SileroVAD:
         self._config = config or VADConfig()
         _validate_config(self._config)
 
+        # Mission C1 §4.4 L2 — retain the model_path so the
+        # VAD-frontend reset ladder's L2 step can build a fresh
+        # :class:`SileroVAD` instance from the same artefact when the
+        # current ONNX session corrupts beyond recovery via L1
+        # ``reset()``. Added 2026-05-15 as a backward-compatible field
+        # (existing callers see it via :meth:`model_path` property).
+        self._model_path = model_path
+
         opts = ort.SessionOptions()
         opts.intra_op_num_threads = 1  # VAD is tiny — 1 thread is optimal
         opts.inter_op_num_threads = 1
@@ -917,6 +925,18 @@ class SileroVAD:
     def is_speaking(self) -> bool:
         """Whether the FSM considers speech ongoing."""
         return self._vad_state in (VADState.SPEECH, VADState.SPEECH_OFFSET)
+
+    @property
+    def model_path(self) -> Path:
+        """ONNX model artefact path the instance was built against.
+
+        Mission C1 §4.4 L2 — read by
+        :meth:`VoicePipeline.reinstantiate_vad` so the recovery ladder
+        can build a fresh :class:`SileroVAD` from the same artefact
+        without the pipeline plumbing a separate copy of the
+        construction params.
+        """
+        return self._model_path
 
     @property
     def config(self) -> VADConfig:

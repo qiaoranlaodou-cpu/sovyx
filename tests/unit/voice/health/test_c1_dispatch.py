@@ -106,6 +106,9 @@ class _FakeCaptureTask:
     def apply_mic_ducking_db(self, gain_db: float) -> None:  # pragma: no cover  # noqa: ARG002
         pass
 
+    def apply_agc2_floor_lift(self, delta_db: float) -> float:  # pragma: no cover  # noqa: ARG002
+        return 0.0
+
     async def recent_rms_db_summary(
         self,
         seconds: float,  # noqa: ARG002
@@ -143,12 +146,16 @@ class _FakePipeline:
     """Stand-in for :class:`VoicePipeline` — only the ladder's surface."""
 
     reset_vad_calls: int = 0
+    reinstantiate_vad_calls: int = 0
     swap_vad_calls: int = 0
 
     async def reset_vad(self) -> None:
         self.reset_vad_calls += 1
 
-    async def swap_vad(self, new_vad: Any) -> None:  # pragma: no cover  # noqa: ARG002, ANN401
+    async def reinstantiate_vad(self) -> None:
+        self.reinstantiate_vad_calls += 1
+
+    async def swap_vad(self, new_vad: Any) -> None:  # noqa: ARG002, ANN401
         self.swap_vad_calls += 1
 
 
@@ -296,12 +303,19 @@ class TestCoordinatorDispatch:
 
     @pytest.mark.asyncio()
     async def test_vad_frontend_dead_ladder_exhausts_quarantines(self) -> None:
-        """Ladder all-fail → coordinator quarantines with derived_reason."""
-        # Sequence: pre-bypass (VAD_FRONTEND_DEAD), post-L1 (VAD_MUTE
-        # still dead), post-L3 (VAD_MUTE still dead).
+        """Ladder all-fail → coordinator quarantines with derived_reason.
+
+        v0.44.x extended the ladder from L1+L3 to the full L1/L2/L3/L4/L5
+        sequence; the per-step probe sees VAD_MUTE (still dead) after
+        each of 5 attempts and the coordinator falls through to the
+        verdict-driven quarantine."""
+        # Pre-bypass + 5 post-step probes all VAD_MUTE (still dead).
         probe = _ScriptedProbe(
             verdicts=[
                 IntegrityVerdict.VAD_FRONTEND_DEAD,
+                IntegrityVerdict.VAD_MUTE,
+                IntegrityVerdict.VAD_MUTE,
+                IntegrityVerdict.VAD_MUTE,
                 IntegrityVerdict.VAD_MUTE,
                 IntegrityVerdict.VAD_MUTE,
             ],
@@ -318,8 +332,8 @@ class TestCoordinatorDispatch:
 
         outcomes = await coordinator.handle_deaf_signal()
 
-        # Two ladder steps attempted, both STILL_DEAD.
-        assert len(outcomes) == 2
+        # All 5 ladder steps attempted, all STILL_DEAD.
+        assert len(outcomes) == 5
         assert all(o.verdict.value == "vad_frontend_reset_applied_still_dead" for o in outcomes)
         # Exhaustion is terminal.
         assert coordinator.is_resolved is True
@@ -395,8 +409,12 @@ class TestVADFrontendRecovery:
         assert pipeline.reset_vad_calls == 1
 
     @pytest.mark.asyncio()
-    async def test_l1_fail_l3_succeeds(self) -> None:
-        """L1 reset_vad still dead → L3 normalizer_engage → HEALTHY → terminates."""
+    async def test_l1_fail_l2_succeeds(self) -> None:
+        """L1 reset_vad still dead → L2 silero_reinstantiate → HEALTHY → terminates.
+
+        v0.44.x ladder has L2 (silero_reinstantiate) immediately after
+        L1 — the second post-step probe seeing HEALTHY terminates the
+        ladder at L2 without descending into L3/L4/L5."""
         probe = _ScriptedProbe(
             verdicts=[IntegrityVerdict.VAD_FRONTEND_DEAD, IntegrityVerdict.HEALTHY],
         )
@@ -416,18 +434,18 @@ class TestVADFrontendRecovery:
         assert len(outcomes) == 2
         assert outcomes[0].verdict.value == "vad_frontend_reset_applied_still_dead"
         assert outcomes[1].verdict.value == "vad_frontend_reset_applied_healthy"
-        assert outcomes[1].strategy_name == "vad_frontend_reset:normalizer_engage"
+        assert outcomes[1].strategy_name == "vad_frontend_reset:silero_reinstantiate"
         assert pipeline.reset_vad_calls == 1
-        assert capture.engage_calls == 1
+        assert pipeline.reinstantiate_vad_calls == 1
+        # L3 normalizer_engage never reached.
+        assert capture.engage_calls == 0
 
     @pytest.mark.asyncio()
     async def test_exhaustion_returns_all_still_dead(self) -> None:
-        """Every step fails → outcomes are all STILL_DEAD."""
+        """Every step fails → outcomes are all 5 STILL_DEAD."""
+        # 5 STILL_DEAD post-step probes covering L1..L5.
         probe = _ScriptedProbe(
-            verdicts=[
-                IntegrityVerdict.VAD_FRONTEND_DEAD,
-                IntegrityVerdict.VAD_FRONTEND_DEAD,
-            ],
+            verdicts=[IntegrityVerdict.VAD_FRONTEND_DEAD] * 5,
         )
         capture = _FakeCaptureTask()
         pipeline = _FakePipeline()
@@ -442,7 +460,7 @@ class TestVADFrontendRecovery:
             _make_result(verdict=IntegrityVerdict.VAD_FRONTEND_DEAD),
         )
 
-        assert len(outcomes) == 2
+        assert len(outcomes) == 5
         assert all(o.verdict.value == "vad_frontend_reset_applied_still_dead" for o in outcomes)
 
     @pytest.mark.asyncio()
@@ -533,10 +551,13 @@ class TestVADFrontendRecovery:
             _make_result(verdict=IntegrityVerdict.VAD_FRONTEND_DEAD),
         )
 
-        # L1 crashed → STILL_DEAD; L3 then attempted (HEALTHY now).
+        # L1 crashed → STILL_DEAD; L2 silero_reinstantiate then runs
+        # and the post-step probe sees HEALTHY → ladder terminates.
         assert len(outcomes) == 2
         assert outcomes[0].verdict.value == "vad_frontend_reset_applied_still_dead"
         assert "RuntimeError" in outcomes[0].detail
+        assert outcomes[1].verdict.value == "vad_frontend_reset_applied_healthy"
+        assert outcomes[1].strategy_name == "vad_frontend_reset:silero_reinstantiate"
 
 
 # ─────────────────────────────────────────────────────────────────────

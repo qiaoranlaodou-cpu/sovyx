@@ -130,6 +130,9 @@ class _FakeCaptureTask:
     def apply_mic_ducking_db(self, gain_db: float) -> None:  # pragma: no cover
         pass
 
+    def apply_agc2_floor_lift(self, delta_db: float) -> float:  # pragma: no cover  # noqa: ARG002
+        return 0.0
+
     # Mission C1 §T1.2.a + §T1.8 CaptureTaskProto extensions. Tests that
     # need to exercise the coordinator-side history cross-check or the
     # FORMAT_MISMATCH dispatch override these on a per-test basis.

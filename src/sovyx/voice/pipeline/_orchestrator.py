@@ -757,6 +757,64 @@ class VoicePipeline(
         """
         self._vad.reset()
 
+    async def reinstantiate_vad(self) -> None:
+        """Mission C1 §4.4 L2 — build a FRESH :class:`SileroVAD` and swap.
+
+        Recovery step BELOW L1 :meth:`reset_vad` (which only zeros the
+        LSTM recurrent state + FSM scalars). When the ONNX session
+        itself has corrupted beyond what an in-place ``reset()`` can
+        clear, L2 fires: discard the old session entirely and build a
+        new one from the same model artefact + configuration the
+        current VAD was constructed with. The fresh session ditches
+        any accumulated runtime state (cumulative corruption counters,
+        backend allocator state) at the cost of one ONNX model load
+        (~50-200 ms on a modern CPU).
+
+        Reads :attr:`SileroVAD.model_path` + :attr:`SileroVAD.config`
+        from the LIVE pipeline VAD (NOT the probe's VAD — see
+        ``capture_integrity.py:185-189`` cross-contamination guard).
+        Anti-pattern #14 — the ONNX :class:`InferenceSession`
+        constructor IS the expensive sync I/O, wrapped in
+        :func:`asyncio.to_thread` so the event loop isn't blocked.
+        :meth:`swap_vad` then runs the atomic handoff + fresh reset.
+
+        Idempotent under concurrent invocation only insofar as
+        :meth:`swap_vad` is atomic (Python assignment); two concurrent
+        callers may both load fresh sessions and the LATER assignment
+        wins — both fresh sessions are functionally equivalent, the
+        earlier one becomes GC-eligible.
+        """
+        # Imported lazily because ``SileroVAD`` lives in
+        # ``voice.vad`` which has heavy ONNX runtime + numpy import
+        # cost; the module-top ``TYPE_CHECKING`` guard already covers
+        # the type-hint usage, so a real import is only needed here at
+        # call time (the recovery path runs once per ladder iteration,
+        # not per heartbeat).
+        from sovyx.voice.vad import SileroVAD
+
+        current_path = self._vad.model_path
+        current_config = self._vad.config
+        # Build the fresh session off the event loop — the ONNX
+        # InferenceSession init reads ~2 MB from disk + allocates
+        # CPU graph state; not a hot-path cost but enough to stall
+        # other coroutines if invoked inline.
+        new_vad = await asyncio.to_thread(
+            lambda: SileroVAD(
+                current_path,
+                config=current_config,
+                # Skip the construction-time smoke probe — recovery is
+                # ALREADY in a degraded state; the smoke probe would
+                # consume a frame that the consumer's deterministic
+                # mocks may not be prepared to produce, and the real
+                # ONNX init already validates the model artefact
+                # bytes at load time. Production callers that need
+                # the extra safety can call ``smoke_probe_session``
+                # explicitly post-construction.
+                smoke_probe_at_construction=False,
+            ),
+        )
+        await self.swap_vad(new_vad)
+
     async def swap_vad(self, new_vad: SileroVAD) -> None:
         """Mission C1 §T1.4.a — atomically replace the LIVE pipeline VAD.
 

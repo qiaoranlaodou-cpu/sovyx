@@ -529,6 +529,32 @@ class AudioCaptureTask(EpochMixin, RingMixin, LifecycleMixin, LoopMixin, Restart
             return
         normalizer.set_ducking_gain_db(gain_db)
 
+    def apply_agc2_floor_lift(self, delta_db: float) -> float:
+        """Mission C1 §4.4 L4 + §20.M T1.4.b — bounded AGC2 floor lift.
+
+        Forwards a one-shot floor-lift request to the AGC2 controller
+        held by the active :class:`FrameNormalizer`. Returns the
+        APPLIED delta (may be less than ``delta_db`` when the §20.I
+        ``max_gain_db`` cap fires). Empty / disabled normalizer
+        returns 0.0 — the L4 ladder step interprets that as "no
+        lift available on this hardware path".
+
+        Args:
+            delta_db: Requested lift in dB. Bounded by the caller to
+                :attr:`VoiceTuningConfig.vad_frontend_reset_max_gain_lift_db`
+                (default 6.0) BEFORE invoking this method; the AGC2
+                itself enforces a hard cap at
+                :attr:`AGC2Config.max_gain_db` independent of the
+                ladder knob.
+        """
+        normalizer = self._normalizer
+        if normalizer is None:
+            return 0.0
+        agc2 = normalizer.agc2
+        if agc2 is None:
+            return 0.0
+        return agc2.lift_speech_level(delta_db)
+
     async def recent_rms_db_summary(self, seconds: float) -> RmsSummary:
         """Mission C1 §T1.2.a + §20.J — RMS summary over recent audio.
 

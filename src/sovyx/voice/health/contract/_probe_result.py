@@ -300,6 +300,20 @@ class CaptureTaskProto(Protocol):
 
     def apply_mic_ducking_db(self, gain_db: float) -> None: ...
 
+    def apply_agc2_floor_lift(self, delta_db: float) -> float:
+        """Mission C1 §4.4 L4 + §20.M T1.4.b — bounded AGC2 floor lift.
+
+        Forwards a one-shot floor-lift request to the AGC2 controller
+        held by the active capture-side :class:`FrameNormalizer`. The
+        caller (VAD-frontend reset ladder) supplies a ``delta_db``
+        bounded by :attr:`VoiceTuningConfig.vad_frontend_reset_max_gain_lift_db`;
+        the AGC2 enforces a hard cap at :attr:`AGC2Config.max_gain_db`
+        on top per §20.I. Returns the APPLIED delta in dB (may be
+        less than ``delta_db`` when the cap fires; 0.0 when the
+        normalizer or AGC2 is absent).
+        """
+        ...
+
     async def recent_rms_db_summary(self, seconds: float) -> RmsSummary:
         """Mission C1 §T1.2.a — RMS summary over the recent ``seconds``.
 

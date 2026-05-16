@@ -491,6 +491,61 @@ class AGC2:
         self._frames_silenced = 0
         self._frames_clipped = 0
 
+    def lift_speech_level(self, delta_db: float) -> float:
+        """Mission C1 §4.4 L4 + §20.M T1.4.b — bounded floor lift.
+
+        Drops the internal speech-level estimate by ``delta_db`` (one-
+        shot, clamped). Because the P-controller computes
+        ``desired_gain_db = target_dbfs - speech_level_dbfs``,
+        DROPPING ``speech_level_dbfs`` makes the controller demand
+        MORE gain on subsequent frames — the effective floor lifts so
+        quiet supra-noise speech crosses Silero's response band
+        without amplifying ambient noise into the hallucination band
+        gated by ``quiet_signal_gate``.
+
+        Bounded delta cap honors §20.I: NEVER let the resulting gain
+        demand exceed :attr:`AGC2Config.max_gain_db`. The cap is the
+        Silero quiet-signal hallucination guard's contract — lifting
+        gain unbounded would defeat the §20.I invariant.
+
+        Args:
+            delta_db: Requested floor lift in dB. Positive values
+                lift the floor (boost effective gain). Negative
+                values are clamped to 0 (no down-lift — that's the
+                P-controller's job under normal operation).
+
+        Returns:
+            The applied delta in dB after clamping (may be less than
+            ``delta_db`` when the cap fires). Callers emit telemetry
+            with this APPLIED value, not the requested input.
+        """
+        if delta_db <= 0.0:
+            return 0.0
+        # Compute the implied gain demand after the lift.
+        new_speech_level = self._speech_level_dbfs - delta_db
+        # The gain demand the P-controller would emit on the next
+        # frame with the lifted floor.
+        implied_gain = self._config.target_dbfs - new_speech_level
+        if implied_gain > self._config.max_gain_db:
+            # Cap the delta so implied_gain == max_gain_db exactly.
+            applied_delta = (
+                self._config.target_dbfs - self._config.max_gain_db - self._speech_level_dbfs
+            )
+            # ``applied_delta`` is negative iff the prior floor was
+            # already at the cap — clamp to >= 0 for the contract.
+            applied_delta = max(0.0, -applied_delta) if applied_delta < 0 else applied_delta
+            # Sign reconciliation: we WANT to subtract from
+            # speech_level (LIFT floor), so applied_delta must be
+            # positive. Compute the canonical bounded form:
+            # new_speech_level_capped = target - max_gain (floor at cap)
+            new_speech_level = self._config.target_dbfs - self._config.max_gain_db
+            applied_delta = self._speech_level_dbfs - new_speech_level
+            applied_delta = max(0.0, applied_delta)
+        else:
+            applied_delta = delta_db
+        self._speech_level_dbfs = self._speech_level_dbfs - applied_delta
+        return applied_delta
+
     # ── Private helpers ─────────────────────────────────────────────
 
     def _update_speech_level(

@@ -84,18 +84,39 @@ class _PipelineWithVADReset(Protocol):
     """
 
     async def reset_vad(self) -> None: ...
+    async def reinstantiate_vad(self) -> None: ...
+    async def swap_vad(self, new_vad: object) -> None: ...
 
 
 logger = get_logger(__name__)
 
 
-_LADDER_STEPS: tuple[str, ...] = ("silero_reset", "normalizer_engage")
-"""Ordered ladder step names — v0.44.0 LENIENT ships L1 + L3 only.
+_LADDER_STEPS: tuple[str, ...] = (
+    "silero_reset",  # L1 — pipeline.reset_vad()
+    "silero_reinstantiate",  # L2 — pipeline.reinstantiate_vad()
+    "normalizer_engage",  # L3 — capture_task.engage_frame_normalizer()
+    "agc2_floor_lift",  # L4 — capture_task.apply_agc2_floor_lift(delta_db)
+    "fallback_vad",  # L5 — pipeline.swap_vad(FallbackEnergyVAD(...))
+)
+"""Ordered ladder step names — v0.44.x ships all 5 ladder steps.
 
-Future v0.44.x patches APPEND deferred steps when their underlying
-APIs land: ``"silero_reinstantiate"`` (L2), ``"agc2_floor_lift"`` (L4),
-``"fallback_vad"`` (L5). The string labels match
-:func:`record_vad_frontend_reset_outcome` step labels exactly.
+The string labels match :func:`record_vad_frontend_reset_outcome`
+step labels exactly. The ordering reflects cheapest-to-most-invasive:
+
+* L1 ``silero_reset`` — < 1 ms, in-place LSTM zeroing.
+* L2 ``silero_reinstantiate`` — ~50-200 ms, fresh ONNX session load.
+* L3 ``normalizer_engage`` — < 5 ms, force capture stream re-open so
+  ``FrameNormalizer`` rebuilds on the new source layout.
+* L4 ``agc2_floor_lift`` — < 5 ms, bounded gain delta lift via
+  ``vad_frontend_reset_max_gain_lift_db`` knob. Defends Silero's
+  ``quiet_signal_gate`` invariant (§20.I).
+* L5 ``fallback_vad`` — one-shot, swap Silero for the energy-based
+  fallback for the remainder of the session. Operator-visible
+  degradation: VAD accuracy drops to RMS-threshold semantics, but
+  speech routing keeps working.
+
+L6 (quarantine + runtime failover) is NOT a ladder step — it's the
+coordinator's terminal fall-through when the entire ladder exhausts.
 """
 
 
@@ -265,16 +286,58 @@ class VADFrontendRecovery:
     async def _apply_step(self, *, step_name: str, pipeline: _PipelineWithVADReset) -> None:
         """Dispatch the step name to its concrete action.
 
-        Two steps are wired in v0.44.0; the ``else`` branch protects
-        against forward-compatible :data:`_LADDER_STEPS` additions
-        that haven't been wired yet (e.g. ``"silero_reinstantiate"``
-        v0.44.x patch in progress).
+        All 5 ladder steps are wired in v0.44.x. Adding a new step
+        means adding both an entry to :data:`_LADDER_STEPS` AND a
+        branch here — the ``else`` branch raises so silent omissions
+        surface at the first execution rather than as a missing
+        recovery action in production.
         """
         if step_name == "silero_reset":
+            # L1 — cheapest. Zero LSTM + FSM scalars in place.
             await pipeline.reset_vad()
             return
+        if step_name == "silero_reinstantiate":
+            # L2 — discard ONNX session + build fresh from the same
+            # model artefact. ~50-200 ms; offloaded to to_thread
+            # inside ``reinstantiate_vad`` (anti-pattern #14).
+            await pipeline.reinstantiate_vad()
+            return
         if step_name == "normalizer_engage":
+            # L3 — force capture stream re-open so FrameNormalizer
+            # rebuilds on the renegotiated source layout.
             await self._capture_task.engage_frame_normalizer()
+            return
+        if step_name == "agc2_floor_lift":
+            # L4 — bounded AGC2 floor lift via the §20.M T1.4.b knob.
+            # The applied delta is the AGC2-side bounded value (cap
+            # at ``max_gain_db``), surfaced as telemetry for the
+            # Phase 3 calibration window.
+            knob = self._tuning.vad_frontend_reset_max_gain_lift_db
+            applied = self._capture_task.apply_agc2_floor_lift(knob)
+            logger.info(
+                "voice.vad_frontend_reset.l4_gain_lift_applied",
+                requested_delta_db=knob,
+                applied_delta_db=applied,
+            )
+            return
+        if step_name == "fallback_vad":
+            # L5 — last-resort. Swap Silero for the energy-based
+            # fallback for the remainder of the session. The pipeline's
+            # ``swap_vad`` does an atomic Python assignment +
+            # defensive ``reset()`` on the fresh instance.
+            from sovyx.voice._vad_fallback import FallbackEnergyVAD
+
+            fallback = FallbackEnergyVAD()
+            await pipeline.swap_vad(fallback)
+            logger.warning(
+                "voice.vad_frontend_reset.l5_fallback_engaged",
+                action_required=(
+                    "Silero replaced by energy-based fallback VAD for "
+                    "the remainder of this session. VAD accuracy "
+                    "degrades to RMS-threshold semantics. Restart the "
+                    "daemon to recover Silero on the next boot."
+                ),
+            )
             return
         msg = f"unwired ladder step: {step_name!r}"
         raise RuntimeError(msg)
