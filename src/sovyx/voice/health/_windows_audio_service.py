@@ -352,6 +352,7 @@ class AudioServiceWatchdog:
         # State changed — emit + record.
         self._last_healthy = is_healthy
         if not is_healthy:
+            # c4-allowlist: pre-Mission-C4 Windows-specific watchdog; migration target
             logger.warning(
                 "voice.windows.audio_service_degraded",
                 **{

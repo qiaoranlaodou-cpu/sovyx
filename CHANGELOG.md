@@ -8,6 +8,69 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 (none — every shipped delta documented in tagged sections below)
 
+## [0.46.5] — 2026-05-17
+
+Mission C4 Phase 5 partial — Quality Gate 10 + anti-pattern #42
+STRICT-flipped early. Mission archive (T5.4) stays gated on Phase 4
+telemetry calibration (operator V-C4-N validation backlog); Quality
+Gate 10 + anti-pattern #42 ship NOW because they are static-shape
+checkers + documentation that don't depend on telemetry.
+
+**Rationale for early STRICT flip:** `feedback_staged_adoption` applies
+to telemetry-calibration validators (LENIENT until telemetry observed),
+not to static AST checkers + documentation. The C3 v0.45.3 commit
+`32f349c3` set the precedent (Quality Gate 9 + anti-pattern #41
+promoted from the original Phase 4 STRICT-only ship into Phase 2's
+defense-in-depth ship). Mission C4 follows the same pattern.
+
+Mission anchor:
+`docs-internal/missions/MISSION-c4-degraded-mode-banner-2026-05-17.md`
+§Phase 5 §T5.1 + §T5.2.
+
+### Added
+
+- `scripts/dev/check_degraded_signal_surface.py` (NEW) — Quality
+  Gate 10 AST checker. Scans `src/sovyx/` for `logger.warning(...)`
+  whose event name matches the operator-actionable degraded
+  patterns (`*_degraded` / `no_*_provider` / `*language_coerced` /
+  `*language_unsupported`) AND verifies that the enclosing function
+  has a paired `EngineDegradedStore.record` / `.clear_axis` /
+  `get_default_degraded_store` call. Pure platform-feature gates
+  (`*_unavailable`) are explicitly NOT enforced — those are
+  developer-informational and would alert-fatigue the operator.
+  Allowlist false positives with inline `# c4-allowlist: <rationale>`
+  on the WARN line (or the line directly above).
+- `scripts/verify_gates.sh` — Gate 10 wired after Gate 9. GATE_TOTAL
+  bumped 9 → 10.
+- Anti-pattern #42 added to `CLAUDE.md` `## Anti-Patterns` section
+  (full text with safe patterns + Quality Gate 10 enforcement
+  reference + sibling-pattern cross-references to #40 and #41).
+  Category index updated: `Architecture & Design: …, 41, 42`.
+- `tests/unit/scripts/test_check_degraded_signal_surface.py`
+  (20 tests) — pattern matching across operator-actionable vs
+  platform-feature gates, AST `logger.warning` detection, inline
+  allowlist recognition, scan_file end-to-end positive/negative
+  paths, dynamic-event-name skip semantics.
+
+### Changed
+
+- `src/sovyx/voice/health/watchdog.py:660` — added `c4-allowlist`
+  inline comment to the `voice_watchdog_degraded_reprobe_raised`
+  WARN (defensive-loop-continue pattern, not a sustained
+  operator-actionable degraded state).
+- `src/sovyx/voice/health/_windows_audio_service.py:355` — added
+  `c4-allowlist` for the `voice.windows.audio_service_degraded` WARN
+  (pre-Mission-C4 Windows-specific watchdog; future cohort-audit
+  mission migration target).
+
+### Fixed
+
+- The `feedback_enterprise_only` discipline gap: pre-Mission-C4
+  degraded sites would NOT have been auto-detected by code review;
+  the new Quality Gate 10 mechanically rejects any new
+  `logger.warning("..._degraded", ...)` that forgets to surface to
+  the composite store.
+
 ## [0.46.4] — 2026-05-17
 
 Mission C4 Phase 3 — ack persistence atomic ship. Closes the

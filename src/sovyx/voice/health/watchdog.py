@@ -657,6 +657,7 @@ class VoiceCaptureWatchdog:
             except asyncio.CancelledError:
                 return
             except Exception:  # noqa: BLE001 — one failing cascade must not stop the loop
+                # c4-allowlist: defensive-loop-continue; AP-42 N/A
                 logger.warning(
                     "voice_watchdog_degraded_reprobe_raised",
                     endpoint=self._endpoint,

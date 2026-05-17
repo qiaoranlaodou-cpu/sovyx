@@ -45,7 +45,7 @@ else
 fi
 
 GATE_NUM=0
-GATE_TOTAL=9
+GATE_TOTAL=10
 FAILURES=()
 
 ok() {
@@ -221,6 +221,21 @@ if uv run python scripts/dev/check_ladder_iteration_discipline.py >"$LOG" 2>&1; 
     fi
 else
     bad "ladder iteration discipline — anti-pattern #41 detected; log: $LOG"
+fi
+
+# ── Gate 10: degraded signal surface (Mission C4 §T5.1) ──────────────
+GATE_NUM=10
+LOG="$LOG_DIR/10-degraded-signal-surface.log"
+if uv run python scripts/dev/check_degraded_signal_surface.py >"$LOG" 2>&1; then
+    # Success line format:
+    # "Quality Gate 10 — degraded signal surface: every degraded-signal WARN paired ..."
+    if grep -q "every degraded-signal WARN paired" "$LOG"; then
+        ok "degraded signal surface — no anti-pattern #42 sites"
+    else
+        bad "degraded signal surface — exit 0 but no summary line; log: $LOG"
+    fi
+else
+    bad "degraded signal surface — anti-pattern #42 detected; log: $LOG"
 fi
 
 # ── Final verdict ────────────────────────────────────────────────────
