@@ -6,7 +6,238 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ## [Unreleased]
 
-(none — every shipped delta is in v0.43.1 below)
+(none — every shipped delta documented in tagged sections below)
+
+## [0.45.7] — 2026-05-17
+
+Mission C3 (failover ladder iteration discipline) Phase 2
+closure-COMPLETE-take-4 — dead-code cleanup surfaced by the 5th
+audit cycle of "is C3 100% finalized?".
+
+### Removed
+
+- `dashboard/src/stores/slices/voiceHealth.ts` — zero-callers fields
+  `voiceFailoverHistory`, `voiceFailoverHistoryLoading`,
+  `voiceFailoverHistoryError`, and the `fetchVoiceFailoverHistory`
+  action. Dead since v0.45.5 rewrote `FailoverHistorySection` to
+  consume the generic `useApiPoller` hook directly. -70 LoC.
+
+### Fixed
+
+- `dashboard/src/pages/voice-health.tsx` — undefined CSS variable
+  `--svx-color-text-quaternary` in the failover-history header
+  (fall-through to inherited tertiary was harmless but a real dead
+  reference). Now uses `--svx-color-text-tertiary` + `opacity-70`
+  for the same visual effect.
+
+## [0.45.6] — 2026-05-17
+
+Mission C3 Phase 2 closure-COMPLETE-take-3 — DRY refactor + mission
+spec sync.
+
+### Refactor
+
+- `dashboard/src/hooks/use-voice-status-poller.ts` becomes a thin
+  wrapper around the generic `useApiPoller<S,T>` introduced in
+  v0.45.5. Both C2 (`/api/voice/status`) and C3
+  (`/api/voice/health/failover-history`) pollers now share one
+  circuit-breaker implementation. Multipliers 3×/10×/20× on the
+  C2 baseline (500 ms) yield bit-identical 1500/5000/10000 ms
+  decision table; all 10 existing C2 tests pass without
+  modification. Satisfies Mission C3 §16 "useApiPoller used by
+  BOTH C2 and C3" invariant.
+
+### Documentation
+
+- Mission spec (`docs-internal/missions/MISSION-c3-failover-ladder-iteration-2026-05-16.md`)
+  status markers updated: 25 task ⏸️→✅ with shipping commit SHAs,
+  §17 commit cadence rows extended with v0.45.4/v0.45.5/v0.45.6
+  entries, §11 V-C3-3 + V-C3-4 corrected to v0.45.3+ (the analyzer
+  + Quality Gate 9 actually shipped in v0.45.3, not v0.45.4 /
+  v0.46.0 as originally drafted), §16 ProbeResultCache "module-
+  level singleton" deviation documented inline.
+
+## [0.45.5] — 2026-05-17
+
+Mission C3 Phase 2 closure-COMPLETE-take-2 — useApiPoller +
+FailoverHistorySection enterprise rewrite + throttle behavior
+tests + Quality Gate 9 unit tests.
+
+### Added
+
+- `dashboard/src/hooks/use-api-poller.ts` (NEW) — generic
+  `useApiPoller<S,T>` hook extracted from the C2 pattern. 5 s
+  baseline + exponential 5xx backoff (3×/10×/20× multipliers) +
+  degraded transition at 11 consecutive 5xx + one-shot
+  `console.warn(warnTag, …)` on degraded transition. 11 vitest
+  tests cover pure-helper + hook end-to-end behavior.
+
+- `FailoverHistorySection` enterprise rewrite at
+  `dashboard/src/pages/voice-health.tsx`: 5 s polling +
+  exponential backoff via the new hook; collapsible per-candidate
+  detail rows (default-collapsed, click toggles via
+  `aria-expanded` button + `▸/▾` indicator); operator-actionable
+  yellow `failover-history-reconnect-hint` banner when latest
+  ladder verdict=exhausted AND every candidate failed with
+  `unopenable_*` error_class; red `failover-history-degraded`
+  banner on poller ≥ 11 5xx state.
+
+- `tests/unit/voice/pipeline/test_heartbeat_throttle_behavior.py`
+  (NEW, 6 tests) — end-to-end coverage of Mission C3 §T2.7 post-
+  ladder-exhaustion throttle: pre-exhaustion-unthrottled,
+  post-exhaustion-throttle within window, interval-knob elapses
+  re-emits, `coordinator_terminal` tag on every emission, knob
+  default 60 s + operator-override-via-config.
+
+- `tests/unit/scripts/test_check_ladder_iteration_discipline.py`
+  (NEW, 9 tests) — synthetic anti-shape + compliant-shape fixture
+  coverage for Quality Gate 9 AST checker.
+
+## [0.45.4] — 2026-05-17
+
+Mission C3 Phase 2 closure-COMPLETE — frontend React widget +
+5 missing test files + operator-validation backlog + forensic
+audit footers.
+
+### Added
+
+- `dashboard/src/pages/voice-health.tsx::FailoverHistorySection`
+  React component (initial, fetch-on-mount) — surfaces the failover
+  ring with verdict-colored per-ladder rows + per-candidate
+  detail. Caps rendered entries at 16 (the dashboard scope; full
+  ring of 32 is served via `sovyx doctor voice`).
+
+- `dashboard/src/types/api.ts` TypeScript compile-time mirror —
+  `FailoverCandidate`, `FailoverHistoryEntry`, `FailoverHistoryResponse`
+  interfaces + `FailoverCandidateVerdict` + `FailoverLadderVerdict`
+  string-literal unions.
+
+- 5 missing test files from mission spec §15:
+  `tests/property/test_failover_error_classifier_invariants.py`
+  (Hypothesis property tests),
+  `tests/unit/voice/pipeline/test_orchestrator_frame_drop_gate.py`
+  (orchestrator gate tests),
+  `tests/regression/test_c3_frame_drop_silence_during_ladder.py`
+  (H6 regression replay),
+  `tests/integration/voice/test_failover_full_loop.py` +
+  `tests/integration/voice/test_failover_with_probe_cache_skip.py`
+  (full-loop + cache-skip integration).
+
+- `docs-internal/OPERATOR-VALIDATION-BACKLOG-2026.md` — V-C3-1
+  through V-C3-5 entries spawned 2026-05-16.
+
+- `docs-internal/FORENSIC-AUDIT-LOG-2026-05-14-v0.43.1.md` —
+  Resolution Footers for §C3, §H6, §H7, and §C4 (server-side
+  scope).
+
+## [0.45.3] — 2026-05-16
+
+Mission C3 Phase 2 — defense-in-depth atomic.
+
+### Added
+
+- `ProbeResultCache` process-local FIFO ring keyed by
+  `(endpoint_guid, host_api)` populated by boot cascade + runtime
+  dispatches, consulted by `select_alternative_endpoint(recent_probe_results=...)`
+  to skip candidates with known-dead probe history. Module-level
+  lazy singleton via `get_default_probe_result_cache()` mirroring
+  the `_quarantine.get_default_quarantine` pattern.
+
+- `FailoverErrorClass` enum + `classify_error_code(code, detail)`
+  pure-function classifier mapping PortAudio numeric codes +
+  HRESULT mnemonics + opener final-codes to a 5-class dispatch
+  policy: `TRANSIENT_RETRYABLE_SAME_DEVICE` /
+  `FORMAT_RETRYABLE_SAME_DEVICE` / `UNOPENABLE_THIS_BOOT` /
+  `UNOPENABLE_PERMANENT` / `UNKNOWN`.
+
+- `FailoverHistoryRing` bounded FIFO + `GET /api/voice/health/failover-history`
+  endpoint + 3 pydantic models (`FailoverCandidateModel`,
+  `FailoverHistoryEntryModel`, `FailoverHistoryResponse`) +
+  `sovyx doctor voice` failover-history CLI surface.
+
+- `VoiceStatusDegraded` server field on `GET /api/voice/status`
+  responses — `degraded: bool`, `reason: str | None`,
+  `candidates_tried: int`, `candidates_unreachable: list[str]`,
+  `last_ladder_complete_monotonic: float | None`. Mirrors the
+  pipeline-side ladder-exhausted state for future C4 banner UX
+  (deferred to `MISSION-c4-degraded-mode-banner-FUTURE.md`).
+
+- Orchestrator frame-drop gate during ladder iteration +
+  `voice.failover.frame_loss_window` summary event. Closes the H6
+  amplification observed in v0.43.1 operator session (single 4.3 s
+  ladder window produced 10+ redundant per-frame emissions).
+
+- Post-ladder-exhaustion deaf-warning throttle in
+  `_heartbeat_mixin._emit_heartbeat`: 60 s default min-interval
+  with `coordinator_terminal=True` tag on every emission. Closes
+  the H7 amplification (29 redundant warnings observed in v0.43.1).
+
+- `scripts/dev/analyze_c3_telemetry.py` — operator-side F1/F3/F4/F5
+  gate analyser with JSON output mode.
+
+- `scripts/dev/check_ladder_iteration_discipline.py` (Quality
+  Gate 9) — AST static checker that mechanically rejects the C3
+  anti-shape in `src/sovyx/voice/health/` (candidate-set param +
+  dispatch call outside a loop). Promoted from Phase 4 STRICT.
+
+- Anti-pattern #41 to `CLAUDE.md` — "Candidate-list dispatch loop
+  MUST iterate the full list within a single attempt window
+  before collapsing to a fallback." Sibling of #39(a).
+
+- OTel semconv (`docs/modules/voice-otel-semconv.md`) extended with
+  6 new failover events: `voice.failover.ladder_started`,
+  `voice.failover.candidate_attempted`,
+  `voice.failover.candidate_failed`,
+  `voice.failover.candidate_skipped`,
+  `voice.failover.ladder_complete`,
+  `voice.failover.frame_loss_window`.
+
+- 4 new tuning knobs on `EngineConfig.tuning.voice`:
+  `failover_intra_ladder_cooldown_s` (default 2.0),
+  `failover_candidate_max_attempts_per_ladder` (default 5),
+  `failover_terminal_deaf_warn_min_interval_s` (default 60.0),
+  `failover_history_ring_capacity` (default 32).
+
+## [0.45.2] — 2026-05-16
+
+Mission C3 Phase 1 atomic hotfix — loop-in-place failover ladder
+iteration.
+
+### Fixed
+
+- `src/sovyx/voice/health/_runtime_failover._try_runtime_failover()`
+  refactored from single-shot dispatch into a bounded loop-in-place
+  iterator. Closes the v0.43.1 operator-session collapse signature
+  (operator log L1015 → L1063: `voice.failover.attempted
+  candidates_remaining=3` → first candidate failed → `voice.failover.failed
+  verdict=downgraded_to_source` with 2 healthy candidates stranded).
+  Now iterates every non-excluded candidate within a single
+  deaf-signal closure invocation, with per-candidate intra-ladder
+  cooldown (2.0 s default) + per-ladder dispatch cap (5 default).
+
+### Added
+
+- 5 new structured LogEvents with `ladder_id` (uuid4) correlation:
+  `voice.failover.ladder_started`, `candidate_attempted`,
+  `candidate_failed`, `candidate_skipped` (schema only — Phase 1),
+  `ladder_complete{verdict, succeeded_index, candidates_tried,
+  elapsed_ms}`.
+
+- Forensic-replay regression test at
+  `tests/regression/test_c3_failover_ladder_iteration.py` —
+  F2 falsifiability gate: passes post-mission, fails pre-mission.
+
+- 8 unit tests in `tests/unit/voice/health/test_runtime_failover.py
+  ::TestRuntimeFailoverLadderIteration` covering the multi-candidate
+  loop semantics.
+
+## [Pre-v0.45.2 changelog gap]
+
+CHANGELOG entries for v0.44.0 (Mission C1), v0.44.2 + v0.44.3
+(Mission C2 Phase 1 + 2), v0.45.0 (Mission C2 STRICT), and v0.45.1
+(test_bootstrap hotfix) are NOT documented here. Pre-existing gap
+inherited from C1+C2 missions which never updated CHANGELOG.
+Follow-up cleanup in a future mission.
 
 ## [0.43.1] — 2026-05-14
 

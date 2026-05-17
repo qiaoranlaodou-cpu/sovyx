@@ -136,6 +136,7 @@ remediation.
 | ------ | --------------------------------- | --------------------------------------------------------------------- |
 | GET    | `/api/voice/health`               | ComboStore + overrides + quarantine snapshot (dashboard-grade).       |
 | GET    | `/api/voice/health/quarantine`    | Kernel-invalidated quarantine snapshot.                               |
+| GET    | `/api/voice/health/failover-history` | Runtime failover-ladder history ring (default 32 entries, newest first) — per ladder run: verdict (`succeeded`/`exhausted`/`in_progress`), per-candidate detail (verdict + `error_class` + `elapsed_ms` + `skipped_reason`), `from_endpoint`, `ladder_id` (uuid4) for log correlation. Mission C3 §T2.9. |
 | POST   | `/api/voice/health/reprobe`       | Re-run diagnosis on the active capture endpoint.                      |
 | POST   | `/api/voice/health/forget`        | Forget a device entry from the ComboStore (manual operator override). |
 | POST   | `/api/voice/health/pin`           | Pin a device's diagnosis verdict — disables auto-quarantine.          |

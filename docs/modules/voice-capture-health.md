@@ -375,6 +375,7 @@ sovyx doctor voice --json    # machine-parseable for automation
 GET    /api/voice/service-health          # T6.20 — aggregated readiness probe (4-field, never 5xx)
 GET    /api/voice/health                  # ComboStore + overrides + quarantine snapshot
 GET    /api/voice/health/quarantine       # kernel-invalidated quarantine snapshot
+GET    /api/voice/health/failover-history # runtime failover-ladder history ring (Mission C3 §T2.9) — per ladder + per-candidate detail
 GET    /api/voice/health/snapshot         # current cascade + watchdog state
 GET    /api/voice/health/preflight        # rerun preflight on demand
 POST   /api/voice/health/cascade/reset    # clear ComboStore for an endpoint
