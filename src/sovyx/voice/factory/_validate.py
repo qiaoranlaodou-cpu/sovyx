@@ -557,6 +557,53 @@ def _create_stt(language: str = "en") -> Any:  # noqa: ANN401
             ),
         },
     )
+    # Mission C4 §T1.3 — surface STT language coercion to the composite
+    # degraded store. The WARN log above is preserved verbatim; the
+    # store write is the NEW dashboard surface. Guarded so a store
+    # failure cannot block the coercion path.
+    try:
+        from sovyx.engine._degraded_store import (
+            DegradedEntry,
+            get_default_degraded_store,
+            make_action_chip,
+            now_monotonic,
+        )
+
+        _c4_now = now_monotonic()
+        get_default_degraded_store().record(
+            DegradedEntry(
+                axis="stt",
+                reason="stt_language_coerced",
+                severity="warn",
+                title_token="degraded.stt.languageCoerced.title",
+                body_token="degraded.stt.languageCoerced.body",
+                action_chips=(
+                    make_action_chip(
+                        "degraded.stt.languageCoerced.switchToEnglish",
+                        "navigate",
+                        "/settings/voice",
+                    ),
+                    make_action_chip(
+                        "degraded.stt.languageCoerced.learnMore",
+                        "external_link",
+                        "https://sovyx.dev/docs/voice/multilingual",
+                    ),
+                ),
+                metadata={
+                    "requested_language": requested,
+                    "coerced_language": "en",
+                    "engine": "moonshine",
+                    "engine_supported_languages": sorted(
+                        MOONSHINE_SUPPORTED_LANGUAGES,
+                    ),
+                },
+                first_observed_monotonic=_c4_now,
+                last_observed_monotonic=_c4_now,
+                occurrence_count=1,
+            ),
+        )
+    except Exception:  # noqa: BLE001 — observability-only surface
+        logger.debug("c4_degraded_store_record_failed", axis="stt")
     return MoonshineSTT(config=MoonshineConfig(language="en"))
 
 

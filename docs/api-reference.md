@@ -49,6 +49,7 @@ Every response carries `X-Request-Id`. Include it when reporting bugs.
 | GET    | `/api/status`             | Daemon version, uptime, and mind summary.                |
 | GET    | `/api/stats/history`      | Time-series of engine stats for dashboard charts.        |
 | GET    | `/api/health`             | Aggregate health of registered subsystems.               |
+| GET    | `/api/engine/degraded`    | Composite cross-axis degraded snapshot (voice + LLM + STT + future axes) with per-axis severity / title token / body token / action chips. Severity escalation: 1 axis=`warn`, 2=`error`, 3+=`critical`. Mission C4 §T1.6. |
 | GET    | `/metrics`                | Prometheus exposition (no auth — bind to loopback only). |
 
 ### Conversations

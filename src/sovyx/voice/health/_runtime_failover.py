@@ -814,6 +814,22 @@ async def _try_runtime_failover(
                         "voice.mind_id": mind_id,
                     },
                 )
+                # Mission C4 §T1.4 — clear the voice axis from the
+                # composite degraded store on successful recovery so
+                # the dashboard banner stops surfacing this axis.
+                # Best-effort: store unavailability cannot block the
+                # success path.
+                try:
+                    from sovyx.engine._degraded_store import (
+                        get_default_degraded_store,
+                    )
+
+                    get_default_degraded_store().clear_axis("voice")
+                except Exception:  # noqa: BLE001 — observability only
+                    logger.debug(
+                        "c4_degraded_store_clear_failed",
+                        axis="voice",
+                    )
                 return
 
             # Failed — emit per-candidate failure, record into cache, advance.
@@ -957,6 +973,57 @@ async def _try_runtime_failover(
                 "voice.mind_id": mind_id,
             },
         )
+
+        # Mission C4 §T1.4 — surface ladder exhaustion to the composite
+        # degraded store so the dashboard banner can render an
+        # actionable surface. The structured event above is preserved
+        # verbatim; the store write is the NEW dashboard surface.
+        # Best-effort guard.
+        try:
+            from sovyx.engine._degraded_store import (
+                DegradedEntry,
+                get_default_degraded_store,
+                make_action_chip,
+                now_monotonic,
+            )
+
+            _c4_now = now_monotonic()
+            get_default_degraded_store().record(
+                DegradedEntry(
+                    axis="voice",
+                    reason="failover_ladder_exhausted",
+                    severity="error",
+                    title_token="degraded.voice.ladderExhausted.title",
+                    body_token="degraded.voice.ladderExhausted.body",
+                    action_chips=(
+                        make_action_chip(
+                            "degraded.voice.ladderExhausted.viewHistory",
+                            "navigate",
+                            "/voice/health",
+                            style="primary",
+                        ),
+                        make_action_chip(
+                            "degraded.voice.ladderExhausted.reconnectUsb",
+                            "external_link",
+                            "https://sovyx.dev/docs/voice/troubleshooting",
+                        ),
+                    ),
+                    metadata={
+                        "candidates_unreachable": list(candidates_unreachable),
+                        "candidates_tried": candidates_tried,
+                        "ladder_id": ladder_id,
+                        "mind_id": mind_id,
+                    },
+                    first_observed_monotonic=_c4_now,
+                    last_observed_monotonic=_c4_now,
+                    occurrence_count=1,
+                ),
+            )
+        except Exception:  # noqa: BLE001 — observability only
+            logger.debug(
+                "c4_degraded_store_record_failed",
+                axis="voice",
+            )
     finally:
         _safe_set_ladder_in_progress(pipeline, value=False)
 

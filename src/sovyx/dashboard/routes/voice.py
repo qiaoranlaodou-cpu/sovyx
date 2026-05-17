@@ -272,6 +272,59 @@ class VoiceStatusDegraded(BaseModel):
     completion (success or exhaustion). ``None`` before the first
     ladder run."""
 
+    # Mission C4 §T1.5 — composite degraded surface fields.
+    # All optional + default-empty so legacy consumers see no behavior
+    # change. Populated by the producer at ``voice_status.py`` from
+    # the composite :class:`sovyx.engine._degraded_store.EngineDegradedStore`.
+
+    composite_axes: list[str] = Field(default_factory=list)
+    """Sorted list of distinct degraded axes across the engine — subset
+    of ``{"voice", "llm", "stt", ...}``. Empty when no axis is
+    degraded; populated from
+    :func:`sovyx.engine._degraded_store.EngineDegradedStore.distinct_axes`.
+
+    Mission C4 §T1.5 — drives the global ``<DegradedBannerGlobalMount>``
+    decision (banner renders iff non-empty).
+    """
+
+    composite_severity: str | None = None
+    """Aggregate severity computed per ADR-D6: 1 axis = ``"warn"``,
+    2 axes = ``"error"``, 3+ axes OR governor exhausted = ``"critical"``.
+    ``None`` when no axis is degraded.
+
+    Mission C4 §T1.5 — drives the banner palette + escalation animation.
+    """
+
+    ack_at_monotonic: float | None = None
+    """Server-side operator-ack timestamp (Phase 3 — ``operator_acks``
+    SQLite table). ``None`` until first ack. Forward-additive so the
+    Phase 1 frontend can read it as ``null`` without breakage.
+
+    Mission C4 §T1.5 (field declaration) + §T3.3 (write site).
+    """
+
+    ack_ttl_sec: int | None = None
+    """Operator-chosen ack TTL in seconds. Bounded ``[60, 86400]`` per
+    ADR-D9. ``None`` until first ack.
+
+    Mission C4 §T1.5 (field declaration) + §T3.3 (write site).
+    """
+
+    ack_operator_id: str | None = None
+    """Best-effort identification of the acking operator (typically
+    derived from the dashboard auth token hash). Empty string when
+    unidentifiable; ``None`` before first ack.
+
+    Mission C4 §T1.5 (field declaration) + §T3.3 (write site).
+    """
+
+    last_resurfaced_monotonic: float | None = None
+    """Timestamp of the most recent TTL-expiry re-surface event. ``None``
+    before the first re-surface.
+
+    Mission C4 §T1.5 (field declaration) + §T3.5 (write site).
+    """
+
 
 class VoiceStatusResponse(BaseModel):
     """Top-level ``/api/voice/status`` payload.

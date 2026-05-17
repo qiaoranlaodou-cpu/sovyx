@@ -1810,6 +1810,78 @@ const VoiceStatusDegradedSchema = z
     candidates_tried: z.number().int().nonnegative().optional().default(0),
     candidates_unreachable: z.array(z.string()).optional().default([]),
     last_ladder_complete_monotonic: z.number().nullable().optional(),
+    // Mission C4 §T1.5 — composite degraded surface fields. All
+    // optional + default-safe so the Phase 1 server-side ship is
+    // backward-compatible for any legacy consumer that ignores them.
+    composite_axes: z.array(z.string()).optional().default([]),
+    composite_severity: z
+      .enum(["warn", "error", "critical"])
+      .nullable()
+      .optional(),
+    ack_at_monotonic: z.number().nullable().optional(),
+    ack_ttl_sec: z.number().int().nullable().optional(),
+    ack_operator_id: z.string().nullable().optional(),
+    last_resurfaced_monotonic: z.number().nullable().optional(),
+  })
+  .passthrough();
+
+/* Mission C4 §T1.6 — Composite engine-degraded surface zod twin.
+ *
+ * Mirrors the backend ``EngineDegradedResponse`` +
+ * ``DegradedAxisModel`` + ``ActionChipModel`` + ``AckStateModel`` at
+ * ``src/sovyx/dashboard/routes/engine_degraded.py``. ``.passthrough()``
+ * matches the backend's ``extra="allow"`` so future axes / fields
+ * land without a route schema migration.
+ *
+ * Pinned by Quality Gate 8 round-trip test at
+ * ``tests/dashboard/test_engine_degraded_boundary.py``.
+ */
+export const ActionChipSchema = z
+  .object({
+    label_token: z.string(),
+    action: z.enum(["navigate", "dispatch", "external_link"]),
+    target: z.string(),
+    style: z.enum(["default", "primary", "danger"]).optional().default("default"),
+  })
+  .passthrough();
+
+export const DegradedAxisSchema = z
+  .object({
+    axis: z.string(),
+    reason: z.string(),
+    severity: z.enum(["warn", "error", "critical"]),
+    title_token: z.string(),
+    body_token: z.string(),
+    action_chips: z.array(ActionChipSchema).optional().default([]),
+    metadata: z.record(z.string(), z.unknown()).optional().default({}),
+    first_observed_monotonic: z.number(),
+    last_observed_monotonic: z.number(),
+    occurrence_count: z.number().int().nonnegative(),
+  })
+  .passthrough();
+
+export const AckStateSchema = z
+  .object({
+    acked: z.boolean().optional().default(false),
+    acked_at_ts: z.number().int().nullable().optional(),
+    ttl_sec: z.number().int().nullable().optional(),
+    ttl_remaining_sec: z.number().int().nullable().optional(),
+    operator_id: z.string().nullable().optional(),
+  })
+  .passthrough();
+
+export const EngineDegradedResponseSchema = z
+  .object({
+    axes: z.array(DegradedAxisSchema).optional().default([]),
+    composite_severity: z
+      .enum(["warn", "error", "critical"])
+      .nullable()
+      .optional(),
+    composite_axis_count: z.number().int().nonnegative().optional().default(0),
+    // Default ack uses an explicit ``acked: false`` so the inferred
+    // TS shape stays satisfied (zod cannot fully infer "empty object
+    // is valid when every field is optional" with .passthrough()).
+    ack: AckStateSchema.optional().default({ acked: false }),
   })
   .passthrough();
 

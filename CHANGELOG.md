@@ -8,6 +8,96 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 (none — every shipped delta documented in tagged sections below)
 
+## [0.46.0] — 2026-05-17
+
+Mission C4 (composite degraded-mode banner UX + auto-recovery
+governor + ack-and-mute persistence) Phase 1 — server-side
+foundation atomic ship. Closes the data-path half of the v0.43.1
+operator-session "decorative daemon" gap (three independent silent
+WARN lines + 12-minute blackout window: `no_llm_provider_detected`
+at `bootstrap.py:735`, `voice.factory.stt_language_unsupported` at
+`voice/factory/_validate.py:542`, `voice.failover.ladder_complete`
+verdict=exhausted at `voice/health/_runtime_failover.py`). The
+front-end banner mount, auto-recovery governor, and ack persistence
+ship in v0.46.1 / v0.46.2 / v0.46.3 per staged-adoption.
+
+Mission anchor:
+`docs-internal/missions/MISSION-c4-degraded-mode-banner-2026-05-17.md`
+§Phase 1.
+
+### Added
+
+- `src/sovyx/engine/_degraded_store.py` — process-local cross-axis
+  `EngineDegradedStore` (module-level lazy-singleton mirroring the
+  C3 `_failover_history` pattern). Thread-safe via
+  `threading.Lock`; cardinality bounded at 32 with deterministic
+  oldest-by-`first_observed_monotonic` eviction. Public surface:
+  `record(DegradedEntry)`, `clear_axis(axis)`, `clear_reason(reason)`,
+  `snapshot()`, `distinct_axes()`. ActionChip + DegradedEntry as
+  frozen `slots=True` dataclasses; `make_action_chip` factory shim
+  keeps producer call sites compact.
+- `src/sovyx/dashboard/routes/engine_degraded.py` — new
+  `GET /api/engine/degraded` composite endpoint with five pydantic
+  models (`ActionChipModel`, `DegradedAxisModel`, `AckStateModel`,
+  `EngineDegradedResponse`) + `_compute_composite_severity` ADR-D6
+  escalator (0=None / 1=warn / 2=error / 3+=critical). Forward-additive
+  `model_config = {"extra": "allow"}` so future axes (brain,
+  bridges, plugins, persistence) extend without route migration.
+  Auth via the shared `Depends(verify_token)` on the router.
+- Three producer wire shims that ALSO write to the store (existing
+  WARN logs preserved verbatim per `feedback_canonical_setup_paths`):
+  - `engine/bootstrap.py:735` `no_llm_provider_detected` → axis=llm,
+    severity=error, chips for "Install Ollama" + "Open provider
+    settings".
+  - `voice/factory/_validate.py:542`
+    `voice.factory.stt_language_unsupported` → axis=stt,
+    severity=warn, chips for "Use English" + "Learn about
+    multilingual".
+  - `voice/health/_runtime_failover.py` ladder_complete
+    verdict=exhausted → axis=voice, severity=error, chips for
+    "View failover history" + "Reconnect USB"; ladder_complete
+    verdict=succeeded ALSO calls `store.clear_axis("voice")` so
+    the banner stops surfacing on recovery.
+- `VoiceStatusDegraded` model at `src/sovyx/dashboard/routes/voice.py`
+  extended with five new optional fields: `composite_axes: list[str]`,
+  `composite_severity: str | None`, `ack_at_monotonic: float | None`,
+  `ack_ttl_sec: int | None`, `ack_operator_id: str | None`,
+  `last_resurfaced_monotonic: float | None`. All default-safe; legacy
+  consumers see no behavior change.
+- `dashboard/voice_status.py` populates `composite_axes` +
+  `composite_severity` from the cross-axis store via
+  `_compute_composite_severity`, so `/api/voice/status` clients see
+  the composite view without polling the new endpoint.
+- `dashboard/src/types/schemas.ts` zod twin extended:
+  `ActionChipSchema`, `DegradedAxisSchema`, `AckStateSchema`,
+  `EngineDegradedResponseSchema` — `.passthrough()` matches the
+  backend's forward-additive contract; `VoiceStatusDegradedSchema`
+  picks up the five new fields with `.optional()` defaults.
+- `tests/dashboard/test_engine_degraded_boundary.py` (15 tests) —
+  Quality Gate 8 round-trip discipline pair for the new endpoint:
+  empty payload + single voice axis warn + 2-axis error + 3-axis
+  critical (operator-session replay) + ack-state populated + future
+  axis pass-through + future top-level field pass-through + 6 cases
+  on `_compute_composite_severity`.
+- `tests/dashboard/test_voice_status_degraded_boundary.py` extended
+  with 5 new tests covering the C4 `composite_*` + `ack_*` fields
+  through `VoiceStatusResponse.model_validate(...)`.
+- `tests/unit/engine/test_degraded_store.py` (24 tests) — store
+  upsert/eviction/clear/singleton/thread-safety/ActionChip immutability.
+- `tests/regression/test_c4_decorative_daemon_replay.py` (5 tests) —
+  forensic-replay of operator log L374 (no_llm_provider) + L858
+  (stt_language_coerced) + L1063 (failover_ladder_exhausted). F2
+  falsifiability: this test FAILS on pre-mission HEAD (no `/api/engine/
+  degraded` endpoint → 404); passes on v0.46.0. Plus auth-required
+  smoke, empty-store smoke, single-axis warn, two-axis error.
+
+### Fixed
+
+- Three silent WARN lines from the v0.43.1 operator session are now
+  jointly queryable from a single endpoint — operators no longer
+  need to grep three separate log streams to understand why the
+  daemon is non-functional.
+
 ## [0.45.7] — 2026-05-17
 
 > Saved at attempt 3 of `publish.yml` workflow run `25980995024`.

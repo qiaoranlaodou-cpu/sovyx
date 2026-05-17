@@ -737,6 +737,62 @@ async def bootstrap(
                         hint="Set ANTHROPIC_API_KEY, OPENAI_API_KEY, or GOOGLE_API_KEY. "
                         "Or install Ollama: https://ollama.ai",
                     )
+                    # Mission C4 §T1.2 — surface no-LLM-provider state to
+                    # the composite degraded store so the dashboard banner
+                    # can render an actionable surface. The WARN log above
+                    # is preserved verbatim (operator playbooks reference
+                    # it); the store write is the NEW surface. Guarded so a
+                    # store-write failure cannot block the warning path.
+                    try:
+                        from sovyx.engine._degraded_store import (
+                            DegradedEntry,
+                            get_default_degraded_store,
+                            make_action_chip,
+                            now_monotonic,
+                        )
+
+                        _c4_now = now_monotonic()
+                        get_default_degraded_store().record(
+                            DegradedEntry(
+                                axis="llm",
+                                reason="no_llm_provider",
+                                severity="error",
+                                title_token="degraded.llm.noProvider.title",
+                                body_token="degraded.llm.noProvider.body",
+                                action_chips=(
+                                    make_action_chip(
+                                        "degraded.llm.noProvider.installOllama",
+                                        "external_link",
+                                        "https://ollama.ai",
+                                        style="primary",
+                                    ),
+                                    make_action_chip(
+                                        "degraded.llm.noProvider.openSettings",
+                                        "navigate",
+                                        "/settings/providers",
+                                    ),
+                                ),
+                                metadata={
+                                    "checked_keys": [
+                                        "ANTHROPIC_API_KEY",
+                                        "OPENAI_API_KEY",
+                                        "GOOGLE_API_KEY",
+                                        "XGROK_API_KEY",
+                                        "DEEPSEEK_API_KEY",
+                                        "MISTRAL_API_KEY",
+                                        "GROQ_API_KEY",
+                                        "TOGETHER_API_KEY",
+                                        "FIREWORKS_API_KEY",
+                                    ],
+                                    "ollama_available": False,
+                                },
+                                first_observed_monotonic=_c4_now,
+                                last_observed_monotonic=_c4_now,
+                                occurrence_count=1,
+                            ),
+                        )
+                    except Exception:  # noqa: BLE001 — observability-only surface
+                        logger.debug("c4_degraded_store_record_failed", axis="llm")
 
             # fast_model fallback: ThinkPhase uses fast_model for low-complexity
             # queries. If empty, those calls silently fail (model="").

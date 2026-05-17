@@ -68,14 +68,42 @@ async def get_voice_status(registry: ServiceRegistry) -> dict[str, Any]:
         # state to the dashboard so the UI can render an actionable
         # banner. Default-empty (degraded=False) on pre-ladder code
         # paths + on healthy pipelines.
+        # Mission C4 §T1.5 / §T1.7 — composite-axes + composite-severity
+        # fields populated from the cross-axis EngineDegradedStore
+        # below. ack_* fields remain None in Phase 1 (Phase 3 ships
+        # the operator_acks SQLite persistence + write site).
         "degraded": {
             "degraded": False,
             "reason": None,
             "candidates_tried": 0,
             "candidates_unreachable": [],
             "last_ladder_complete_monotonic": None,
+            "composite_axes": [],
+            "composite_severity": None,
+            "ack_at_monotonic": None,
+            "ack_ttl_sec": None,
+            "ack_operator_id": None,
+            "last_resurfaced_monotonic": None,
         },
     }
+
+    # Mission C4 §T1.7 — populate composite axes + severity from the
+    # process-wide EngineDegradedStore. Best-effort: a store
+    # unavailability cannot block the status endpoint (legacy clients
+    # depend on it for the non-degraded fields).
+    try:
+        from sovyx.dashboard.routes.engine_degraded import (
+            _compute_composite_severity,
+        )
+        from sovyx.engine._degraded_store import get_default_degraded_store
+
+        distinct_axes = get_default_degraded_store().distinct_axes()
+        status["degraded"]["composite_axes"] = distinct_axes
+        status["degraded"]["composite_severity"] = _compute_composite_severity(
+            len(distinct_axes),
+        )
+    except Exception:  # noqa: BLE001 — observability only
+        logger.debug("c4_voice_status_composite_axes_failed")
 
     # Capture (must run, or the pipeline is silent even if "started")
     #

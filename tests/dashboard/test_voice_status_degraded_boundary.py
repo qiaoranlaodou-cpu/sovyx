@@ -111,6 +111,75 @@ class TestVoiceStatusDegradedBoundaryRoundTrip:
             },
         )
 
+    def test_c4_composite_axes_populated_round_trips(self) -> None:
+        """Mission C4 §T1.5 — composite_axes + composite_severity
+        round-trip cleanly when EngineDegradedStore has multiple axes.
+        """
+        response = assert_boundary_accepts(
+            VoiceStatusResponse,
+            helper_factory=lambda: _baseline_status_shape(
+                composite_axes=["llm", "stt", "voice"],
+                composite_severity="critical",
+            ),
+            field_assertions={
+                "degraded.composite_severity": "critical",
+            },
+        )
+        assert response.degraded.composite_axes == ["llm", "stt", "voice"]
+
+    def test_c4_composite_severity_warn_round_trips(self) -> None:
+        """Mission C4 §T1.5 — single-axis case yields severity=warn."""
+        response = assert_boundary_accepts(
+            VoiceStatusResponse,
+            helper_factory=lambda: _baseline_status_shape(
+                composite_axes=["voice"],
+                composite_severity="warn",
+            ),
+        )
+        assert response.degraded.composite_severity == "warn"
+        assert response.degraded.composite_axes == ["voice"]
+
+    def test_c4_composite_severity_none_when_empty(self) -> None:
+        """Mission C4 §T1.5 — empty composite_axes yields severity=None."""
+        response = assert_boundary_accepts(
+            VoiceStatusResponse,
+            helper_factory=lambda: _baseline_status_shape(
+                composite_axes=[],
+                composite_severity=None,
+            ),
+        )
+        assert response.degraded.composite_axes == []
+        assert response.degraded.composite_severity is None
+
+    def test_c4_ack_fields_round_trip(self) -> None:
+        """Mission C4 §T1.5 — Phase 3 ack fields are accepted (None
+        until first operator ack)."""
+        response = assert_boundary_accepts(
+            VoiceStatusResponse,
+            helper_factory=lambda: _baseline_status_shape(
+                ack_at_monotonic=12345.6,
+                ack_ttl_sec=3600,
+                ack_operator_id="abc123",
+                last_resurfaced_monotonic=99999.9,
+            ),
+        )
+        assert response.degraded.ack_at_monotonic == 12345.6
+        assert response.degraded.ack_ttl_sec == 3600
+        assert response.degraded.ack_operator_id == "abc123"
+        assert response.degraded.last_resurfaced_monotonic == 99999.9
+
+    def test_c4_ack_fields_default_none(self) -> None:
+        """Mission C4 §T1.5 — pre-Phase-3 producer omits ack_* fields;
+        boundary accepts the omission cleanly."""
+        response = assert_boundary_accepts(
+            VoiceStatusResponse,
+            helper_factory=_baseline_status_shape,
+        )
+        assert response.degraded.ack_at_monotonic is None
+        assert response.degraded.ack_ttl_sec is None
+        assert response.degraded.ack_operator_id is None
+        assert response.degraded.last_resurfaced_monotonic is None
+
 
 class TestVoiceStatusDegradedModelDirect:
     """Direct ``VoiceStatusDegraded.model_validate`` smoke."""
