@@ -16,6 +16,28 @@ vi.mock("@/lib/api", () => ({
   api: { get: (...args: unknown[]) => mockGet(...args) },
   isAbortError: (err: unknown) =>
     err instanceof DOMException && (err as DOMException).name === "AbortError",
+  // Mission C4 §T1.11 — the new DegradedBannerPerPageMount on VoicePage
+  // triggers useApiPoller which references ApiError. Re-export here so
+  // the mock is structurally complete.
+  ApiError: class ApiError extends Error {
+    status: number;
+    constructor(status: number, message: string) {
+      super(message);
+      this.status = status;
+    }
+  },
+}));
+
+// Mission C4 §T1.11 — short-circuit the engine-degraded poller so the
+// page tests don't poll the network. Returns a clean "no degraded
+// state" payload so the banner mounts render nothing.
+vi.mock("@/hooks/use-engine-degraded-poller", () => ({
+  useEngineDegradedPoller: () => ({
+    data: { axes: [], composite_severity: null, composite_axis_count: 0, ack: { acked: false } },
+    error: "ok",
+    consecutive5xx: 0,
+  }),
+  ENGINE_DEGRADED_POLL_INTERVAL_MS: 5000,
 }));
 
 /* ── Fixtures ── */

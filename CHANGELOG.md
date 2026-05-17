@@ -8,6 +8,87 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 (none — every shipped delta documented in tagged sections below)
 
+## [0.46.1] — 2026-05-17
+
+Mission C4 (composite degraded-mode banner UX) Phase 1.B — frontend
+atomic ship. Pairs with v0.46.0's server-side foundation: the React
+banner primitive + global + per-page mounts surface the
+`/api/engine/degraded` payload to the operator at all times, with
+dedup so the operator never sees a stacked duplicate when navigating
+to /voice or /voice/health.
+
+Closes the operator-facing half of the v0.43.1 "decorative daemon"
+gap: the three silent WARN lines from the operator session
+(`no_llm_provider_detected` + `voice.factory.stt_language_unsupported`
++ `voice.failover.ladder_complete{verdict=exhausted}`) now surface as
+ONE composite banner with operator-facing action chips per axis. The
+operator no longer needs to grep three separate log streams.
+
+Mission anchor:
+`docs-internal/missions/MISSION-c4-degraded-mode-banner-2026-05-17.md`
+§Phase 1.B.
+
+### Added
+
+- `dashboard/src/contexts/degraded-banner-mounted.tsx` (NEW) —
+  React context for mount dedup. Per-page mount registers as
+  active; global mount yields. `useDegradedBannerMounted()`
+  accessor + `<DegradedBannerMountedProvider>` wrapper at the
+  app-shell prevents stacked banners.
+- `dashboard/src/hooks/use-engine-degraded-poller.ts` (NEW) — thin
+  wrapper around the C3-era `useApiPoller<S,T>` for
+  `/api/engine/degraded`. 5-second baseline cadence (matches the F1
+  falsifiability gate: banner must surface within 5 s of any
+  degraded state). Inherits the 3×/10×/20× exponential backoff on
+  5xx + `error="degraded"` state after 11 consecutive 5xx.
+- `dashboard/src/components/voice/DegradedBanner.tsx` (NEW) —
+  reusable React primitive extracted from the C3
+  `DeviceContentionBanner` shape. Severity → palette:
+  warn=`--svx-color-warning` (yellow), error=`--svx-color-error`
+  (red), critical=red + `animate-pulse` (ADR-D6). Renders per-axis
+  title + body i18n tokens + action chips
+  (navigate / external_link / dispatch). `React.memo` for hot-path
+  re-render avoidance. Hidden when `composite_axis_count === 0`.
+  All copy via `<Trans>` / `t(...)` — never hardcoded English.
+- `dashboard/src/components/voice/DegradedBannerGlobalMount.tsx` —
+  app-shell-level mount that yields to per-page mount.
+- `dashboard/src/components/voice/DegradedBannerPerPageMount.tsx` —
+  per-page mount on `/voice` + `/voice/health` for richer per-page
+  context. Defensive about polled payload shape (handles undefined
+  `composite_axis_count` + missing `axes`).
+- Mount wired in `dashboard/src/components/layout/app-layout.tsx`
+  between header + Outlet, under `<DegradedBannerMountedProvider>`.
+- Per-page mount wired top-of-page on `dashboard/src/pages/voice.tsx`
+  and `dashboard/src/pages/voice-health.tsx`.
+- i18n keys in 3 locales (en, pt-BR, es) under new `degraded.*`
+  namespace: `composite.{title_one,title_other,ack}`,
+  `voice.ladderExhausted.{title,body,viewHistory,reconnectUsb}`,
+  `llm.noProvider.{title,body,installOllama,openSettings}`,
+  `stt.languageCoerced.{title,body,switchToEnglish,learnMore}`.
+- `dashboard/src/components/voice/DegradedBanner.test.tsx` —
+  8 vitest tests (palette mapping, axis rendering, chip dispatch
+  for navigate + external_link, ack visibility, hidden-when-empty).
+- `dashboard/src/components/voice/DegradedBannerMounts.test.tsx` —
+  3 vitest tests (global-renders-alone, per-page-takes-over,
+  single-banner-DOM-node invariant).
+
+### Changed
+
+- `dashboard/src/pages/voice.test.tsx` — mock for `@/lib/api` now
+  exports `ApiError` (transitively required by the new mount's
+  `useApiPoller`); focused `vi.mock` for
+  `@/hooks/use-engine-degraded-poller` short-circuits the network
+  so page-level tests don't poll. No behaviour change to the
+  underlying voice-page tests.
+
+### Fixed
+
+- The data-path foundation shipped in v0.46.0 is now operator-
+  visible. Three silent WARN lines collapse into ONE actionable
+  composite banner at the top of every dashboard route, with
+  operator-facing action chips for each axis instead of a buried
+  log entry per axis.
+
 ## [0.46.0] — 2026-05-17
 
 Mission C4 (composite degraded-mode banner UX + auto-recovery

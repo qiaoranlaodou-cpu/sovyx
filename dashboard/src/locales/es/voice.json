@@ -809,5 +809,36 @@
       "candidatesTried": "Candidatos probados",
       "unreachable": "Dispositivos inalcanzables"
     }
+  },
+  "degraded": {
+    "composite": {
+      "title_one": "{{count}} subsistema degradado",
+      "title_other": "{{count}} subsistemas degradados",
+      "ack": "Reconocer por 1 hora"
+    },
+    "voice": {
+      "ladderExhausted": {
+        "title": "Recuperación automática de voz agotada",
+        "body": "Todos los {{candidates_tried}} dispositivos de audio alternativos fallaron. Reconecta tu micrófono USB o reinicia Sovyx.",
+        "viewHistory": "Ver historial de failover",
+        "reconnectUsb": "Reconectar USB"
+      }
+    },
+    "llm": {
+      "noProvider": {
+        "title": "No hay proveedor LLM configurado",
+        "body": "El bucle cognitivo no puede generar respuestas. Instala Ollama o configura una clave de API.",
+        "installOllama": "Instalar Ollama",
+        "openSettings": "Abrir ajustes de proveedores"
+      }
+    },
+    "stt": {
+      "languageCoerced": {
+        "title": "Idioma de reconocimiento de voz en fallback",
+        "body": "El idioma configurado '{{requested_language}}' no es compatible con el motor STT activo. La voz se transcribirá en inglés hasta que se instale un motor multilingüe.",
+        "switchToEnglish": "Usar inglés",
+        "learnMore": "Más sobre soporte multilingüe"
+      }
+    }
   }
 }

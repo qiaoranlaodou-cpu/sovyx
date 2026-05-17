@@ -809,5 +809,36 @@
       "candidatesTried": "Candidates tried",
       "unreachable": "Unreachable devices"
     }
+  },
+  "degraded": {
+    "composite": {
+      "title_one": "{{count}} subsystem degraded",
+      "title_other": "{{count}} subsystems degraded",
+      "ack": "Acknowledge for 1 hour"
+    },
+    "voice": {
+      "ladderExhausted": {
+        "title": "Voice failover exhausted",
+        "body": "All {{candidates_tried}} alternative audio devices failed. Reconnect your USB microphone or restart Sovyx.",
+        "viewHistory": "View failover history",
+        "reconnectUsb": "Reconnect USB"
+      }
+    },
+    "llm": {
+      "noProvider": {
+        "title": "No LLM provider configured",
+        "body": "The cognitive loop cannot generate responses. Install Ollama or set an API key.",
+        "installOllama": "Install Ollama",
+        "openSettings": "Open provider settings"
+      }
+    },
+    "stt": {
+      "languageCoerced": {
+        "title": "Speech recognition language fallback",
+        "body": "The configured language '{{requested_language}}' is unsupported by the active STT engine. Voice will transcribe in English until a multilingual engine is installed.",
+        "switchToEnglish": "Use English",
+        "learnMore": "Learn about multilingual support"
+      }
+    }
   }
 }

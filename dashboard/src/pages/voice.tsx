@@ -42,6 +42,7 @@ import { PerMindForgetCard } from "@/components/mind-management/PerMindForgetCar
 import { PerMindRetentionCard } from "@/components/mind-management/PerMindRetentionCard";
 import { useDashboardStore } from "@/stores/dashboard";
 import type { WakeWordPerMindStatus } from "@/types/api";
+import { DegradedBannerPerPageMount } from "@/components/voice/DegradedBannerPerPageMount";
 
 /* ── Types ── */
 
@@ -526,6 +527,10 @@ export default function VoicePage() {
 
   return (
     <div className="space-y-4">
+      {/* Mission C4 §T1.11 — per-page composite degraded banner.
+          Registers as mounted via DegradedBannerMountedContext so the
+          app-shell global mount yields. */}
+      <DegradedBannerPerPageMount />
       {/* Header */}
       <div className="flex items-start justify-between">
         <div>

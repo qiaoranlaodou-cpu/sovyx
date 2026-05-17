@@ -48,6 +48,7 @@ import type {
   VoiceHealthRemediationSeverity,
 } from "@/types/api";
 import { FailoverHistoryResponseSchema } from "@/types/schemas";
+import { DegradedBannerPerPageMount } from "@/components/voice/DegradedBannerPerPageMount";
 
 /* ── Helpers ── */
 
@@ -1273,6 +1274,10 @@ export default function VoiceHealthPage() {
 
   return (
     <div className="space-y-6">
+      {/* Mission C4 §T1.11 — per-page composite degraded banner.
+          Registers as mounted via DegradedBannerMountedContext so the
+          app-shell global mount yields. */}
+      <DegradedBannerPerPageMount />
       {/* Header */}
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
