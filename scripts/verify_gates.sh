@@ -45,7 +45,7 @@ else
 fi
 
 GATE_NUM=0
-GATE_TOTAL=10
+GATE_TOTAL=11
 FAILURES=()
 
 ok() {
@@ -236,6 +236,27 @@ if uv run python scripts/dev/check_degraded_signal_surface.py >"$LOG" 2>&1; then
     fi
 else
     bad "degraded signal surface — anti-pattern #42 detected; log: $LOG"
+fi
+
+# ── Gate 11: dashboard bundle integrity (Mission C5 §T1.3) ───────────
+# Mission C5 Phase 1.A LENIENT — warn-only locally; STRICT in publish.yml's
+# post-build verify (Mission C5 §T1.4). Phase 3 v0.48.0 promotes this to
+# STRICT in verify_gates.sh as well, per ADR-D12.
+GATE_NUM=11
+LOG="$LOG_DIR/11-dashboard-bundle-integrity.log"
+if uv run python scripts/dev/check_dashboard_bundle_integrity.py >"$LOG" 2>&1; then
+    if grep -q "FULLY_PRESENT" "$LOG"; then
+        ok "dashboard bundle integrity — FULLY_PRESENT"
+    else
+        # exit 0 but no summary — gate ran without classifier, treat as warn
+        printf '%s⚠%s gate %d/%d — dashboard bundle integrity LENIENT warn: exit 0 without FULLY_PRESENT line; log: %s\n' \
+            "$YELLOW" "$RESET" "$GATE_NUM" "$GATE_TOTAL" "$LOG"
+    fi
+else
+    # Non-zero exit — LENIENT phase, warn only; do NOT fail verify_gates.sh.
+    # Phase 3 STRICT promotion will replace this branch with `bad ...`.
+    printf '%s⚠%s gate %d/%d — dashboard bundle integrity LENIENT warn (Phase 1.A v0.47.0; STRICT at v0.48.0); log: %s\n' \
+        "$YELLOW" "$RESET" "$GATE_NUM" "$GATE_TOTAL" "$LOG"
 fi
 
 # ── Final verdict ────────────────────────────────────────────────────

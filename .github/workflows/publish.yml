@@ -69,6 +69,21 @@ jobs:
           test -f dist/sovyx-${{ steps.version.outputs.VERSION }}-py3-none-any.whl
           echo "✓ Artifacts verified: sdist + wheel for v${{ steps.version.outputs.VERSION }}"
 
+      - name: Verify wheel-internal dashboard bundle integrity
+        # Mission C5 §T1.4 — STRICT post-build gate. Closes the v0.43.1
+        # forensic gap where the existing `test -f index.html` step passed
+        # while the wheel actually shipped with referenced chunks absent
+        # on disk. Unpacks the freshly-built wheel and runs the Quality
+        # Gate 11 checker against the wheel-internal static dir.
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/wheel-check
+          mkdir -p /tmp/wheel-check
+          python -m zipfile -e "dist/sovyx-${{ steps.version.outputs.VERSION }}-py3-none-any.whl" /tmp/wheel-check
+          uv run python scripts/dev/check_dashboard_bundle_integrity.py \
+              --static-dir /tmp/wheel-check/sovyx/dashboard/static
+          echo "✓ Wheel-internal dashboard bundle integrity verified (Mission C5 §T1.4)"
+
       - name: Upload dist artifacts
         uses: actions/upload-artifact@v4
         with:
