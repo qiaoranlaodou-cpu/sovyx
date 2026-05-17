@@ -1118,7 +1118,7 @@ function FailoverHistorySection() {
         <span className="font-mono text-[11px] text-[var(--svx-color-text-tertiary)]">
           {entries.length}
           {snapshot && (
-            <span className="ml-1 text-[var(--svx-color-text-quaternary)]">
+            <span className="ml-1 text-[var(--svx-color-text-tertiary)] opacity-70">
               / {snapshot.ring_capacity}
             </span>
           )}

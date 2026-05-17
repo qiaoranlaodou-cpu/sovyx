@@ -28,7 +28,6 @@ const mockValidateMixerKb = vi.fn();
 // component. Stubbed to a resolved Promise so the page's useEffect can
 // invoke it without crashing the test mount.
 const mockFetchVoiceHealthQuarantine = vi.fn().mockResolvedValue(undefined);
-const mockFetchVoiceFailoverHistory = vi.fn().mockResolvedValue(undefined);
 
 let mockState: Record<string, unknown> = {};
 
@@ -157,13 +156,11 @@ function setStore(
     voiceHealthQuarantineLoading: false,
     voiceHealthQuarantineError: null,
     fetchVoiceHealthQuarantine: mockFetchVoiceHealthQuarantine,
-    // Mission C3 §T2.10 — FailoverHistorySection state defaults.
-    // Individual tests override via ``extras`` when exercising the
-    // section's behaviour.
-    voiceFailoverHistory: null,
-    voiceFailoverHistoryLoading: false,
-    voiceFailoverHistoryError: null,
-    fetchVoiceFailoverHistory: mockFetchVoiceFailoverHistory,
+    // Mission C3 §T2.10 — FailoverHistorySection consumes
+    // ``useApiPoller`` directly via ``vi.mock`` (see global mock at the
+    // top of the file). No store-slice fields needed — the legacy
+    // ``voiceFailoverHistory*`` fields were removed in v0.45.7 once
+    // every consumer migrated off the store.
     ...extras,
   };
 }
@@ -191,7 +188,6 @@ beforeEach(() => {
   mockFetchMixerKbList.mockReset().mockResolvedValue(undefined);
   mockFetchMixerKbDetail.mockReset().mockResolvedValue(null);
   mockFetchVoiceHealthQuarantine.mockReset().mockResolvedValue(undefined);
-  mockFetchVoiceFailoverHistory.mockReset().mockResolvedValue(undefined);
   mockUseApiPoller.mockReset();
   mockUseApiPoller.mockReturnValue({
     data: null,
