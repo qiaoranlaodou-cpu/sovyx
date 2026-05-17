@@ -380,7 +380,41 @@ GET    /api/voice/health/snapshot         # current cascade + watchdog state
 GET    /api/voice/health/preflight        # rerun preflight on demand
 POST   /api/voice/health/cascade/reset    # clear ComboStore for an endpoint
 GET    /api/voice/capture-diagnostics     # APO / HFP guard report
+GET    /api/engine/degraded               # cross-axis composite degraded surface (Mission C4 §T1.6) — voice + LLM + STT axes with per-axis severity + action chips
 ```
+
+### Composite degraded surface (Mission C4 §T1.6)
+
+`GET /api/engine/degraded` is the cross-axis ledger consumed by the
+dashboard banner mounts (`<DegradedBannerGlobalMount>` at the app
+shell + `<DegradedBannerPerPageMount>` at `/voice` and
+`/voice/health`). It replaces the pre-Mission-C4 log-grep workflow
+where the operator had to correlate three independent WARN lines
+(`bootstrap.py::no_llm_provider_detected`,
+`voice/factory/_validate.py::voice.factory.stt_language_unsupported`,
+`voice/health/_runtime_failover.py::voice.failover.ladder_complete{verdict=exhausted}`)
+to understand a degraded session.
+
+The response composes whatever the cross-axis
+:class:`sovyx.engine._degraded_store.EngineDegradedStore` ledger
+holds. Severity escalates per ADR-D6 (mission spec §4.6):
+
+| Distinct axis count | ``composite_severity`` | Banner palette |
+|---|---|---|
+| 0 | `None` | banner hidden |
+| 1 | `warn` | `--svx-color-warning` (yellow) |
+| 2 | `error` | `--svx-color-error` (red) |
+| 3+ | `critical` | `--svx-color-error` + `animate-pulse` |
+
+The voice-axis entry recorded by the failover-ladder-exhausted path
+is CLEARED by the same path on the next `verdict=succeeded`. LLM +
+STT axes are cleared by their respective wire shims if the
+underlying condition resolves (Phase 2 + Phase 3 work).
+
+Pairs with `dashboard.voice_status.get_voice_status` which also
+populates `composite_axes` + `composite_severity` on
+`/api/voice/status` so legacy consumers see the same composite view
+without polling the new endpoint.
 
 ### React panel
 

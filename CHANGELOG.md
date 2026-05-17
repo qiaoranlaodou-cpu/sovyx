@@ -8,6 +8,91 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 (none — every shipped delta documented in tagged sections below)
 
+## [0.46.2] — 2026-05-17
+
+Mission C4 (composite degraded-mode banner UX) Phase 1
+closure-complete — closes 10 specced test files + 1 doc extension
+that were omitted from the v0.46.0/v0.46.1 atomic ships. Pure
+test/doc cycle; zero production code changes (production reads of
+the EngineDegradedStore + banner remain identical). Operator-visible
+surface unchanged.
+
+Surfaced by the operator's "C4 100% finalized?" audit pass — the
+v0.46.0 + v0.46.1 commits shipped the production code with a
+subset of the §9.1 / §9.2 / §9.3 test surface; this commit closes
+the gap so the mission's specced coverage is mechanical at HEAD.
+
+Mission anchor:
+`docs-internal/missions/MISSION-c4-degraded-mode-banner-2026-05-17.md`
+§Phase 1 closure-complete.
+
+### Added
+
+- `tests/dashboard/test_voice_status_composite_axes.py` (5 tests) —
+  pins `dashboard.voice_status.get_voice_status` composite_axes +
+  composite_severity population per ADR-D6 (0/1/2/3-axis +
+  same-axis-multi-reason invariant).
+- `tests/integration/engine/test_bootstrap_degraded_store_no_llm.py`
+  (5 tests) — replicates the wire-shim's exact branch at
+  `bootstrap.py:735` (no-cloud-keys + Ollama-unavailable) and
+  asserts the store entry lands with axis=llm, severity=error, all
+  9 canonical checked_keys, and upsert-bumps occurrence_count.
+- `tests/integration/voice/test_factory_degraded_store_stt_coerced.py`
+  (5 tests) — exercises `_validate._create_stt(language="pt")` with
+  hermetic MoonshineSTT/MoonshineConfig stubs (anti-pattern #38 —
+  patches the lazy import's SOURCE module). Asserts severity=warn,
+  metadata captures requested+coerced+engine_supported_languages,
+  unsupported-language path records / supported-language path does
+  NOT.
+- `tests/integration/voice/test_runtime_failover_degraded_store_exhaustion.py`
+  (6 tests) — pins the wire-shim's record-on-exhaust + clear-on-
+  success contract. Verifies `clear_axis("voice")` preserves
+  pre-existing LLM + STT axes (multi-axis survives single-axis
+  recovery), ladder_id + mind_id captured for log correlation.
+- `tests/integration/dashboard/test_engine_degraded_endpoint_e2e.py`
+  (7 tests) — full producer-to-FastAPI-wire serialization round-trip.
+  Seeds 3 axes, GETs `/api/engine/degraded`, asserts each axis +
+  metadata + action_chips round-trip identity-preserving across the
+  serialization layer. Includes clear-axis-then-endpoint refresh +
+  empty-store minimal payload + auth-required 401 smoke.
+- `tests/property/test_engine_degraded_store_invariants.py` (Hypothesis,
+  7 properties) — cardinality-never-exceeds-max-entries,
+  clear-axis-removes-exactly-matching-axis, snapshot-defensive-copy,
+  distinct-axes-sorted-unique, occurrence_count-monotonic-per-reason,
+  first_observed-preserved-across-upsert + real-clock smoke.
+- `dashboard/src/components/voice/DegradedBannerGlobalMount.test.tsx`
+  (5 tests) — global mount isolated: null-data / 0-axis / ≥1-axis /
+  missing-axes-defensive / count-mismatch-defensive.
+- `dashboard/src/components/voice/DegradedBannerPerPageMount.test.tsx`
+  (4 tests) — per-page mount isolated: context-registers-on-mount /
+  renders-when-axis-present / hidden-when-empty / unmount-clears-flag.
+- `dashboard/src/hooks/use-engine-degraded-poller.test.ts`
+  (6 tests) — hook contract: 5s baseline constant, endpoint string,
+  default-enabled=true, explicit-enabled=false, warnTag passthrough.
+- `dashboard/src/locales/__tests__/locale-completeness.test.ts`
+  (2 tests) — i18n key-parity invariant across en/pt-BR/es for the
+  full voice namespace + specific assertion for all 15 new
+  `degraded.*` keys.
+
+### Changed
+
+- `docs/modules/voice-capture-health.md` — extends "Surfaces / REST"
+  table with `GET /api/engine/degraded` row + new "Composite
+  degraded surface (Mission C4 §T1.6)" subsection documenting the
+  severity escalation ladder (0=None / 1=warn / 2=error /
+  3+=critical), the axis-clear-on-success contract, and the pairing
+  with `/api/voice/status` for legacy consumers.
+
+### Fixed
+
+- Operator-visible: zero. Production code unchanged from v0.46.1.
+- Engineering-visible: the mission's specced test coverage is now
+  mechanical at HEAD — Quality Gate 8 boundary discipline +
+  Hypothesis property tests now guard the EngineDegradedStore
+  invariants; locale-parity test prevents future missing-translation
+  drift when new `degraded.*` keys are added (Phase 2 + Phase 3
+  will add several).
+
 ## [0.46.1] — 2026-05-17
 
 Mission C4 (composite degraded-mode banner UX) Phase 1.B — frontend
