@@ -34,6 +34,7 @@ import {
   ChevronDownIcon,
   ChevronRightIcon,
 } from "lucide-react";
+import { useApiPoller } from "@/hooks/use-api-poller";
 import { useDashboardStore } from "@/stores/dashboard";
 import type {
   MixerKbProfileDetail,
@@ -46,6 +47,7 @@ import type {
   VoiceHealthQuarantineEntry,
   VoiceHealthRemediationSeverity,
 } from "@/types/api";
+import { FailoverHistoryResponseSchema } from "@/types/schemas";
 
 /* ── Helpers ── */
 
@@ -975,23 +977,130 @@ const FailoverCandidateRow = React.memo(function FailoverCandidateRow({
   );
 });
 
+/** Mission C3 §T2.10 — 5 s baseline poll cadence per the spec. */
+const FAILOVER_HISTORY_POLL_INTERVAL_MS = 5_000;
+
+/** Mission C3 §T2.10 actionable-hint heuristic — every candidate in
+ * the most recent exhausted ladder failed with an UNOPENABLE_*
+ * error_class → suggest hardware reconnect.
+ */
+function _shouldShowReconnectHint(
+  entry: { verdict: string; candidates?: { verdict: string; error_class?: string }[] } | undefined,
+): boolean {
+  if (!entry || entry.verdict !== "exhausted") return false;
+  const cands = entry.candidates ?? [];
+  if (cands.length === 0) return false;
+  return cands.every(
+    (c) =>
+      c.verdict === "failed" &&
+      typeof c.error_class === "string" &&
+      c.error_class.startsWith("unopenable_"),
+  );
+}
+
+interface FailoverLadderRowProps {
+  entry: import("@/types/api").FailoverHistoryEntry;
+}
+
+const FailoverLadderRow = React.memo(function FailoverLadderRow({
+  entry,
+}: FailoverLadderRowProps) {
+  const { t } = useTranslation("voice");
+  // Mission C3 §T2.10 — collapsible per-candidate detail. Default
+  // collapsed; first-render expansion for the newest entry is the
+  // caller's responsibility (see FailoverHistorySection useMemo
+  // below — first entry is auto-expanded).
+  const [expanded, setExpanded] = useState(false);
+  const verdictColor =
+    FAILOVER_LADDER_VERDICT_COLOR[entry.verdict] ??
+    "var(--svx-color-text-secondary)";
+  const verdictLabel = t(`failoverHistory.verdict.${entry.verdict}`, {
+    defaultValue: entry.verdict,
+  }) as string;
+  const candidatesCount = entry.candidates?.length ?? 0;
+  const hasCandidates = candidatesCount > 0;
+  return (
+    <li
+      className="rounded-[var(--svx-radius-md)] border border-[var(--svx-color-border)] bg-[var(--svx-color-surface-secondary)] p-3"
+      data-testid="failover-history-entry"
+    >
+      <button
+        type="button"
+        className="flex w-full items-center gap-2 font-mono text-xs"
+        onClick={() => setExpanded((prev) => !prev)}
+        disabled={!hasCandidates}
+        data-testid="failover-history-entry-toggle"
+        aria-expanded={expanded}
+      >
+        <span
+          className="w-3 text-[var(--svx-color-text-tertiary)]"
+          aria-hidden="true"
+        >
+          {hasCandidates ? (expanded ? "▾" : "▸") : ""}
+        </span>
+        <span className="font-bold text-[var(--svx-color-text-primary)]">
+          {entry.ladder_id}
+        </span>
+        <span style={{ color: verdictColor }}>{verdictLabel}</span>
+        <span className="ml-auto text-[var(--svx-color-text-tertiary)]">
+          {t("failoverHistory.candidates")}: {entry.candidates_tried ?? 0}
+          {typeof entry.elapsed_ms === "number" && (
+            <>
+              {" · "}
+              {t("failoverHistory.elapsed")}: {entry.elapsed_ms}ms
+            </>
+          )}
+        </span>
+      </button>
+      {entry.from_endpoint && (
+        <p className="mt-1 font-mono text-[11px] text-[var(--svx-color-text-tertiary)]">
+          {entry.from_endpoint}
+        </p>
+      )}
+      {expanded && hasCandidates && (
+        <ul className="mt-2 space-y-1" data-testid="failover-history-entry-candidates">
+          {entry.candidates!.map((c) => (
+            <FailoverCandidateRow
+              key={`${entry.ladder_id}-${c.index}`}
+              index={c.index}
+              target_endpoint={c.target_endpoint}
+              target_friendly_name={c.target_friendly_name}
+              verdict={c.verdict}
+              error_class={c.error_class}
+              elapsed_ms={c.elapsed_ms}
+              skipped_reason={c.skipped_reason}
+            />
+          ))}
+        </ul>
+      )}
+    </li>
+  );
+});
+
 function FailoverHistorySection() {
   const { t } = useTranslation("voice");
-  const snapshot = useDashboardStore((s) => s.voiceFailoverHistory);
-  const loading = useDashboardStore((s) => s.voiceFailoverHistoryLoading);
-  const error = useDashboardStore((s) => s.voiceFailoverHistoryError);
-  const fetchHistory = useDashboardStore((s) => s.fetchVoiceFailoverHistory);
-
-  useEffect(() => {
-    const controller = new AbortController();
-    void fetchHistory(controller.signal);
-    return () => controller.abort();
-  }, [fetchHistory]);
+  // Mission C3 §T2.10 — 5 s polling with exponential backoff on 5xx.
+  // The generic ``useApiPoller`` hook lives at hooks/use-api-poller.ts.
+  // Each FailoverHistorySection instance owns its own backoff state
+  // (component-scoped — mounting voice-health twice does NOT share).
+  const { data: snapshot, error: pollerError } = useApiPoller<
+    typeof FailoverHistoryResponseSchema,
+    import("@/types/api").FailoverHistoryResponse
+  >({
+    endpoint: "/api/voice/health/failover-history",
+    schema: FailoverHistoryResponseSchema,
+    baselineIntervalMs: FAILOVER_HISTORY_POLL_INTERVAL_MS,
+    enabled: true,
+    warnTag: "voice.failover_history.poller.degraded",
+  });
 
   const entries = snapshot?.entries ?? [];
   // Render only the most recent 16 entries (full ring is 32; the
   // remaining 16 serve the `sovyx doctor voice` CLI surface).
   const rendered = useMemo(() => entries.slice(0, 16), [entries]);
+  const newestEntry = rendered[0];
+  const showReconnectHint = _shouldShowReconnectHint(newestEntry);
+  const isDegraded = pollerError === "degraded";
 
   return (
     <section
@@ -1018,7 +1127,7 @@ function FailoverHistorySection() {
       <p className="text-xs text-[var(--svx-color-text-tertiary)]">
         {t("failoverHistory.subtitle")}
       </p>
-      {loading && !snapshot && (
+      {!snapshot && !isDegraded && (
         <div
           className="flex items-center gap-2 text-xs text-[var(--svx-color-text-tertiary)]"
           data-testid="failover-history-loading"
@@ -1027,12 +1136,21 @@ function FailoverHistorySection() {
           {t("health.loading")}
         </div>
       )}
-      {error && (
+      {isDegraded && (
         <div
           className="rounded-[var(--svx-radius-md)] border border-[var(--svx-color-status-red)]/40 bg-[var(--svx-color-status-red)]/10 px-3 py-2 font-mono text-xs text-[var(--svx-color-status-red)]"
-          data-testid="failover-history-error"
+          data-testid="failover-history-degraded"
         >
-          {error}
+          {t("failoverHistory.degradedBanner.body")}
+        </div>
+      )}
+      {showReconnectHint && (
+        <div
+          className="rounded-[var(--svx-radius-md)] border border-[var(--svx-color-status-yellow)]/40 bg-[var(--svx-color-status-yellow)]/10 px-3 py-2 text-xs text-[var(--svx-color-status-yellow)]"
+          data-testid="failover-history-reconnect-hint"
+        >
+          <strong>{t("failoverHistory.degradedBanner.title")}: </strong>
+          {t("failoverHistory.degradedBanner.body")}
         </div>
       )}
       {snapshot && entries.length === 0 && (
@@ -1046,56 +1164,11 @@ function FailoverHistorySection() {
       {rendered.length > 0 && (
         <ul className="space-y-3">
           {rendered.map((entry) => {
-            const verdictColor =
-              FAILOVER_LADDER_VERDICT_COLOR[entry.verdict] ??
-              "var(--svx-color-text-secondary)";
-            const verdictLabel =
-              t(`failoverHistory.verdict.${entry.verdict}`, {
-                defaultValue: entry.verdict,
-              }) as string;
             return (
-              <li
+              <FailoverLadderRow
                 key={entry.ladder_id}
-                className="rounded-[var(--svx-radius-md)] border border-[var(--svx-color-border)] bg-[var(--svx-color-surface-secondary)] p-3"
-                data-testid="failover-history-entry"
-              >
-                <div className="flex items-center gap-2 font-mono text-xs">
-                  <span className="font-bold text-[var(--svx-color-text-primary)]">
-                    {entry.ladder_id}
-                  </span>
-                  <span style={{ color: verdictColor }}>{verdictLabel}</span>
-                  <span className="ml-auto text-[var(--svx-color-text-tertiary)]">
-                    {t("failoverHistory.candidates")}: {entry.candidates_tried ?? 0}
-                    {typeof entry.elapsed_ms === "number" && (
-                      <>
-                        {" · "}
-                        {t("failoverHistory.elapsed")}: {entry.elapsed_ms}ms
-                      </>
-                    )}
-                  </span>
-                </div>
-                {entry.from_endpoint && (
-                  <p className="mt-1 font-mono text-[11px] text-[var(--svx-color-text-tertiary)]">
-                    {entry.from_endpoint}
-                  </p>
-                )}
-                {entry.candidates && entry.candidates.length > 0 && (
-                  <ul className="mt-2 space-y-1">
-                    {entry.candidates.map((c) => (
-                      <FailoverCandidateRow
-                        key={`${entry.ladder_id}-${c.index}`}
-                        index={c.index}
-                        target_endpoint={c.target_endpoint}
-                        target_friendly_name={c.target_friendly_name}
-                        verdict={c.verdict}
-                        error_class={c.error_class}
-                        elapsed_ms={c.elapsed_ms}
-                        skipped_reason={c.skipped_reason}
-                      />
-                    ))}
-                  </ul>
-                )}
-              </li>
+                entry={entry}
+              />
             );
           })}
         </ul>

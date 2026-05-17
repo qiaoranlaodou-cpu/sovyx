@@ -168,6 +168,20 @@ function setStore(
   };
 }
 
+// Mock the generic failover-history poller hook globally so the
+// FailoverHistorySection (rendered by the main page) always gets a
+// well-formed return value, even for tests that don't exercise its
+// state. Individual tests override via ``mockUseApiPoller.mockReturnValue``.
+vi.mock("@/hooks/use-api-poller", () => ({
+  useApiPoller: vi.fn(() => ({
+    data: null,
+    error: "ok" as const,
+    consecutive5xx: 0,
+  })),
+}));
+import { useApiPoller } from "@/hooks/use-api-poller";
+const mockUseApiPoller = vi.mocked(useApiPoller);
+
 beforeEach(() => {
   mockFetch.mockReset();
   mockReprobe.mockReset().mockResolvedValue(null);
@@ -178,6 +192,12 @@ beforeEach(() => {
   mockFetchMixerKbDetail.mockReset().mockResolvedValue(null);
   mockFetchVoiceHealthQuarantine.mockReset().mockResolvedValue(undefined);
   mockFetchVoiceFailoverHistory.mockReset().mockResolvedValue(undefined);
+  mockUseApiPoller.mockReset();
+  mockUseApiPoller.mockReturnValue({
+    data: null,
+    error: "ok",
+    consecutive5xx: 0,
+  } as ReturnType<typeof useApiPoller>);
   mockValidateMixerKb.mockReset().mockResolvedValue({
     ok: true,
     profile_id: null,
@@ -658,47 +678,52 @@ describe("VoiceHealthPage — FailoverHistorySection (Mission C3)", () => {
     voice_enabled: true,
   } as const;
 
+  function setPoller(
+    state: Partial<{
+      data: unknown;
+      error: "ok" | "degraded";
+      consecutive5xx: number;
+    }>,
+  ) {
+    mockUseApiPoller.mockReturnValue({
+      data: state.data ?? null,
+      error: state.error ?? "ok",
+      consecutive5xx: state.consecutive5xx ?? 0,
+    } as ReturnType<typeof useApiPoller>);
+  }
+
   beforeEach(() => {
-    mockFetchVoiceFailoverHistory
-      .mockReset()
-      .mockResolvedValue(undefined);
+    mockUseApiPoller.mockReset();
+    setPoller({ data: null, error: "ok" });
   });
 
-  it("triggers fetchVoiceFailoverHistory on mount", () => {
+  it("renders loading state before first poll lands", () => {
     setStore(_failoverSnapshot);
-    render(<VoiceHealthPage />);
-    expect(mockFetchVoiceFailoverHistory).toHaveBeenCalled();
-  });
-
-  it("renders empty-state when no ladder has run", () => {
-    setStore(_failoverSnapshot, {
-      voiceFailoverHistory: { entries: [], ring_capacity: 32 },
-    });
-    render(<VoiceHealthPage />);
-    expect(screen.getByTestId("failover-history-empty")).toBeInTheDocument();
-  });
-
-  it("renders loading state when snapshot not loaded yet", () => {
-    setStore(_failoverSnapshot, {
-      voiceFailoverHistory: null,
-      voiceFailoverHistoryLoading: true,
-    });
+    setPoller({ data: null, error: "ok" });
     render(<VoiceHealthPage />);
     expect(screen.getByTestId("failover-history-loading")).toBeInTheDocument();
   });
 
-  it("renders error state when fetch fails", () => {
-    setStore(_failoverSnapshot, {
-      voiceFailoverHistoryError: "HTTP 503: backend unavailable",
-    });
+  it("renders empty-state when no ladder has run", () => {
+    setStore(_failoverSnapshot);
+    setPoller({ data: { entries: [], ring_capacity: 32 } });
     render(<VoiceHealthPage />);
-    const errEl = screen.getByTestId("failover-history-error");
-    expect(errEl).toHaveTextContent("503");
+    expect(screen.getByTestId("failover-history-empty")).toBeInTheDocument();
   });
 
-  it("renders a succeeded ladder with per-candidate detail", () => {
-    setStore(_failoverSnapshot, {
-      voiceFailoverHistory: {
+  it("renders degraded banner after 11 consecutive 5xx", () => {
+    setStore(_failoverSnapshot);
+    setPoller({ data: null, error: "degraded", consecutive5xx: 11 });
+    render(<VoiceHealthPage />);
+    expect(
+      screen.getByTestId("failover-history-degraded"),
+    ).toBeInTheDocument();
+  });
+
+  it("renders a succeeded ladder and expands candidate detail on click", async () => {
+    setStore(_failoverSnapshot);
+    setPoller({
+      data: {
         entries: [
           {
             ladder_id: "abc123def456",
@@ -739,11 +764,85 @@ describe("VoiceHealthPage — FailoverHistorySection (Mission C3)", () => {
     render(<VoiceHealthPage />);
     const entry = screen.getByTestId("failover-history-entry");
     expect(entry).toHaveTextContent("abc123def456");
+    // Default-collapsed — no candidate rows visible.
+    expect(screen.queryAllByTestId("failover-candidate-row")).toHaveLength(0);
+    // Click the toggle button to expand.
+    fireEvent.click(screen.getByTestId("failover-history-entry-toggle"));
     const rows = screen.getAllByTestId("failover-candidate-row");
     expect(rows).toHaveLength(2);
     expect(rows[0]).toHaveTextContent("HD-Audio Generic");
     expect(rows[0]).toHaveTextContent("unopenable_this_boot");
     expect(rows[1]).toHaveTextContent("PipeWire");
+  });
+
+  it("renders operator-actionable reconnect hint when newest ladder exhausted with all-unopenable candidates", () => {
+    setStore(_failoverSnapshot);
+    setPoller({
+      data: {
+        entries: [
+          {
+            ladder_id: "exhausted001",
+            started_monotonic: 1000.0,
+            verdict: "exhausted",
+            candidates_tried: 2,
+            succeeded_index: null,
+            candidates: [
+              {
+                index: 0,
+                target_endpoint: "dev-a",
+                verdict: "failed",
+                error_class: "unopenable_this_boot",
+                elapsed_ms: 100,
+              },
+              {
+                index: 1,
+                target_endpoint: "dev-b",
+                verdict: "failed",
+                error_class: "unopenable_permanent",
+                elapsed_ms: 80,
+              },
+            ],
+            from_endpoint: "razer",
+          },
+        ],
+        ring_capacity: 32,
+      },
+    });
+    render(<VoiceHealthPage />);
+    expect(
+      screen.getByTestId("failover-history-reconnect-hint"),
+    ).toBeInTheDocument();
+  });
+
+  it("does NOT render reconnect hint when latest ladder succeeded", () => {
+    setStore(_failoverSnapshot);
+    setPoller({
+      data: {
+        entries: [
+          {
+            ladder_id: "good001",
+            started_monotonic: 1000.0,
+            verdict: "succeeded",
+            candidates_tried: 1,
+            succeeded_index: 0,
+            candidates: [
+              {
+                index: 0,
+                target_endpoint: "dev-a",
+                verdict: "succeeded",
+                elapsed_ms: 100,
+              },
+            ],
+            from_endpoint: "razer",
+          },
+        ],
+        ring_capacity: 32,
+      },
+    });
+    render(<VoiceHealthPage />);
+    expect(
+      screen.queryByTestId("failover-history-reconnect-hint"),
+    ).not.toBeInTheDocument();
   });
 
   it("caps rendered entries at 16 (dashboard scope; doctor CLI sees the rest)", () => {
@@ -758,9 +857,8 @@ describe("VoiceHealthPage — FailoverHistorySection (Mission C3)", () => {
       from_endpoint: "razer",
       elapsed_ms: 500,
     }));
-    setStore(_failoverSnapshot, {
-      voiceFailoverHistory: { entries: manyEntries, ring_capacity: 32 },
-    });
+    setStore(_failoverSnapshot);
+    setPoller({ data: { entries: manyEntries, ring_capacity: 32 } });
     render(<VoiceHealthPage />);
     const entries = screen.getAllByTestId("failover-history-entry");
     expect(entries).toHaveLength(16);
