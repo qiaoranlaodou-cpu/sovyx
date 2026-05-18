@@ -11,7 +11,7 @@ from sovyx.engine.registry import ServiceRegistry
 from sovyx.observability.logging import get_logger
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Callable, Sequence
     from pathlib import Path
 
     from sovyx.mind.config import MindConfig
@@ -638,8 +638,23 @@ async def bootstrap(
             )
             registry.register_instance(ContextAssembler, assembler)
 
-            # LLM Providers + Router
+            # LLM Providers + Router (Mission C6 §T2.1 — refactored from
+            # the pre-C6 10 sequential ``os.environ.get``/``providers.append``
+            # blocks to a data-driven loop over the canonical registry).
+            from sovyx.llm._provider_registry import LLMProviderKey
             from sovyx.llm.providers.google import GoogleProvider
+
+            _provider_factory: dict[LLMProviderKey, Callable[[str], object]] = {
+                LLMProviderKey.ANTHROPIC: lambda k: AnthropicProvider(api_key=k),
+                LLMProviderKey.OPENAI: lambda k: OpenAIProvider(api_key=k),
+                LLMProviderKey.GOOGLE: lambda k: GoogleProvider(api_key=k),
+                LLMProviderKey.XAI: lambda k: XAIProvider(api_key=k),
+                LLMProviderKey.DEEPSEEK: lambda k: DeepSeekProvider(api_key=k),
+                LLMProviderKey.MISTRAL: lambda k: MistralProvider(api_key=k),
+                LLMProviderKey.GROQ: lambda k: GroqProvider(api_key=k),
+                LLMProviderKey.TOGETHER: lambda k: TogetherProvider(api_key=k),
+                LLMProviderKey.FIREWORKS: lambda k: FireworksProvider(api_key=k),
+            }
 
             providers: list[
                 AnthropicProvider
@@ -654,50 +669,16 @@ async def bootstrap(
                 | FireworksProvider
             ] = []
 
-            anthropic_key = os.environ.get("ANTHROPIC_API_KEY", "")
-            if anthropic_key:
-                providers.append(AnthropicProvider(api_key=anthropic_key))
-                logger.info("llm_provider_registered", provider="anthropic")
-
-            openai_key = os.environ.get("OPENAI_API_KEY", "")
-            if openai_key:
-                providers.append(OpenAIProvider(api_key=openai_key))
-                logger.info("llm_provider_registered", provider="openai")
-
-            google_key = os.environ.get("GOOGLE_API_KEY", "")
-            if google_key:
-                providers.append(GoogleProvider(api_key=google_key))
-                logger.info("llm_provider_registered", provider="google")
-
-            xai_key = os.environ.get("XGROK_API_KEY", "")
-            if xai_key:
-                providers.append(XAIProvider(api_key=xai_key))
-                logger.info("llm_provider_registered", provider="xai")
-
-            deepseek_key = os.environ.get("DEEPSEEK_API_KEY", "")
-            if deepseek_key:
-                providers.append(DeepSeekProvider(api_key=deepseek_key))
-                logger.info("llm_provider_registered", provider="deepseek")
-
-            mistral_key = os.environ.get("MISTRAL_API_KEY", "")
-            if mistral_key:
-                providers.append(MistralProvider(api_key=mistral_key))
-                logger.info("llm_provider_registered", provider="mistral")
-
-            groq_key = os.environ.get("GROQ_API_KEY", "")
-            if groq_key:
-                providers.append(GroqProvider(api_key=groq_key))
-                logger.info("llm_provider_registered", provider="groq")
-
-            together_key = os.environ.get("TOGETHER_API_KEY", "")
-            if together_key:
-                providers.append(TogetherProvider(api_key=together_key))
-                logger.info("llm_provider_registered", provider="together")
-
-            fireworks_key = os.environ.get("FIREWORKS_API_KEY", "")
-            if fireworks_key:
-                providers.append(FireworksProvider(api_key=fireworks_key))
-                logger.info("llm_provider_registered", provider="fireworks")
+            for _key in LLMProviderKey:
+                if not _key.is_cloud:
+                    continue
+                _env_value = os.environ.get(_key.env_var, "")
+                if _env_value:
+                    providers.append(_provider_factory[_key](_env_value))  # type: ignore[arg-type]
+                    # Dual-emission per ADR-D14 — legacy event name preserved
+                    # for one minor cycle (operator playbooks reference it);
+                    # dropped at v0.50.0 STRICT flip.
+                    logger.info("llm_provider_registered", provider=_key.value)
 
             ollama_provider = OllamaProvider()
             providers.append(ollama_provider)
@@ -706,98 +687,72 @@ async def bootstrap(
             # Health checks and Settings page need accurate availability.
             await ollama_provider.ping()
 
-            # Auto-detect Ollama when no cloud providers are configured
+            # Auto-detect Ollama when no cloud providers are configured.
+            # Preserves the pre-C6 mind.yaml persist-on-auto-detect behaviour
+            # so an operator who installs Ollama gets a working router on
+            # next boot without manual setup. The `models` tuple is captured
+            # for the discovery scan below (Mission C6 §T2.1).
             cloud_providers = [p for p in providers if p.name != "ollama"]
-            if not cloud_providers:
-                if ollama_provider.is_available:
-                    models = await ollama_provider.list_models()
-                    if models:
-                        selected = _select_best_ollama_model(models)
-                        mind_config.llm.default_provider = "ollama"
-                        mind_config.llm.default_model = selected
-                        logger.info(
-                            "ollama_auto_detected",
-                            models=models,
-                            selected=selected,
-                            hint="Using local Ollama. No cloud API key needed.",
-                        )
-                        # Persist so next restart reads config directly
-                        _persist_ollama_config(
-                            mind_config,
-                            engine_config.database.data_dir / mind_config.id / "mind.yaml",
-                        )
-                    else:
-                        logger.warning(
-                            "ollama_no_models",
-                            hint="Ollama is running but has no models. Run: ollama pull llama3.1",
-                        )
-                else:
-                    logger.warning(
-                        "no_llm_provider_detected",
-                        hint="Set ANTHROPIC_API_KEY, OPENAI_API_KEY, or GOOGLE_API_KEY. "
-                        "Or install Ollama: https://ollama.ai",
-                    )
-                    # Mission C4 §T1.2 — surface no-LLM-provider state to
-                    # the composite degraded store so the dashboard banner
-                    # can render an actionable surface. The WARN log above
-                    # is preserved verbatim (operator playbooks reference
-                    # it); the store write is the NEW surface. Guarded so a
-                    # store-write failure cannot block the warning path.
-                    try:
-                        from sovyx.engine._degraded_store import (
-                            DegradedEntry,
-                            get_default_degraded_store,
-                            make_action_chip,
-                            now_monotonic,
-                        )
-
-                        _c4_now = now_monotonic()
-                        get_default_degraded_store().record(
-                            DegradedEntry(
-                                axis="llm",
-                                reason="no_llm_provider",
-                                severity="error",
-                                title_token="degraded.llm.noProvider.title",
-                                body_token="degraded.llm.noProvider.body",
-                                action_chips=(
-                                    make_action_chip(
-                                        "degraded.llm.noProvider.installOllama",
-                                        "external_link",
-                                        "https://ollama.ai",
-                                        style="primary",
-                                    ),
-                                    make_action_chip(
-                                        "degraded.llm.noProvider.openSettings",
-                                        "navigate",
-                                        "/settings/providers",
-                                    ),
-                                ),
-                                metadata={
-                                    "checked_keys": [
-                                        "ANTHROPIC_API_KEY",
-                                        "OPENAI_API_KEY",
-                                        "GOOGLE_API_KEY",
-                                        "XGROK_API_KEY",
-                                        "DEEPSEEK_API_KEY",
-                                        "MISTRAL_API_KEY",
-                                        "GROQ_API_KEY",
-                                        "TOGETHER_API_KEY",
-                                        "FIREWORKS_API_KEY",
-                                    ],
-                                    "ollama_available": False,
-                                },
-                                first_observed_monotonic=_c4_now,
-                                last_observed_monotonic=_c4_now,
-                                occurrence_count=1,
-                            ),
-                        )
-                    except Exception:  # noqa: BLE001 — observability-only surface
-                        logger.debug("c4_degraded_store_record_failed", axis="llm")
+            _ollama_models: tuple[str, ...] = ()
+            if ollama_provider.is_available:
+                with contextlib.suppress(Exception):
+                    _ollama_models = tuple(await ollama_provider.list_models())
+            if not cloud_providers and ollama_provider.is_available and _ollama_models:
+                selected = _select_best_ollama_model(list(_ollama_models))
+                mind_config.llm.default_provider = "ollama"
+                mind_config.llm.default_model = selected
+                logger.info(
+                    "ollama_auto_detected",
+                    models=list(_ollama_models),
+                    selected=selected,
+                    hint="Using local Ollama. No cloud API key needed.",
+                )
+                _persist_ollama_config(
+                    mind_config,
+                    engine_config.database.data_dir / mind_config.id / "mind.yaml",
+                )
 
             # fast_model fallback: ThinkPhase uses fast_model for low-complexity
             # queries. If empty, those calls silently fail (model="").
             if not mind_config.llm.fast_model and mind_config.llm.default_model:
                 mind_config.llm.fast_model = mind_config.llm.default_model
+
+            # Mission C6 §T2.1 — single canonical discovery report.
+            # Replaces the pre-C6 C4 hardcoded single-reason wire with
+            # verdict-driven composite-store dispatch covering 7 distinct
+            # reason tokens (no_provider_configured / ollama_unreachable /
+            # ollama_no_models / cloud_key_invalid / all_providers_unhealthy /
+            # default_model_unavailable / partial_health). Legacy
+            # `no_llm_provider_detected` + `ollama_no_models` WARNs are
+            # dual-emitted by the dispatch helpers per ADR-D14.
+            from sovyx.engine._llm_dispatch import dispatch_llm_discovery_verdict
+            from sovyx.llm._provider_health import scan_llm_provider_health
+
+            _discovery_report = scan_llm_provider_health(
+                env=os.environ,
+                ollama_ping_result=ollama_provider.is_available,
+                ollama_models=_ollama_models if ollama_provider.is_available else None,
+                default_provider=mind_config.llm.default_provider,
+                default_model=mind_config.llm.default_model,
+                cloud_key_validation_results=None,
+            )
+            logger.info(
+                "llm.discovery.report",
+                verdict=_discovery_report.verdict.value,
+                configured_count=_discovery_report.configured_count,
+                available_count=_discovery_report.available_count,
+                default_provider=_discovery_report.default_provider,
+                default_model=_discovery_report.default_model,
+                scan_duration_ms=round(_discovery_report.scan_duration_ms, 3),
+            )
+            try:
+                dispatch_llm_discovery_verdict(_discovery_report)
+            except Exception:  # noqa: BLE001 — observability-only surface
+                logger.debug(
+                    "c6_degraded_store_dispatch_failed",
+                    axis="llm",
+                    verdict=_discovery_report.verdict.value,
+                )
 
             logger.info(
                 "llm_router_config",
@@ -861,8 +816,31 @@ async def bootstrap(
                 circuit_breaker_failures=llm_tuning.circuit_breaker_failures,
                 circuit_breaker_reset_s=llm_tuning.circuit_breaker_reset_seconds,
             )
+            # Mission C6 §T2.3 — prime the router's cached discovery report
+            # so `/api/llm/health` and `LLMRouter.has_available_provider` (the
+            # CognitiveLoop dependency gate, Phase 1.D §T4.1) reflect the
+            # boot-time state immediately.
+            router.update_discovery_report(_discovery_report)
             _closables.append(router)
             registry.register_instance(LLMRouter, router)
+
+            # Mission C6 §T2.5 — single-task periodic liveness probe.
+            # Spawned as a Closable so the SIGINT teardown cancels cleanly
+            # via the existing _closables propagation. The probe is the
+            # producer side of anti-pattern #44 (dependency-gated workers
+            # MUST be paired with a liveness probe that transitions the
+            # composite-store axis on recovery).
+            from sovyx.engine._llm_liveness_probe import LLMLivenessProbe
+
+            llm_liveness_probe = LLMLivenessProbe(
+                router=router,
+                ollama_provider=ollama_provider,
+                config=llm_tuning,
+                mind_config=mind_config,
+            )
+            await llm_liveness_probe.start()
+            _closables.append(llm_liveness_probe)
+            registry.register_instance(LLMLivenessProbe, llm_liveness_probe)
 
             # DREAM scheduler (SPE-003 phase 7 — nightly pattern discovery).
             # Wired after the LLM router since DREAM's pattern extraction

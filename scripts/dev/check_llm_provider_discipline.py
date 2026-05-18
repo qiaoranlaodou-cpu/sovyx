@@ -151,6 +151,31 @@ def _check_bootstrap_surface(report: GateReport, allowlist: dict[str, set[str]])
         return
     report.surfaces_checked.append(surface_id)
     content = _BOOTSTRAP_PATH.read_text(encoding="utf-8")
+
+    # Two valid shapes for bootstrap-side provider registration:
+    #
+    # 1. Pre-Mission-C6 §T2.1 — 10 sequential blocks with literal env-var
+    #    strings: ``os.environ.get("ANTHROPIC_API_KEY", "")``. The literal
+    #    is checked directly per member.
+    #
+    # 2. Post-Mission-C6 §T2.1 — data-driven loop over ``LLMProviderKey``:
+    #    ``for _key in LLMProviderKey: ... os.environ.get(_key.env_var, "")``.
+    #    No literal env-var strings appear; correctness is guaranteed
+    #    by iterating the canonical registry.
+    #
+    # The registry-driven shape is detected via three structural markers:
+    # the ``LLMProviderKey`` import, the ``for ... in LLMProviderKey`` loop,
+    # and an ``env_var`` attribute access. All three present → wire-discipline
+    # holds for every member via the iteration; per-member literal checks are
+    # skipped.
+    registry_driven = (
+        "LLMProviderKey" in content
+        and "for _key in LLMProviderKey" in content
+        and "_key.env_var" in content
+    )
+    if registry_driven:
+        return
+
     for member, env_var in report.env_vars.items():
         if not env_var:
             continue

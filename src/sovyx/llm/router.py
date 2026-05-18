@@ -34,6 +34,7 @@ if TYPE_CHECKING:
 
     from sovyx.engine.events import EventBus
     from sovyx.engine.protocols import LLMProvider
+    from sovyx.llm._provider_health import LLMRouterDiscoveryReport
     from sovyx.llm.cost import CostGuard
 
 logger = get_logger(__name__)
@@ -276,6 +277,47 @@ class LLMRouter:
         # Dedup set for fallback-pricing warnings — the warning flood without
         # this is one log per LLM call when a model is missing from PRICING.
         self._logged_fallback_models: set[str] = set()
+        # Mission C6 §T2.3 — cached most-recent provider-discovery report.
+        # Populated by bootstrap.py at boot and by LLMLivenessProbe on each
+        # tick. Consumed by `has_available_provider` for the CognitiveLoop
+        # dependency gate (Phase 1.D §T4.1) and by `/api/llm/health` for
+        # the dashboard provider-settings page.
+        self._discovery_report: LLMRouterDiscoveryReport | None = None
+
+    def has_available_provider(self) -> bool:
+        """Return True iff at least one registered provider has ``is_available=True``.
+
+        Mission C6 §T2.3 — fast dependency check for the CognitiveLoop
+        dependency gate (Phase 1.D §T4.1). Anti-pattern #44 compliant
+        (dependency-gated workers MUST consult a fast, side-effect-free
+        readiness signal).
+
+        Distinct from :attr:`discovery_report` which is the AUTHORITATIVE
+        deep snapshot — this method is the hot-path predicate used inside
+        ``CognitiveLoop.process_request`` to short-circuit on missing LLM.
+        """
+        return any(p.is_available for p in self._providers)
+
+    @property
+    def discovery_report(self) -> LLMRouterDiscoveryReport | None:
+        """Most-recent :class:`LLMRouterDiscoveryReport` snapshot.
+
+        ``None`` pre-first-update. Set by ``bootstrap.py`` immediately after
+        the boot-time ``scan_llm_provider_health`` call, then refreshed on
+        every successful :class:`~sovyx.engine._llm_liveness_probe.
+        LLMLivenessProbe` tick. Consumed by ``/api/llm/health`` so the
+        endpoint serves the cached report without re-scanning on every
+        request.
+        """
+        return self._discovery_report
+
+    def update_discovery_report(self, report: LLMRouterDiscoveryReport) -> None:
+        """Refresh the cached discovery report.
+
+        Idempotent — the cache holds only the most-recent value. Called
+        by bootstrap.py at boot and by LLMLivenessProbe on each tick.
+        """
+        self._discovery_report = report
 
     def _warn_pricing_fallback_once(self, model: str, provider: str) -> None:
         """Emit a structured warning the first time a model lands on a fallback rate.

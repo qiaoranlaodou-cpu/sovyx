@@ -197,6 +197,174 @@ class TestEngineDegradedResponseBoundary:
         assert response.ack.acked is True
         assert response.ack.ttl_remaining_sec == 3540
 
+
+# ── Mission C6 §T2.8 — refined `axis="llm"` reason taxonomy ─────────────────
+# Quality Gate 8 (anti-pattern #40) requires every new reason value at the
+# composite endpoint to have a paired round-trip test. The pre-C6 single
+# `no_llm_provider` reason is covered above (legacy dual-emission); these
+# tests cover the 6 new refined tokens.
+
+
+def _llm_axis_with_reason(
+    reason: str,
+    severity: str,
+    *,
+    metadata: dict[str, object] | None = None,
+) -> dict[str, object]:
+    """Helper — build a minimal `axis="llm"` payload with a refined reason."""
+    return {
+        "axis": "llm",
+        "reason": reason,
+        "severity": severity,
+        "title_token": f"degraded.llm.{reason}.title",
+        "body_token": f"degraded.llm.{reason}.body",
+        "action_chips": [
+            {
+                "label_token": f"degraded.llm.{reason}.runDoctor",
+                "action": "external_link",
+                "target": "https://sovyx.dev/docs/cli/llm-doctor",
+                "style": "default",
+            },
+        ],
+        "metadata": metadata
+        or {
+            "verdict": reason,
+            "configured_count": 0,
+            "available_count": 0,
+            "default_provider": "",
+            "default_model": "",
+            "scan_duration_ms": 0.5,
+        },
+        "first_observed_monotonic": 1.0,
+        "last_observed_monotonic": 1.0,
+        "occurrence_count": 1,
+    }
+
+
+class TestEngineDegradedC6ReasonTaxonomy:
+    """Boundary round-trip pairs for the 7 refined Mission C6 reason tokens."""
+
+    def test_no_provider_configured_round_trips(self) -> None:
+        axis = _llm_axis_with_reason("no_provider_configured", "critical")
+        response = assert_boundary_accepts(
+            EngineDegradedResponse,
+            helper_factory=lambda: {
+                "axes": [axis],
+                "composite_severity": "warn",
+                "composite_axis_count": 1,
+                "ack": {"acked": False},
+            },
+        )
+        assert response.axes[0].reason == "no_provider_configured"
+
+    def test_ollama_unreachable_round_trips(self) -> None:
+        axis = _llm_axis_with_reason("ollama_unreachable", "error")
+        response = assert_boundary_accepts(
+            EngineDegradedResponse,
+            helper_factory=lambda: {
+                "axes": [axis],
+                "composite_severity": "warn",
+                "composite_axis_count": 1,
+                "ack": {"acked": False},
+            },
+        )
+        assert response.axes[0].reason == "ollama_unreachable"
+
+    def test_ollama_no_models_round_trips(self) -> None:
+        axis = _llm_axis_with_reason("ollama_no_models", "warn")
+        response = assert_boundary_accepts(
+            EngineDegradedResponse,
+            helper_factory=lambda: {
+                "axes": [axis],
+                "composite_severity": "warn",
+                "composite_axis_count": 1,
+                "ack": {"acked": False},
+            },
+        )
+        assert response.axes[0].reason == "ollama_no_models"
+
+    def test_cloud_key_invalid_round_trips(self) -> None:
+        axis = _llm_axis_with_reason(
+            "cloud_key_invalid",
+            "error",
+            metadata={
+                "verdict": "cloud_key_invalid",
+                "configured_count": 2,
+                "available_count": 0,
+                "default_provider": "",
+                "default_model": "",
+                "scan_duration_ms": 0.5,
+                "invalid_providers": ["anthropic", "openai"],
+            },
+        )
+        response = assert_boundary_accepts(
+            EngineDegradedResponse,
+            helper_factory=lambda: {
+                "axes": [axis],
+                "composite_severity": "warn",
+                "composite_axis_count": 1,
+                "ack": {"acked": False},
+            },
+        )
+        assert response.axes[0].reason == "cloud_key_invalid"
+        assert response.axes[0].metadata["invalid_providers"] == [
+            "anthropic",
+            "openai",
+        ]
+
+    def test_all_providers_unhealthy_round_trips(self) -> None:
+        axis = _llm_axis_with_reason("all_providers_unhealthy", "error")
+        response = assert_boundary_accepts(
+            EngineDegradedResponse,
+            helper_factory=lambda: {
+                "axes": [axis],
+                "composite_severity": "warn",
+                "composite_axis_count": 1,
+                "ack": {"acked": False},
+            },
+        )
+        assert response.axes[0].reason == "all_providers_unhealthy"
+
+    def test_default_model_unavailable_round_trips(self) -> None:
+        axis = _llm_axis_with_reason("default_model_unavailable", "error")
+        response = assert_boundary_accepts(
+            EngineDegradedResponse,
+            helper_factory=lambda: {
+                "axes": [axis],
+                "composite_severity": "warn",
+                "composite_axis_count": 1,
+                "ack": {"acked": False},
+            },
+        )
+        assert response.axes[0].reason == "default_model_unavailable"
+
+    def test_partial_health_round_trips(self) -> None:
+        axis = _llm_axis_with_reason(
+            "partial_health",
+            "warn",
+            metadata={
+                "verdict": "partial_health",
+                "configured_count": 2,
+                "available_count": 1,
+                "default_provider": "anthropic",
+                "default_model": "claude-sonnet-4-6",
+                "scan_duration_ms": 0.5,
+                "healthy_providers": ["anthropic"],
+                "unhealthy_providers": ["openai"],
+            },
+        )
+        response = assert_boundary_accepts(
+            EngineDegradedResponse,
+            helper_factory=lambda: {
+                "axes": [axis],
+                "composite_severity": "warn",
+                "composite_axis_count": 1,
+                "ack": {"acked": False},
+            },
+        )
+        assert response.axes[0].reason == "partial_health"
+        assert response.axes[0].metadata["healthy_providers"] == ["anthropic"]
+
     def test_future_axis_passes_through(self) -> None:
         """Mission C4 §16 — future axes (brain, bridges, plugin) extend
         the payload without a schema migration thanks to extra-allow."""

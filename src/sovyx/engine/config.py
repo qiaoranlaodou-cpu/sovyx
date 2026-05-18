@@ -2641,6 +2641,35 @@ class LLMTuningConfig(BaseSettings):
     circuit_breaker_failures: int = 3
     circuit_breaker_reset_seconds: int = 60
 
+    # ── Mission C6 §T2.4 — provider discovery + liveness tuning ──
+    # Single-task periodic re-scan via :class:`~sovyx.engine._llm_liveness_
+    # probe.LLMLivenessProbe`. Anti-pattern #34 inverse: observability flag
+    # defaults TRUE so a fresh install starts probing immediately. Operators
+    # who don't want background probes opt out explicitly.
+    liveness_check_enabled: bool = True
+    liveness_check_interval_sec: float = Field(default=60.0, ge=10.0, le=600.0)
+    # Boot-time cloud-key validation is OPT-IN (per ADR-D10) because the
+    # validation probe spends real money on every cloud provider's API.
+    # First-call failure + liveness-probe transitions surface invalid keys
+    # without paying the boot-time cost.
+    boot_key_validation_enabled: bool = False
+    boot_key_validation_timeout_sec: float = Field(default=5.0, ge=1.0, le=30.0)
+    # Transient-blip filter — require the unhealthy state to persist this
+    # long before promoting to a composite-store update. 30 s is the
+    # operator-cognitive window; shorter values produce flap noise.
+    provider_unhealthy_grace_period_sec: float = Field(
+        default=30.0,
+        ge=0.0,
+        le=300.0,
+    )
+    # ADR-D5: short-circuit ``CognitiveLoop.process_request`` with a
+    # synthetic ``ActionResult(failed=True, reason="cognitive_dependency_
+    # missing")`` instead of running invisible work through perceive →
+    # attend → think → act → reflect when the LLM router has no available
+    # provider. Defaults True; operators who want the slower-but-more-
+    # instrumented per-phase failure path opt out via env.
+    cognitive_degraded_mode_fail_fast: bool = True
+
 
 class ObservabilityFeaturesConfig(BaseSettings):
     """Feature flags for granular rollback of the observability subsystem.
