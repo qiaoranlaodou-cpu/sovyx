@@ -1249,6 +1249,36 @@ class VoiceTuningConfig(BaseSettings):
     apo_quarantine_s: float = 3_600.0
     apo_quarantine_recheck_interval_s: float = 300.0
 
+    # Mission H2 §T1.4 — staged-adoption kill switches for the
+    # capture-integrity event-name dual-emission window (v0.49.7..v0.50.x).
+    # Both default to True per anti-pattern #34 inverse: observability
+    # always-on. Operators who want to pre-test the v0.51.0 STRICT-flip
+    # behaviour (legacy events dropped) can flip these False without
+    # waiting for the STRICT tag. Phase 3 STRICT removes the legacy
+    # emission block entirely + retires these knobs.
+    capture_integrity_dual_emit_enabled: bool = True
+    """Mission H2 §T1.3 dual-emission knob — when True (default), the
+    :func:`sovyx.voice.pipeline._capture_integrity_emit.emit_capture_integrity_event`
+    wrapper dual-emits BOTH the neutral
+    ``voice.capture_integrity.bypass*`` event names AND the legacy
+    ``audio.apo.bypassed`` / ``voice_apo_bypass_*`` twins per ADR-D14.
+    Operators set this to False to pre-test the v0.51.0 STRICT-flip
+    behaviour (legacy events stop firing). Bounded — boolean. Retired
+    at v0.51.0 when the legacy emission block is removed unconditionally.
+
+    Override via ``SOVYX_TUNING__VOICE__CAPTURE_INTEGRITY_DUAL_EMIT_ENABLED=false``."""
+
+    apo_detector_dual_emit_enabled: bool = True
+    """Mission H2 §T4.1 dual-emission knob — same shape as
+    :attr:`capture_integrity_dual_emit_enabled`, but for the
+    :mod:`sovyx.voice._apo_detector_linux` + :mod:`sovyx.voice.factory._diagnostics`
+    paths that emit ``audio.apo.scan*`` / ``audio.apo.echo_cancel_detected``
+    events. When True (default), the Linux apo detector + factory
+    diagnostic paths dual-emit BOTH ``audio.capture_chain.scan*`` /
+    ``audio.capture_chain.echo_cancel_detected`` AND the legacy names.
+
+    Override via ``SOVYX_TUNING__VOICE__APO_DETECTOR_DUAL_EMIT_ENABLED=false``."""
+
     # ── Mission MISSION-voice-linux-silent-mic-remediation-2026-05-04
     # §Phase 2 T2.6 — runtime hot failover after endpoint quarantine.
     #

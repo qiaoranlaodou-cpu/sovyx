@@ -98,6 +98,32 @@ jobs:
           uv run python scripts/dev/check_llm_provider_discipline.py
           echo "✓ LLM provider wire-discipline verified (Mission C6 §T1.4 STRICT)"
 
+      - name: Verify platform-neutral event-name discipline
+        # Mission H2 §T1.5 — REPORT post-build gate during the staged-adoption
+        # window (Phase 1.A v0.49.6..Phase 1.D v0.49.9). Runs the AST scanner
+        # against the repo tree (wheel-internal verify is N/A — event-name
+        # discipline is always evaluated against the canonical source). The
+        # scanner walks every `*.py` under `src/sovyx/` and reports
+        # `logger.{info,warning,error,debug,critical}(...)` emits whose
+        # event-name literal embeds a platform-specific token (apo, wasapi,
+        # dsound, pulseaudio, pipewire, coreaudio, wmme, directshow,
+        # voice_clarity, module_echo_cancel, voice_isolation) outside the
+        # four permitted escape hatches: (a) sys.platform gate, (b)
+        # platform-suffixed dotted-namespace, (c) inline `# h2-allowlist:`
+        # comment, (d) file-level allowlist for the dual-emission wrapper.
+        # Closes the canonical instance of CLAUDE.md anti-pattern #39(b)
+        # revealed by the v0.43.1 forensic audit §H2. The post-build verify
+        # is REPORT-only during v0.49.x staged adoption (matches Gate 13's
+        # LENIENT shape in verify_gates.sh; surfaces the pre-mission baseline
+        # of 31 violations without failing publish). Phase 3 v0.51.0 swaps
+        # to `--strict` here AND in verify_gates.sh; legacy event-name
+        # emissions dropped + remaining sites carry `# h2-allowlist:` comments
+        # per anti-pattern #45 escape hatch (c).
+        run: |
+          set -euo pipefail
+          uv run python scripts/dev/check_platform_neutral_event_names.py
+          echo "✓ Platform-neutral event-name discipline reported (Mission H2 §T1.5)"
+
       - name: Upload dist artifacts
         uses: actions/upload-artifact@v4
         with:

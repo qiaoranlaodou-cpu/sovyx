@@ -30,13 +30,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 REPO_ROOT = Path(__file__).resolve().parents[2]
 PRIVATE_KEY_PATH = REPO_ROOT / ".signing-keys" / "sovyx_calibration_v1.priv"
 PUBLIC_KEY_PATH = (
-    REPO_ROOT
-    / "src"
-    / "sovyx"
-    / "voice"
-    / "calibration"
-    / "_trusted_keys"
-    / "v1.pub"
+    REPO_ROOT / "src" / "sovyx" / "voice" / "calibration" / "_trusted_keys" / "v1.pub"
 )
 
 

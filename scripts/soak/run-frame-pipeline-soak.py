@@ -123,9 +123,7 @@ async def soak(hours: float, *, turn_interval_s: float = 5.0) -> int:
             history = pipeline._state_machine.frame_history()
             end_frames = sum(1 for f in history if isinstance(f, EndFrame))
             barge_frames = sum(1 for f in history if isinstance(f, BargeInInterruptionFrame))
-            growth_pct = (
-                (rss - baseline_rss) / baseline_rss * 100 if baseline_rss > 0 else 0.0
-            )
+            growth_pct = (rss - baseline_rss) / baseline_rss * 100 if baseline_rss > 0 else 0.0
             print(  # noqa: T201
                 f"[soak] turn={turn_id} ring_size={len(history)} "
                 f"end_frames={end_frames} barge_frames={barge_frames} "
@@ -133,8 +131,7 @@ async def soak(hours: float, *, turn_interval_s: float = 5.0) -> int:
             )
             if growth_pct > 10.0:
                 print(  # noqa: T201
-                    f"[soak] FAIL: RSS grew {growth_pct:.1f}% from baseline "
-                    f"{baseline_rss:.1f}MB",
+                    f"[soak] FAIL: RSS grew {growth_pct:.1f}% from baseline {baseline_rss:.1f}MB",
                 )
                 return 1
             last_report = now

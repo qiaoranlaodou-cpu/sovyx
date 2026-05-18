@@ -2,6 +2,20 @@
 
 from __future__ import annotations
 
+from sovyx.voice._event_names import (
+    CAPTURE_INTEGRITY_EVENT_NAMES,
+    LEGACY_EVENT_NAMES,
+    LEGACY_TWIN_MAP,
+    CaptureIntegrityEvent,
+)
+from sovyx.voice._platform_metadata import (
+    PlatformAudioFamily,
+    PlatformToken,
+    current_platform_token,
+    is_mixed_platform_strategy_list,
+    resolve_family_from_strategies,
+    resolve_family_from_strategy_name,
+)
 from sovyx.voice.audio import (
     AudioCapture,
     AudioCaptureConfig,
@@ -82,6 +96,16 @@ from sovyx.voice.wyoming import (
 )
 
 __all__ = [
+    "CAPTURE_INTEGRITY_EVENT_NAMES",
+    "LEGACY_EVENT_NAMES",
+    "LEGACY_TWIN_MAP",
+    "CaptureIntegrityEvent",
+    "PlatformAudioFamily",
+    "PlatformToken",
+    "current_platform_token",
+    "is_mixed_platform_strategy_list",
+    "resolve_family_from_strategies",
+    "resolve_family_from_strategy_name",
     "AudioCapture",
     "HardwareProfile",
     "HardwareTier",

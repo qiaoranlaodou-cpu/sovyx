@@ -28,13 +28,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-OUT_DIR = (
-    Path(__file__).resolve().parent.parent
-    / "src"
-    / "sovyx"
-    / "observability"
-    / "log_schema"
-)
+OUT_DIR = Path(__file__).resolve().parent.parent / "src" / "sovyx" / "observability" / "log_schema"
 
 # JSON-Schema Draft 2020-12 fragment — envelope fields injected by
 # EnvelopeProcessor. Every event schema embeds these as ``required``.
@@ -512,17 +506,19 @@ def _attr_name_for(field: str) -> str:
     return field.replace(".", "_")
 
 
-def build_models_module(events: dict[str, tuple[str, dict[str, tuple[dict[str, Any], bool]]]]) -> str:
+def build_models_module(
+    events: dict[str, tuple[str, dict[str, tuple[dict[str, Any], bool]]]],
+) -> str:
     """Emit the generated ``_models.py`` source as a single string."""
     classes: list[str] = []
     registry_lines: list[str] = []
 
     for event, (description, payload) in events.items():
         cls_name = _class_name_for(event)
-        registry_lines.append(f'    {cls_name}.event_name: {cls_name},')
+        registry_lines.append(f"    {cls_name}.event_name: {cls_name},")
 
         body: list[str] = [
-            f'class {cls_name}(LogEvent):',
+            f"class {cls_name}(LogEvent):",
             f'    """{description}"""',
             "",
             f'    event_name: ClassVar[str] = "{event}"',
@@ -571,16 +567,16 @@ from sovyx.observability.schema import LogEvent
     all_block = "__all__ = [\n" + "\n".join(all_lines) + "\n]\n"
 
     registry_block = (
-        "EVENT_REGISTRY: dict[str, type[LogEvent]] = {\n"
-        + "\n".join(registry_lines)
-        + "\n}\n"
+        "EVENT_REGISTRY: dict[str, type[LogEvent]] = {\n" + "\n".join(registry_lines) + "\n}\n"
     )
 
     parts = [header, all_block, "", "\n\n\n".join(classes), "", registry_block]
     return "\n".join(parts)
 
 
-def build_schema(event: str, description: str, payload: dict[str, tuple[dict[str, Any], bool]]) -> dict[str, Any]:
+def build_schema(
+    event: str, description: str, payload: dict[str, tuple[dict[str, Any], bool]]
+) -> dict[str, Any]:
     properties: dict[str, Any] = dict(ENVELOPE_PROPERTIES)
     properties["event"] = {"const": event}
     required = list(ENVELOPE_REQUIRED)
@@ -627,13 +623,13 @@ def _docs_table_rows(
         optional = sorted(field for field, (_, is_req) in payload.items() if not is_req)
         required_cell = ", ".join(f"`{name}`" for name in required) or "—"
         optional_cell = ", ".join(f"`{name}`" for name in optional) or "—"
-        lines.append(
-            f"| `{event}` | {description} | {required_cell} | {optional_cell} |"
-        )
+        lines.append(f"| `{event}` | {description} | {required_cell} | {optional_cell} |")
     return "\n".join(lines)
 
 
-def render_docs_table(events: dict[str, tuple[str, dict[str, tuple[dict[str, Any], bool]]]]) -> str:
+def render_docs_table(
+    events: dict[str, tuple[str, dict[str, tuple[dict[str, Any], bool]]]],
+) -> str:
     """Return the full auto-generated block (markers included)."""
     return "\n".join(
         [

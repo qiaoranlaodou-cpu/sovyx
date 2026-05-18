@@ -52,12 +52,12 @@ _SCAN_ROOT = _REPO_ROOT / "src" / "sovyx"
 # operator-actionable composite-banner reasons.
 _DEGRADED_PATTERN = re.compile(
     r"("
-    r".*[\._]degraded.*"              # voice.windows.audio_service_degraded /
-                                       # voice.something_degraded — match a degraded
-                                       # token preceded by ``.`` or ``_``.
-    r"|no_.*_provider.*"              # no_llm_provider_detected, no_X_provider_*
-    r"|.*language_coerced.*"          # stt_language_coerced + future variants
-    r"|.*language_unsupported.*"      # stt_language_unsupported pre-coerce
+    r".*[\._]degraded.*"  # voice.windows.audio_service_degraded /
+    # voice.something_degraded — match a degraded
+    # token preceded by ``.`` or ``_``.
+    r"|no_.*_provider.*"  # no_llm_provider_detected, no_X_provider_*
+    r"|.*language_coerced.*"  # stt_language_coerced + future variants
+    r"|.*language_unsupported.*"  # stt_language_unsupported pre-coerce
     r")",
     re.IGNORECASE,
 )

@@ -45,7 +45,7 @@ else
 fi
 
 GATE_NUM=0
-GATE_TOTAL=12
+GATE_TOTAL=13
 FAILURES=()
 
 ok() {
@@ -277,6 +277,31 @@ else
     # Non-zero exit — LENIENT phase, warn only; do NOT fail verify_gates.sh.
     # Phase 3 v0.50.0 STRICT promotion will replace this branch with `bad ...`.
     printf '%s⚠%s gate %d/%d — llm provider discipline LENIENT warn (Phase 1.A v0.49.0; STRICT at v0.50.0); log: %s\n' \
+        "$YELLOW" "$RESET" "$GATE_NUM" "$GATE_TOTAL" "$LOG"
+fi
+
+# ── Gate 13: platform-neutral event names (Mission H2 §T1.5) ─────────
+# Mission H2 Phase 1.A LENIENT — warn-only locally; STRICT in publish.yml's
+# post-build verify (Mission H2 §T1.5). Phase 3 v0.51.0 promotes this to
+# STRICT in verify_gates.sh as well, per ADR-D13. Pre-mission baseline:
+# 31 violations across `_bypass_coordinator_mixin.py` (Phase 1.B target),
+# `factory/_diagnostics.py` + `_apo_detector_linux.py` (Phase 1.D target),
+# `_apo_detector.py` + `health/watchdog.py` (deferred to future cohort).
+GATE_NUM=13
+LOG="$LOG_DIR/13-platform-neutral-event-names.log"
+if uv run python scripts/dev/check_platform_neutral_event_names.py >"$LOG" 2>&1; then
+    if grep -q "discipline: PASS" "$LOG"; then
+        ok "platform-neutral event names — PASS"
+    else
+        # exit 0 but violations present (LENIENT report-only) — surface as warn
+        VIOLATIONS=$(grep -oE "[0-9]+ violation\(s\)" "$LOG" | head -1 || echo "0 violations")
+        printf '%s⚠%s gate %d/%d — platform-neutral event names LENIENT warn: %s (Mission H2 v0.49.6; STRICT at v0.51.0); log: %s\n' \
+            "$YELLOW" "$RESET" "$GATE_NUM" "$GATE_TOTAL" "$VIOLATIONS" "$LOG"
+    fi
+else
+    # Non-zero exit — LENIENT phase, warn only; do NOT fail verify_gates.sh.
+    # Phase 3 v0.51.0 STRICT promotion will replace this branch with `bad ...`.
+    printf '%s⚠%s gate %d/%d — platform-neutral event names LENIENT warn (Mission H2 v0.49.6; STRICT at v0.51.0); log: %s\n' \
         "$YELLOW" "$RESET" "$GATE_NUM" "$GATE_TOTAL" "$LOG"
 fi
 
