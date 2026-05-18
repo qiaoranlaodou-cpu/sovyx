@@ -674,9 +674,20 @@ export const VoiceCatalogResponseSchema = z.object({
   recommended_per_language: z.record(z.string(), z.string()),
 });
 
-// ── Voice capture APO diagnostics ──
+// ── Voice capture integrity diagnostics ──
+//
+// Mission H2 §T3.1 — `CaptureIntegrityEndpointSchema` is the canonical
+// neutral name; `CaptureApoEndpointSchema` is preserved as a backwards-
+// compatible alias through v0.51.0 STRICT per anti-pattern #20 cross-
+// file migration discipline. Three optional+nullable v2.0.0 schema
+// metadata fields (anti-pattern #29 frame-typed-observability optional
+// for one minor cycle) carry the platform fields from the wrapper's
+// `voice.capture_integrity.bypass*` emissions when populated:
+//   * voice.platform       — Literal "linux" | "windows" | "darwin" | "other"
+//   * voice.bypass_family  — open string (PlatformAudioFamily.value)
+//   * voice.event_schema_version — Literal "2.0.0"
 
-export const CaptureApoEndpointSchema = z.object({
+export const CaptureIntegrityEndpointSchema = z.object({
   endpoint_id: z.string(),
   endpoint_name: z.string(),
   enumerator: z.string(),
@@ -685,7 +696,20 @@ export const CaptureApoEndpointSchema = z.object({
   raw_clsids: z.array(z.string()),
   voice_clarity_active: z.boolean(),
   is_active_device: z.boolean(),
+  // Mission H2 v0.49.8 platform metadata — optional+nullable while
+  // ADR-D14 dual-emission window is open; required at v0.51.0 STRICT.
+  "voice.platform": z
+    .enum(["linux", "windows", "darwin", "other"])
+    .nullable()
+    .optional(),
+  "voice.bypass_family": z.string().nullable().optional(),
+  "voice.event_schema_version": z.literal("2.0.0").nullable().optional(),
 });
+
+// Legacy export alias — preserved through v0.51.0 STRICT per
+// anti-pattern #20 cross-file migration discipline. Downstream
+// consumers that pinned on the legacy name continue to compile.
+export const CaptureApoEndpointSchema = CaptureIntegrityEndpointSchema;
 
 export const CaptureDiagnosticsResponseSchema = z.object({
   platform_supported: z.boolean(),

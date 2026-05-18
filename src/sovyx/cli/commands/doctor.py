@@ -2355,14 +2355,21 @@ def _run_cascade(*, output_json: bool) -> int:
 
 
 @doctor_app.command("voice_capture_apo")
-def doctor_voice_capture_apo(
+@doctor_app.command("voice_capture_integrity")
+def doctor_voice_capture_integrity(
     output_json: bool = typer.Option(
         False,
         "--json",
         help="Emit the DiagnosticResult as a single JSON object on stdout.",
     ),
 ) -> None:
-    """Scan Windows capture-APO chain for Voice Clarity (subcommand wire-up).
+    """Scan capture-chain integrity (Windows Voice Clarity APO + cross-platform).
+
+    Mission H2 §T3.7 — renamed from ``voice_capture_apo`` to
+    ``voice_capture_integrity``; the legacy ``voice_capture_apo``
+    subcommand alias is preserved through v0.51.0 STRICT per ADR-D14
+    so operator docs + bash diag scripts grepping the legacy name
+    continue to resolve.
 
     Phase 5.C v0.32.6 — surfaces the existing
     :func:`sovyx.upgrade.doctor._check_voice_capture_apo` check as a
@@ -2371,15 +2378,17 @@ def doctor_voice_capture_apo(
     ``modules/voice.md``) and the bundled bash diag script
     (``voice/diagnostics/_bash/lib/G_sovyx.sh``) have referenced this
     subcommand syntax since v0.21.1; the underlying check existed but
-    no Typer wire-up was ever added. This command closes that gap.
+    no Typer wire-up was ever added.
 
     Same backing function as the ``voice_capture_apo`` row in the
     default ``sovyx doctor`` output — running this subcommand directly
-    skips the other 11 checks and prints just the APO result.
+    skips the other 11 checks and prints just the result.
 
     Always exits ``0`` on non-Windows platforms (the check returns
     ``PASS`` with a "skipped" message — capture APOs are a Windows-only
-    failure mode). On Windows, exit code reflects the severity:
+    failure mode; Linux + macOS capture-chain integrity surfaces
+    through the voice pipeline's bypass coordinator at runtime). On
+    Windows, exit code reflects the severity:
 
     * ``0`` — ``PASS`` (no Voice Clarity APO active OR bypass armed)
     * ``1`` — ``WARN`` (Voice Clarity APO active without armed bypass,
@@ -2421,7 +2430,14 @@ def doctor_voice_capture_apo(
                     if isinstance(ep, dict):
                         name = ep.get("endpoint_name") or ep.get("endpoint_id") or "?"
                         active = ep.get("voice_clarity_active", False)
-                        marker = "⚠ APO active" if active else "✓ clean"
+                        # Mission H2 §T3.7 — render platform-neutral
+                        # marker on non-Windows; on Windows the
+                        # "APO active" verbiage is canonical (Voice
+                        # Clarity IS APO).
+                        if sys.platform == "win32":
+                            marker = "⚠ APO active" if active else "✓ clean"
+                        else:
+                            marker = "⚠ capture-chain processing active" if active else "✓ clean"
                         console.print(f"    - {name!s} ({marker})")
             bypass_status = result.details.get("bypass_status")
             if isinstance(bypass_status, list) and bypass_status:
@@ -2433,6 +2449,12 @@ def doctor_voice_capture_apo(
                         console.print(f"    - {name}: {'ON' if enabled else 'off'}")
 
     raise typer.Exit(0 if result.status == DiagnosticStatus.PASS else 1)
+
+
+# Mission H2 §T3.7 — legacy function name preserved for backwards-compat
+# tests that imported it. The decorator stack above registers both
+# subcommand names; this alias preserves import-path stability.
+doctor_voice_capture_apo = doctor_voice_capture_integrity
 
 
 @doctor_app.command("piper_locale_match")

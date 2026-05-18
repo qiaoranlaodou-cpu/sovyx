@@ -822,6 +822,34 @@
         "body": "All {{candidates_tried}} alternative audio devices failed. Reconnect your USB microphone or restart Sovyx.",
         "viewHistory": "View failover history",
         "reconnectUsb": "Reconnect USB"
+      },
+      "captureIntegrity": {
+        "bypassActivated": {
+          "title": "Capture-chain bypass activated",
+          "body": "Sovyx switched the microphone capture stream out of the {{platform}} capture chain ({{family}}) to recover signal integrity.",
+          "viewHistory": "View bypass history"
+        },
+        "bypassIneffective": {
+          "title": "Capture-chain bypass exhausted",
+          "body": "Sovyx tried every {{platform}} capture-chain bypass strategy ({{family}}) but the signal is still dead. Run `sovyx doctor voice` or reconnect the microphone.",
+          "runDoctor": "Run sovyx doctor voice",
+          "reconnectMic": "Reconnect microphone"
+        },
+        "bypassFailed": {
+          "title": "Capture-chain bypass error",
+          "body": "The bypass coordinator callback raised. Inspect recent logs for the upstream error.",
+          "viewLogs": "View recent logs"
+        },
+        "bypassed": {
+          "title": "Capture-chain bypass attempted",
+          "body": "Bypass dispatch on {{platform}} ({{family}}) verdict: {{verdict}}."
+        },
+        "platform": {
+          "linux": "Linux",
+          "windows": "Windows",
+          "darwin": "macOS",
+          "other": "Unknown platform"
+        }
       }
     },
     "llm": {

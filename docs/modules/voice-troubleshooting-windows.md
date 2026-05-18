@@ -216,7 +216,7 @@ compatibility); v0.25.0 wire-up populates the real payload.
 | `voice.bypass.tier2_host_api_rotate_outcome{verdict=rotated_then_exclusive_engaged}` | Tier 2 succeeded | (none — success) |
 | `voice.opener.host_api_alignment{aligned=false}` | Opener drifted off cascade winner's host_api (Furo W-4 trigger) | `cascade_host_api_alignment_enabled=true` |
 | `voice.hotplug.listener.registered` | IMMNotificationClient registration succeeded | (none — success) |
-| `voice_apo_bypass_ineffective` | All tiers exhausted; pipeline degraded | Hot-plug the device or change the mic |
+| `voice_apo_bypass_ineffective` (legacy) / `voice.capture_integrity.bypass_ineffective` (Mission H2 v0.49.7 neutral sibling — same payload + `voice.platform` + `voice.bypass_family` metadata) | All tiers exhausted; pipeline degraded | Hot-plug the device or change the mic |
 
 ## Rolling back
 
