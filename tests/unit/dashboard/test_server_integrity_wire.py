@@ -246,27 +246,40 @@ class TestRecordDashboardBundleIncomplete:
         assert len(entry.metadata["missing_sample"]) == 5
         assert entry.metadata["verdict"] == "partial"
 
-    def test_dual_emission_warn_event_name(
-        self,
-        tmp_path: Path,
-        capsys: pytest.CaptureFixture[str],
-    ) -> None:
+    def test_dual_emission_warn_event_name(self, tmp_path: Path) -> None:
         """ADR-D14 LENIENT: the producer emits the new
         ``dashboard.distribution.bundle_partial`` / ``bundle_missing``
         WARN event alongside the composite-store record. The legacy
         ``dashboard_static_missing`` is emitted from ``create_app()``
         only (not from this helper).
 
-        Sovyx uses structlog which doesn't propagate to stdlib logging
-        by default — so we assert via captured stdout / stderr rather
-        than ``caplog``.
+        Sovyx uses structlog whose stdout-emit configuration depends on
+        prior process state — captured stdout is unreliable in the full
+        pytest suite. We mock the logger directly to assert the WARN
+        was invoked with the expected event name.
         """
         report = _make_partial_report(tmp_path)
-        _record_dashboard_bundle_incomplete(report, severity="error", tuning=None)
-        captured = capsys.readouterr()
-        combined = captured.out + captured.err
-        assert "dashboard.distribution.bundle_partial" in combined, (
-            f"expected bundle_partial WARN in captured output; got {combined!r}"
+        with patch("sovyx.dashboard.server.logger") as mock_logger:
+            _record_dashboard_bundle_incomplete(report, severity="error", tuning=None)
+        # The producer fires exactly one WARN with the dashboard.distribution.
+        # bundle_partial event name when verdict is PARTIAL.
+        assert mock_logger.warning.called, "expected logger.warning to be called"
+        warning_calls = mock_logger.warning.call_args_list
+        event_names = [call.args[0] for call in warning_calls if call.args]
+        assert "dashboard.distribution.bundle_partial" in event_names, (
+            f"expected bundle_partial WARN; got event_names={event_names!r}"
+        )
+
+    def test_missing_emits_bundle_missing_warn(self, tmp_path: Path) -> None:
+        """Missing-bundle variants emit ``bundle_missing`` event name
+        (not ``bundle_partial``) — verdict-discriminated WARN routing."""
+        report = _make_missing_report(tmp_path, verdict=BundleVerdict.STATIC_DIR_MISSING)
+        with patch("sovyx.dashboard.server.logger") as mock_logger:
+            _record_dashboard_bundle_incomplete(report, severity="critical", tuning=None)
+        warning_calls = mock_logger.warning.call_args_list
+        event_names = [call.args[0] for call in warning_calls if call.args]
+        assert "dashboard.distribution.bundle_missing" in event_names, (
+            f"expected bundle_missing WARN; got event_names={event_names!r}"
         )
 
 
