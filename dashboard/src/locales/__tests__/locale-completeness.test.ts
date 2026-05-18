@@ -86,4 +86,26 @@ describe("Locale completeness — voice namespace", () => {
       expect(es.has(key), `ES missing ${key}`).toBe(true);
     }
   });
+
+  it("Mission C5 §T3.6 — all degraded.dashboard.* keys present in 3 locales", () => {
+    const en = pathSet(enVoice as AnyJson);
+    const pt = pathSet(ptVoice as AnyJson);
+    const es = pathSet(esVoice as AnyJson);
+
+    const requiredKeys = [
+      "degraded.dashboard.bundle_partial.title",
+      "degraded.dashboard.bundle_partial.partial.body",
+      "degraded.dashboard.bundle_missing.title",
+      "degraded.dashboard.bundle_missing.index_html_missing.body",
+      "degraded.dashboard.bundle_missing.static_dir_missing.body",
+      "degraded.dashboard.bundle_missing.legacy_index_html_no_assets.body",
+      "degraded.dashboard.reinstall",
+      "degraded.dashboard.runDoctor",
+    ];
+    for (const key of requiredKeys) {
+      expect(en.has(key), `EN missing ${key}`).toBe(true);
+      expect(pt.has(key), `pt-BR missing ${key}`).toBe(true);
+      expect(es.has(key), `ES missing ${key}`).toBe(true);
+    }
+  });
 });

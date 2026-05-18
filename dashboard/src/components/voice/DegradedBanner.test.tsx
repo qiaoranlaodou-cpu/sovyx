@@ -148,4 +148,96 @@ describe("DegradedBanner", () => {
     fireEvent.click(ack);
     expect(onAck).toHaveBeenCalledWith(3600);
   });
+
+  // ── Mission C5 §T3.2 — dashboard axis renders through the banner ──
+
+  const _dashboardPartialAxis = (): EngineDegradedPayload["axes"][number] => ({
+    axis: "dashboard",
+    reason: "bundle_partial",
+    severity: "error",
+    title_token: "degraded.dashboard.bundle_partial.title",
+    body_token: "degraded.dashboard.bundle_partial.partial.body",
+    action_chips: [
+      {
+        label_token: "degraded.dashboard.reinstall",
+        action: "external_link",
+        target: "https://sovyx.dev/docs/install/troubleshooting#reinstall",
+        style: "primary",
+      },
+      {
+        label_token: "degraded.dashboard.runDoctor",
+        action: "external_link",
+        target: "https://sovyx.dev/docs/cli/doctor#dashboard",
+        style: "default",
+      },
+    ],
+    metadata: {
+      verdict: "partial",
+      missing_count: 3,
+      missing_sample: ["assets/dashboard-BLNxX04a.js"],
+    },
+    first_observed_monotonic: 1.5,
+    last_observed_monotonic: 1.5,
+    occurrence_count: 1,
+  });
+
+  const _dashboardMissingAxis = (
+    verdict: "index_html_missing" | "static_dir_missing" | "legacy_index_html_no_assets",
+  ): EngineDegradedPayload["axes"][number] => ({
+    axis: "dashboard",
+    reason: "bundle_missing",
+    severity: "critical",
+    title_token: "degraded.dashboard.bundle_missing.title",
+    body_token: `degraded.dashboard.bundle_missing.${verdict}.body`,
+    action_chips: [
+      {
+        label_token: "degraded.dashboard.reinstall",
+        action: "external_link",
+        target: "https://sovyx.dev/docs/install/troubleshooting#reinstall",
+        style: "primary",
+      },
+    ],
+    metadata: { verdict, missing_count: 0, missing_sample: [] },
+    first_observed_monotonic: 2.0,
+    last_observed_monotonic: 2.0,
+    occurrence_count: 1,
+  });
+
+  it("Mission C5 §T3.2 — dashboard bundle_partial axis renders with error palette + reinstall chip", () => {
+    renderBanner(_payload([_dashboardPartialAxis()], "error"));
+    const banner = screen.getByTestId("degraded-banner");
+    expect(banner.getAttribute("data-severity")).toBe("error");
+    // Both action chips render and survive i18n token resolution.
+    expect(screen.getByTestId("degraded-chip-bundle_partial-0")).toBeTruthy();
+    expect(screen.getByTestId("degraded-chip-bundle_partial-1")).toBeTruthy();
+  });
+
+  it("Mission C5 §T3.2 — dashboard bundle_missing axis renders with critical palette + pulse", () => {
+    renderBanner(_payload([_dashboardMissingAxis("static_dir_missing")], "critical"));
+    const banner = screen.getByTestId("degraded-banner");
+    expect(banner.getAttribute("data-severity")).toBe("critical");
+    expect(banner.className).toContain("animate-pulse");
+  });
+
+  it("Mission C5 §T3.2 — dashboard axis chip click opens reinstall docs URL in new tab", () => {
+    const openSpy = vi.spyOn(window, "open").mockImplementation(() => null);
+    renderBanner(_payload([_dashboardPartialAxis()], "error"));
+    fireEvent.click(screen.getByTestId("degraded-chip-bundle_partial-0"));
+    expect(openSpy).toHaveBeenCalledWith(
+      "https://sovyx.dev/docs/install/troubleshooting#reinstall",
+      "_blank",
+      "noopener,noreferrer",
+    );
+  });
+
+  it("Mission C5 §1.4 — dashboard axis composites with voice axis at error severity", () => {
+    renderBanner(
+      _payload([_voiceAxis(), _dashboardPartialAxis()], "error"),
+    );
+    const banner = screen.getByTestId("degraded-banner");
+    expect(banner.getAttribute("data-severity")).toBe("error");
+    // Both axis chips render.
+    expect(screen.getByTestId("degraded-chip-failover_ladder_exhausted-0")).toBeTruthy();
+    expect(screen.getByTestId("degraded-chip-bundle_partial-0")).toBeTruthy();
+  });
 });

@@ -49,7 +49,7 @@ Every response carries `X-Request-Id`. Include it when reporting bugs.
 | GET    | `/api/status`             | Daemon version, uptime, and mind summary.                |
 | GET    | `/api/stats/history`      | Time-series of engine stats for dashboard charts.        |
 | GET    | `/api/health`             | Aggregate health of registered subsystems.               |
-| GET    | `/api/engine/degraded`    | Composite cross-axis degraded snapshot (voice + LLM + STT + future axes) with per-axis severity / title token / body token / action chips. Severity escalation: 1 axis=`warn`, 2=`error`, 3+=`critical`. Mission C4 §T1.6. |
+| GET    | `/api/engine/degraded`    | Composite cross-axis degraded snapshot (voice + LLM + STT + dashboard + future axes) with per-axis severity / title token / body token / action chips. Severity escalation: 1 axis=`warn`, 2=`error`, 3+=`critical`. Mission C4 §T1.6 + Mission C5 §T2.3 (dashboard axis). |
 | GET    | `/metrics`                | Prometheus exposition (no auth — bind to loopback only). |
 
 ### Conversations
@@ -323,6 +323,74 @@ dropped reports return `{"ok": true, "dropped": true}`.
 Any unmatched `GET /{path}` returns `index.html` from the bundled static
 dashboard so that client-side routing works under deep links. API paths
 beginning with `/api/` or `/ws` bypass the fallback.
+
+---
+
+## `/api/engine/degraded` — composite axis taxonomy
+
+The composite endpoint surfaces every operator-actionable degraded
+subsystem in a single payload. Severity escalates by distinct axis count
+(1 = `warn`, 2 = `error`, 3+ = `critical`). Each axis entry carries an
+i18n `title_token` + `body_token`, an `action_chips` array of
+operator-actionable next steps, and a free-form `metadata` map for
+axis-specific context. The schema is forward-additive (Pydantic
+`extra="allow"` + zod `.passthrough()`) — new axes ship without a
+route migration.
+
+| `axis` | `reason` values | Severity | Producer | Mission |
+|---|---|---|---|---|
+| `voice` | `failover_ladder_exhausted` | `error` | `voice/health/_runtime_failover.py` on `voice.failover.ladder_complete{verdict=exhausted}` | C3 §T1.3 + C4 §T1.4 |
+| `llm`   | `no_llm_provider` | `error` | `engine/bootstrap.py:735` on `no_llm_provider_detected` | C4 §T1.2 |
+| `stt`   | `stt_language_coerced` | `warn` | `voice/factory/_validate.py:542` on `voice.factory.stt_language_unsupported` | C4 §T1.3 |
+| `dashboard` | `bundle_partial` \| `bundle_missing` | `error` (partial) \| `critical` (missing) | `dashboard/server.py::create_app()` four-state classifier + `_IntegrityAwareStaticFiles` reactive on-404 arm | C5 §T2.1 / §T2.2 |
+
+### `axis="dashboard"` (Mission C5)
+
+The dashboard axis surfaces failures in the SPA bundle integrity layer
+— the wheel-baked static assets needed for the browser UI to render.
+
+`reason="bundle_partial"` (severity `error`):
+
+The integrity scanner found `index.html` plus at least one referenced
+chunk, but not ALL referenced chunks, on disk. The SPA may still render
+some routes; the operator's install is corrupted. `body_token` resolves
+to `degraded.dashboard.bundle_partial.partial.body`.
+
+`reason="bundle_missing"` (severity `critical`):
+
+Either `index.html`, the entire `static/` directory, or the `assets/`
+directory is absent. The SPA cannot render at all. The `body_token`
+resolves to one of three verdict-discriminated strings:
+
+* `degraded.dashboard.bundle_missing.index_html_missing.body`
+* `degraded.dashboard.bundle_missing.static_dir_missing.body`
+* `degraded.dashboard.bundle_missing.legacy_index_html_no_assets.body`
+
+The exact verdict is also carried as `metadata.verdict` for tooling
+discrimination.
+
+#### `metadata` fields (dashboard axis)
+
+| Field | Type | Description |
+|---|---|---|
+| `verdict` | string | One of `partial` / `index_html_missing` / `static_dir_missing` / `legacy_index_html_no_assets` |
+| `missing_count` | int | Number of referenced chunks absent on disk |
+| `missing_sample` | string[] | First 5 missing-asset paths (POSIX-relative to `static/`) |
+| `static_dir` | string | Absolute path of the scanned static directory |
+| `scan_duration_ms` | float | Wall-clock scan duration in milliseconds |
+
+#### `action_chips` (dashboard axis)
+
+Two operator-action chips emitted by the producer:
+
+| `label_token` | `action` | `target` (default — override via `SOVYX_TUNING__DASHBOARD__INTEGRITY_ACTION_CHIP_*_URL`) |
+|---|---|---|
+| `degraded.dashboard.reinstall` | `external_link` | `https://sovyx.dev/docs/install/troubleshooting#reinstall` |
+| `degraded.dashboard.runDoctor` | `external_link` | `https://sovyx.dev/docs/cli/doctor#dashboard` |
+
+See [`docs/modules/dashboard-distribution-integrity.md`](modules/dashboard-distribution-integrity.md)
+for the full triage workflow, the related `dashboard.distribution.*`
+OpenTelemetry events, and the tuning-knob reference.
 
 ---
 
