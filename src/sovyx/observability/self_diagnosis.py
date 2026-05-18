@@ -231,15 +231,21 @@ async def _emit_apo_scan() -> None:
         for r in reports
     ]
     voice_clarity_any = any(r.voice_clarity_active for r in reports)
+    # Mission H2 §T4.3 — dual-emit neutral sibling of startup.audio.apo_scan.
+    # The legacy event preserved through v0.51.0 STRICT per ADR-D14;
+    # the neutral name carries the same payload + v2.0.0 schema marker.
+    _self_diag_payload = {
+        "audio.platform": sys.platform,
+        "audio.endpoint_count": len(endpoints),
+        "audio.endpoints": endpoints,
+        "audio.voice_clarity_detected": voice_clarity_any,
+    }
     logger.info(
-        "startup.audio.apo_scan",
-        **{
-            "audio.platform": sys.platform,
-            "audio.endpoint_count": len(endpoints),
-            "audio.endpoints": endpoints,
-            "audio.voice_clarity_detected": voice_clarity_any,
-        },
+        "startup.audio.capture_chain_scan",
+        **{**_self_diag_payload, "voice.event_schema_version": "2.0.0"},
     )
+    # h2-allowlist: dual-emission per ADR-D14
+    logger.info("startup.audio.apo_scan", **_self_diag_payload)
 
 
 async def _emit_network(config: EngineConfig) -> None:

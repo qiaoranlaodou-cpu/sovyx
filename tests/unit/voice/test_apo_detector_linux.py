@@ -475,6 +475,9 @@ class TestFactoryEmitsLinuxApoDetectionEvent:
         assert self._has_event(caplog, "voice_linux_apo_detected")
         assert self._has_event(caplog, "audio.apo.scan.linux")
         assert self._has_event(caplog, "audio.apo.echo_cancel_detected")
+        # Mission H2 §T4.4 — neutral sibling events fire alongside legacy.
+        assert self._has_event(caplog, "audio.capture_chain.scan.linux")
+        assert self._has_event(caplog, "audio.capture_chain.echo_cancel_detected")
 
     def test_emits_scan_event_even_when_empty(
         self,
@@ -504,6 +507,9 @@ class TestFactoryEmitsLinuxApoDetectionEvent:
         assert not self._has_event(caplog, "voice_linux_apo_detected")
         assert self._has_event(caplog, "audio.apo.scan.linux")
         assert self._has_event(caplog, "audio.apo.echo_cancel_detected")
+        # Mission H2 §T4.4 — neutral siblings also fire on zero-hit path.
+        assert self._has_event(caplog, "audio.capture_chain.scan.linux")
+        assert self._has_event(caplog, "audio.capture_chain.echo_cancel_detected")
 
     def test_noop_on_non_linux(
         self,

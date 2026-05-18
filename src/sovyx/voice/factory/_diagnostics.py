@@ -573,29 +573,41 @@ def _emit_capture_apo_detection(*, resolved_name: str | None) -> None:
     # detail is folded into voice.endpoints so the timeline can render
     # the full chain without a follow-up RPC.
     voice_clarity_global = any(rep.voice_clarity_active for rep in reports)
+    # Mission H2 §T4.2 — neutral dual-emission. The legacy ``audio.apo.scan``
+    # event continues firing through v0.51.0 STRICT per ADR-D14; the new
+    # ``audio.capture_chain.scan`` carries identical payload + the v2.0.0
+    # schema marker so cross-platform consumers (Linux operator dashboards
+    # in particular) can filter on the neutral name.
+    _scan_payload = {
+        "voice.endpoint_count": len(reports),
+        "voice.active_endpoint_id": active.endpoint_id if active else None,
+        "voice.active_endpoint_name": active.endpoint_name if active else None,
+        "voice.resolved_name": resolved_name,
+        "voice.voice_clarity_global": voice_clarity_global,
+        "voice.endpoints": [
+            {
+                "endpoint_id": rep.endpoint_id,
+                "endpoint_name": rep.endpoint_name,
+                "device_interface_name": rep.device_interface_name,
+                "enumerator": rep.enumerator,
+                "fx_binding_count": rep.fx_binding_count,
+                "known_apos": list(rep.known_apos),
+                "raw_clsids": list(rep.raw_clsids),
+                "voice_clarity_active": rep.voice_clarity_active,
+            }
+            for rep in reports
+        ],
+    }
     logger.info(
-        "audio.apo.scan",
+        "audio.capture_chain.scan",
         **{
-            "voice.endpoint_count": len(reports),
-            "voice.active_endpoint_id": active.endpoint_id if active else None,
-            "voice.active_endpoint_name": active.endpoint_name if active else None,
-            "voice.resolved_name": resolved_name,
-            "voice.voice_clarity_global": voice_clarity_global,
-            "voice.endpoints": [
-                {
-                    "endpoint_id": rep.endpoint_id,
-                    "endpoint_name": rep.endpoint_name,
-                    "device_interface_name": rep.device_interface_name,
-                    "enumerator": rep.enumerator,
-                    "fx_binding_count": rep.fx_binding_count,
-                    "known_apos": list(rep.known_apos),
-                    "raw_clsids": list(rep.raw_clsids),
-                    "voice_clarity_active": rep.voice_clarity_active,
-                }
-                for rep in reports
-            ],
+            **_scan_payload,
+            "voice.event_schema_version": "2.0.0",
         },
     )
+    # h2-allowlist: dual-emission per ADR-D14
+    logger.info("audio.apo.scan", **_scan_payload)
+    # h2-allowlist: Windows-only canonical term per Mission H2 §0 scope exclusion
     logger.info(
         "audio.apo.voice_clarity_detected",
         **{
@@ -716,22 +728,34 @@ def _emit_linux_capture_apo_detection(*, resolved_name: str | None) -> None:
         )
 
     echo_cancel_global = bool(report is not None and report.echo_cancel_active)
+    # Mission H2 §T4.1 — dual-emit neutral siblings of audio.apo.scan.linux
+    # and audio.apo.echo_cancel_detected. The Linux apo detector emits
+    # these events ONLY on Linux (`sys.platform != "linux"` early-return
+    # above at line 705) — operators on Linux see the cross-platform-
+    # neutral `audio.capture_chain.*` name alongside the legacy alias.
+    _scan_linux_payload = {
+        "voice.platform": "linux",
+        "voice.session_manager": report.session_manager if report else "unknown",
+        "voice.echo_cancel_global": echo_cancel_global,
+        "voice.resolved_name": resolved_name,
+        "voice.known_apos": list(report.known_apos) if report else [],
+        "voice.raw_entries": list(report.raw_entries) if report else [],
+    }
     logger.info(
-        "audio.apo.scan.linux",
-        **{
-            "voice.platform": "linux",
-            "voice.session_manager": report.session_manager if report else "unknown",
-            "voice.echo_cancel_global": echo_cancel_global,
-            "voice.resolved_name": resolved_name,
-            "voice.known_apos": list(report.known_apos) if report else [],
-            "voice.raw_entries": list(report.raw_entries) if report else [],
-        },
+        "audio.capture_chain.scan.linux",
+        **{**_scan_linux_payload, "voice.event_schema_version": "2.0.0"},
     )
+    # h2-allowlist: dual-emission per ADR-D14
+    logger.info("audio.apo.scan.linux", **_scan_linux_payload)
+
+    _echo_payload = {
+        "voice.detected": echo_cancel_global,
+        "voice.platform": "linux",
+        "voice.session_manager": report.session_manager if report else "unknown",
+    }
     logger.info(
-        "audio.apo.echo_cancel_detected",
-        **{
-            "voice.detected": echo_cancel_global,
-            "voice.platform": "linux",
-            "voice.session_manager": report.session_manager if report else "unknown",
-        },
+        "audio.capture_chain.echo_cancel_detected",
+        **{**_echo_payload, "voice.event_schema_version": "2.0.0"},
     )
+    # h2-allowlist: dual-emission per ADR-D14
+    logger.info("audio.apo.echo_cancel_detected", **_echo_payload)
