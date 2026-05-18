@@ -50,7 +50,11 @@
     "cloudInstructions": "Set one as environment variable and restart:",
     "localSetup": "Local (free):",
     "ollamaStep1": "Install Ollama from ollama.com",
-    "ollamaStep3": "Click \"Refresh\" below"
+    "ollamaStep3": "Click \"Refresh\" below",
+    "testConnection": "Test connection",
+    "testing": "Testing…",
+    "testFailed": "Test failed",
+    "testKeyPrompt": "Enter the {{provider}} API key to test (not stored):"
   },
   "pricing": {
     "fallbackProviderDefault": "Cost estimates use provider-default rates for this model.",

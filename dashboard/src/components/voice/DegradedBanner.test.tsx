@@ -240,4 +240,107 @@ describe("DegradedBanner", () => {
     expect(screen.getByTestId("degraded-chip-failover_ladder_exhausted-0")).toBeTruthy();
     expect(screen.getByTestId("degraded-chip-bundle_partial-0")).toBeTruthy();
   });
+
+  // ── Mission C6 §T3.3 — refined `axis="llm"` reason taxonomy ──
+  //
+  // 7 refined reason tokens replace the pre-C6 single `no_llm_provider`
+  // reason. Each refined token MUST render the banner with the right
+  // severity + action chips that match its specific verdict.
+
+  const _llmAxisWithReason = (
+    reason: string,
+    severity: "warn" | "error" | "critical",
+    chipPrefix: string,
+  ): EngineDegradedPayload["axes"][number] => ({
+    axis: "llm",
+    reason,
+    severity,
+    title_token: `degraded.llm.${chipPrefix}.title`,
+    body_token: `degraded.llm.${chipPrefix}.body`,
+    action_chips: [
+      {
+        label_token: `degraded.llm.${chipPrefix}.runDoctor`,
+        action: "external_link",
+        target: "https://sovyx.dev/docs/cli/llm-doctor",
+        style: "default",
+      },
+    ],
+    metadata: { verdict: reason, configured_count: 0, available_count: 0 },
+    first_observed_monotonic: 3.0,
+    last_observed_monotonic: 3.0,
+    occurrence_count: 1,
+  });
+
+  it("Mission C6 §T3.3 — no_provider_configured renders critical severity", () => {
+    renderBanner(
+      _payload(
+        [_llmAxisWithReason("no_provider_configured", "critical", "noProviderConfigured")],
+        "warn",
+      ),
+    );
+    const banner = screen.getByTestId("degraded-banner");
+    // Banner severity from composite_severity (single-axis = warn per ADR-D6)
+    expect(banner.getAttribute("data-severity")).toBe("warn");
+    expect(screen.getByTestId("degraded-chip-no_provider_configured-0")).toBeTruthy();
+  });
+
+  it("Mission C6 §T3.3 — ollama_unreachable renders with start-ollama chip", () => {
+    renderBanner(
+      _payload(
+        [_llmAxisWithReason("ollama_unreachable", "error", "ollamaUnreachable")],
+        "warn",
+      ),
+    );
+    expect(screen.getByTestId("degraded-chip-ollama_unreachable-0")).toBeTruthy();
+  });
+
+  it("Mission C6 §T3.3 — ollama_no_models renders warn severity", () => {
+    renderBanner(
+      _payload(
+        [_llmAxisWithReason("ollama_no_models", "warn", "ollamaNoModels")],
+        "warn",
+      ),
+    );
+    expect(screen.getByTestId("degraded-chip-ollama_no_models-0")).toBeTruthy();
+  });
+
+  it("Mission C6 §T3.3 — cloud_key_invalid renders error severity", () => {
+    renderBanner(
+      _payload(
+        [_llmAxisWithReason("cloud_key_invalid", "error", "cloudKeyInvalid")],
+        "warn",
+      ),
+    );
+    expect(screen.getByTestId("degraded-chip-cloud_key_invalid-0")).toBeTruthy();
+  });
+
+  it("Mission C6 §T3.3 — all_providers_unhealthy renders error severity", () => {
+    renderBanner(
+      _payload(
+        [_llmAxisWithReason("all_providers_unhealthy", "error", "allUnhealthy")],
+        "warn",
+      ),
+    );
+    expect(screen.getByTestId("degraded-chip-all_providers_unhealthy-0")).toBeTruthy();
+  });
+
+  it("Mission C6 §T3.3 — partial_health renders warn severity informational", () => {
+    renderBanner(
+      _payload(
+        [_llmAxisWithReason("partial_health", "warn", "partialHealth")],
+        "warn",
+      ),
+    );
+    expect(screen.getByTestId("degraded-chip-partial_health-0")).toBeTruthy();
+  });
+
+  it("Mission C6 §T3.3 — default_model_unavailable renders error severity", () => {
+    renderBanner(
+      _payload(
+        [_llmAxisWithReason("default_model_unavailable", "error", "defaultModelUnavailable")],
+        "warn",
+      ),
+    );
+    expect(screen.getByTestId("degraded-chip-default_model_unavailable-0")).toBeTruthy();
+  });
 });

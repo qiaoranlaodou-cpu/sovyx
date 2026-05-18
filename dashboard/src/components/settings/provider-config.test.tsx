@@ -13,6 +13,7 @@ vi.mock("@/lib/api", () => ({
   api: {
     get: vi.fn(),
     put: vi.fn(),
+    post: vi.fn(),
   },
 }));
 
@@ -29,6 +30,7 @@ import { api } from "@/lib/api";
 const mockApi = api as unknown as {
   get: ReturnType<typeof vi.fn>;
   put: ReturnType<typeof vi.fn>;
+  post: ReturnType<typeof vi.fn>;
 };
 
 function makeResponse(overrides: Record<string, unknown> = {}) {
@@ -198,6 +200,111 @@ describe("ProviderConfig", () => {
 
     const anthropicBtn = screen.getByTestId("provider-anthropic");
     expect(anthropicBtn).toBeDisabled();
+  });
+
+  // ── Mission C6 §T3.7 — Test connection button ──
+
+  it("Mission C6 §T3.7 — renders Test connection button next to each cloud provider", async () => {
+    mockApi.get.mockResolvedValue(makeResponse());
+    render(<ProviderConfig />);
+    await waitFor(() => {
+      expect(screen.getByTestId("test-connection-anthropic")).toBeInTheDocument();
+    });
+    expect(screen.getByTestId("test-connection-openai")).toBeInTheDocument();
+  });
+
+  it("Mission C6 §T3.7 — renders Test connection button next to Ollama", async () => {
+    mockApi.get.mockResolvedValue(makeResponse());
+    render(<ProviderConfig />);
+    await waitFor(() => {
+      expect(screen.getByTestId("test-connection-ollama")).toBeInTheDocument();
+    });
+  });
+
+  it("Mission C6 §T3.7 — Ollama Test button calls POST /api/llm/test-connection and renders success", async () => {
+    mockApi.get.mockResolvedValue(makeResponse());
+    mockApi.post.mockResolvedValue({
+      ok: true,
+      message: "Ollama reachable with 2 model(s).",
+      latency_ms: 8.4,
+      model_count: 2,
+    });
+    render(<ProviderConfig />);
+    await waitFor(() => {
+      expect(screen.getByTestId("test-connection-ollama")).toBeInTheDocument();
+    });
+    fireEvent.click(screen.getByTestId("test-connection-ollama"));
+    await waitFor(() => {
+      expect(screen.getByTestId("test-connection-result-ollama")).toBeInTheDocument();
+    });
+    expect(mockApi.post).toHaveBeenCalledWith(
+      "/api/llm/test-connection",
+      { provider: "ollama" },
+    );
+    expect(screen.getByTestId("test-connection-result-ollama").textContent).toContain("✓");
+  });
+
+  it("Mission C6 §T3.7 — Ollama Test button renders failure inline", async () => {
+    mockApi.get.mockResolvedValue(makeResponse());
+    mockApi.post.mockResolvedValue({
+      ok: false,
+      message: "Ollama is not reachable.",
+      latency_ms: 1.2,
+    });
+    render(<ProviderConfig />);
+    await waitFor(() => {
+      expect(screen.getByTestId("test-connection-ollama")).toBeInTheDocument();
+    });
+    fireEvent.click(screen.getByTestId("test-connection-ollama"));
+    await waitFor(() => {
+      expect(screen.getByTestId("test-connection-result-ollama")).toBeInTheDocument();
+    });
+    expect(screen.getByTestId("test-connection-result-ollama").textContent).toContain("✗");
+    expect(screen.getByTestId("test-connection-result-ollama").textContent).toContain(
+      "not reachable",
+    );
+  });
+
+  it("Mission C6 §T3.7 — Cloud Test button prompts for API key + posts it", async () => {
+    mockApi.get.mockResolvedValue(makeResponse());
+    mockApi.post.mockResolvedValue({
+      ok: true,
+      message: "OK",
+      latency_ms: 412.83,
+    });
+    const promptSpy = vi.spyOn(window, "prompt").mockReturnValue("sk-test-key");
+    try {
+      render(<ProviderConfig />);
+      await waitFor(() => {
+        expect(screen.getByTestId("test-connection-openai")).toBeInTheDocument();
+      });
+      fireEvent.click(screen.getByTestId("test-connection-openai"));
+      await waitFor(() => {
+        expect(screen.getByTestId("test-connection-result-openai")).toBeInTheDocument();
+      });
+      expect(mockApi.post).toHaveBeenCalledWith(
+        "/api/llm/test-connection",
+        { provider: "openai", api_key: "sk-test-key" },
+      );
+    } finally {
+      promptSpy.mockRestore();
+    }
+  });
+
+  it("Mission C6 §T3.7 — Cloud Test button no-ops when operator cancels prompt", async () => {
+    mockApi.get.mockResolvedValue(makeResponse());
+    const promptSpy = vi.spyOn(window, "prompt").mockReturnValue(null);
+    try {
+      render(<ProviderConfig />);
+      await waitFor(() => {
+        expect(screen.getByTestId("test-connection-openai")).toBeInTheDocument();
+      });
+      fireEvent.click(screen.getByTestId("test-connection-openai"));
+      // No POST call when prompt returned null
+      expect(mockApi.post).not.toHaveBeenCalled();
+    } finally {
+      promptSpy.mockRestore();
+    }
   });
 });
 

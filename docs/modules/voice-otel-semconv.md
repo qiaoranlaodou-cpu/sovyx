@@ -285,6 +285,63 @@ Operators triaging the v0.43.1-class forensic case (`GET /assets/<chunk>.js
 boot-time verdict, then `dashboard.distribution.bundle_partial` /
 `bundle_missing` for the surface that drove the composite banner.
 
+### `llm.discovery.*` (Mission C6)
+
+Cross-cutting events for the LLM provider discovery + verdict-driven
+composite-store dispatch surface. Reported every boot via
+`engine/bootstrap.py` after the LLM router is constructed (§T2.1) and
+on every liveness-probe verdict transition (§T2.5). The composite
+banner surfaces via the C4 `/api/engine/degraded` endpoint as
+`axis="llm"` with the refined reason taxonomy.
+
+| Event | Severity | Fields | When |
+|---|---|---|---|
+| `llm.discovery.report` | INFO | `verdict`, `configured_count`, `available_count`, `default_provider`, `default_model`, `scan_duration_ms` | Every `bootstrap.py` LLM-router-wire boot — universal scan summary regardless of verdict |
+| `llm_provider_registered` | INFO | `provider` | Per-cloud-provider on env-var presence at boot (legacy event from pre-C6; preserved verbatim through v0.49.x ADR-D14 dual-emission; dropped at v0.50.0) |
+| `no_llm_provider_detected` | WARN | `hint`, `proximate_cause` | LEGACY — emitted by `dispatch_llm_discovery_verdict` only for `NO_PROVIDER_CONFIGURED` + `OLLAMA_UNREACHABLE` verdicts (the two pre-C6 collapsed cases). Dropped at v0.50.0 |
+| `ollama_no_models` | WARN | `hint` | LEGACY — emitted by `dispatch_llm_discovery_verdict` only for `OLLAMA_NO_MODELS` verdict. Dropped at v0.50.0 |
+| `ollama_auto_detected` | INFO | `models`, `selected`, `hint` | Bootstrap auto-detect path when only Ollama is configured + reachable + has models. Persists `default_provider="ollama"` to `mind.yaml` |
+| `llm_router_config` | INFO | `default_model`, `default_provider`, `providers` | Per-boot router summary after dispatch + auto-detect. Preserved verbatim from pre-C6 |
+| `c6_degraded_store_dispatch_failed` | DEBUG | `axis`, `verdict` | Observability-only — surfaces if the composite-store wire crashed without blocking the boot WARN |
+
+### `llm.liveness_probe.*` (Mission C6 §T2.5)
+
+Background periodic probe events from `engine/_llm_liveness_probe.py`.
+ONE asyncio task per process (anti-pattern #15); kill-switch via
+`SOVYX_TUNING__LLM__LIVENESS_CHECK_ENABLED=false`.
+
+| Event | Severity | Fields | When |
+|---|---|---|---|
+| `llm.liveness_probe.disabled` | INFO | `reason` | Boot — kill-switch flag is False (operator opt-out) |
+| `llm.liveness_probe.started` | INFO | `interval_sec`, `grace_period_sec` | Boot — probe task spawned |
+| `llm.liveness_probe.stopped` | INFO | — | SIGINT teardown |
+| `llm.liveness_probe.tick_failed` | WARN | `error`, `error_type` | A single tick raised an exception; next tick retries (next interval) |
+| `llm.liveness_probe.transition` | INFO | `from_verdict`, `to_verdict` | Verdict transition detected; composite-store dispatched |
+| `llm.liveness_probe.unhealthy_grace_armed` | INFO | `verdict`, `grace_period_sec` | Healthy→unhealthy transition detected but grace clock armed (transition NOT dispatched until grace expires) |
+
+### `cognitive.loop.*` (Mission C6 §T4.1, §T4.4)
+
+Cognitive-loop dependency-gate observability. Closes forensic finding
+§H5 (decorative cognitive loop): the 439-second silent worker spin
+can no longer happen because every iteration is gated on dependency
+readiness.
+
+| Event | Severity | Fields | When |
+|---|---|---|---|
+| `cognitive_loop_started` | INFO | — | LEGACY — `start()` happy path (all deps ready). Preserved from pre-C6 |
+| `cognitive.loop.started_in_degraded_mode` | WARN | `missing_dependencies`, `verdict_llm`, `embedding_model_ready`, `fail_fast` | `start()` detected one or more missing dependencies (no LLM provider available OR brain embedding model not ready). Replaces the bare `cognitive_loop_started` INFO for the degraded path |
+| `cognitive_loop_stopped` | INFO | — | Clean SIGINT teardown — preserved from pre-C6 |
+| `cognitive.loop.short_circuit_degraded` | INFO | `missing_dependencies`, `target_channel` | `process_request` / `process_request_streaming` short-circuited with a synthetic `ActionResult` because deps were missing AND `cognitive_degraded_mode_fail_fast=True`. Fires once per incoming `CognitiveRequest` |
+| `cognitive.loop.gate.dependency_check_failed` | WARN | `missing_dependencies`, `pending_requests_count` | `Gate._worker` paused on cleared `dependency_ready_event`. Throttled to ≤ 1/min to avoid log spam |
+| `cognitive.loop.dependency_recovered` | INFO | `recovered_dependencies` | Liveness probe transition restored a missing dependency; the dependency-ready event is re-set and the gate worker resumes |
+
+Operators triaging the v0.43.1-class forensic case (no `cognitive.*`
+events fire for 439 seconds despite `cognitive_loop_started`) should
+grep `cognitive.loop.started_in_degraded_mode` for the dependency
+verdict, then `cognitive.loop.short_circuit_degraded` for the
+per-request short-circuit count. Pre-Mission-C6 these events did not
+exist; the boot log was clean while the loop produced zero output.
+
 ---
 
 ## Stability + deprecation policy

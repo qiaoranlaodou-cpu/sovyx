@@ -726,7 +726,19 @@ async def bootstrap(
             # `no_llm_provider_detected` + `ollama_no_models` WARNs are
             # dual-emitted by the dispatch helpers per ADR-D14.
             from sovyx.engine._llm_dispatch import dispatch_llm_discovery_verdict
+            from sovyx.engine._llm_validation import validate_cloud_keys_at_boot
             from sovyx.llm._provider_health import scan_llm_provider_health
+
+            # Mission C6 §T2.6 — opt-in boot-time cloud-key validation.
+            # When ``tuning.llm.boot_key_validation_enabled`` is True the
+            # validation runs a bounded-timeout transient probe per key,
+            # populating the validation_results map the discovery scanner
+            # consumes to refine the ``CLOUD_KEY_INVALID`` verdict. Default
+            # OFF per ADR-D10 — cloud probes cost real money.
+            _validation_results = await validate_cloud_keys_at_boot(
+                env=os.environ,
+                config=engine_config.tuning.llm,
+            )
 
             _discovery_report = scan_llm_provider_health(
                 env=os.environ,
@@ -734,7 +746,7 @@ async def bootstrap(
                 ollama_models=_ollama_models if ollama_provider.is_available else None,
                 default_provider=mind_config.llm.default_provider,
                 default_model=mind_config.llm.default_model,
-                cloud_key_validation_results=None,
+                cloud_key_validation_results=_validation_results or None,
             )
             logger.info(
                 "llm.discovery.report",
@@ -995,6 +1007,18 @@ async def bootstrap(
 
             gate = CogLoopGate(cog_loop)
             registry.register_instance(CogLoopGate, gate)
+            # Mission C6 §T4.2 — wire the liveness probe's verdict-transition
+            # callback to the gate's dependency_ready_event so the probe
+            # propagates transitions to the worker-pause signal. Anti-pattern
+            # #44 producer→consumer pairing (probe = producer; gate = consumer).
+            llm_liveness_probe.set_dependency_state_callback(
+                gate.set_dependency_ready,
+            )
+            # Prime the gate's initial state from the boot-time discovery
+            # report. PARTIAL_HEALTH is treated as "ready" (routing continues).
+            _boot_dep_ready = router.has_available_provider()
+            if not _boot_dep_ready:
+                gate.set_dependency_ready(False)
 
             await mind_manager.load_mind(mind_config.id, {"brain": brain_service})
             await mind_manager.start_mind(mind_config.id)

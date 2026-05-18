@@ -783,3 +783,7 @@ def mind_retention_status(
         for surface, days in horizons.items():
             label = "[dim]disabled[/dim]" if days == 0 else f"{days}d"
             console.print(f"    {surface}: {label}")
+
+
+if __name__ == "__main__":  # pragma: no cover - Mission C6 §T3.5 subprocess entry
+    app()

@@ -69,6 +69,95 @@ function providerLabel(name: string): string {
   return labels[name] ?? name.charAt(0).toUpperCase() + name.slice(1);
 }
 
+/* ── Mission C6 §T3.7 — Test Connection button ──
+ * Calls POST /api/llm/test-connection transiently — never persists, never
+ * hot-registers. For Ollama (no-key) just pings + lists models. For cloud
+ * providers, prompts the operator for a candidate key via window.prompt
+ * (operational-triage UX; first-onboarding uses /api/onboarding/provider
+ * with its own modal flow). */
+
+interface TestConnectionResponse {
+  ok: boolean;
+  message: string;
+  latency_ms?: number;
+  model_count?: number;
+}
+
+interface TestConnectionButtonProps {
+  provider: string;
+  isCloud: boolean;
+}
+
+function TestConnectionButton({ provider, isCloud }: TestConnectionButtonProps) {
+  const { t } = useTranslation("settings");
+  const [testing, setTesting] = useState(false);
+  const [result, setResult] = useState<TestConnectionResponse | null>(null);
+
+  const handleTest = useCallback(async () => {
+    let apiKey: string | undefined;
+    if (isCloud) {
+      const candidate = window.prompt(
+        t(
+          "providers.testKeyPrompt",
+          `Enter the ${provider} API key to test (not stored):`,
+        ),
+        "",
+      );
+      if (candidate === null || candidate.trim() === "") return;
+      apiKey = candidate.trim();
+    }
+    setTesting(true);
+    setResult(null);
+    try {
+      const res = await api.post<TestConnectionResponse>(
+        "/api/llm/test-connection",
+        { provider, ...(apiKey ? { api_key: apiKey } : {}) },
+      );
+      setResult(res);
+    } catch (e) {
+      setResult({
+        ok: false,
+        message:
+          e instanceof Error ? e.message : t("providers.testFailed", "Test failed"),
+      });
+    } finally {
+      setTesting(false);
+    }
+  }, [provider, isCloud, t]);
+
+  return (
+    <div className="flex flex-col items-end gap-1">
+      <Button
+        type="button"
+        variant="outline"
+        size="sm"
+        onClick={() => void handleTest()}
+        disabled={testing}
+        data-testid={`test-connection-${provider}`}
+      >
+        {testing ? (
+          <Loader2Icon className="mr-1.5 size-3.5 animate-spin" />
+        ) : null}
+        {testing
+          ? t("providers.testing", "Testing…")
+          : t("providers.testConnection", "Test connection")}
+      </Button>
+      {result && (
+        <span
+          className={`text-[11px] ${result.ok ? "text-emerald-500" : "text-destructive"}`}
+          data-testid={`test-connection-result-${provider}`}
+        >
+          {result.ok ? "✓ " : "✗ "}
+          {result.message}
+          {typeof result.latency_ms === "number"
+            ? ` (${Math.round(result.latency_ms)}ms)`
+            : ""}
+        </span>
+      )}
+    </div>
+  );
+}
+
 /* ── Component ── */
 
 export function ProviderConfig() {
@@ -275,34 +364,42 @@ export function ProviderConfig() {
             </h4>
             <div className="space-y-1">
               {cloudProviders.map((p) => (
-                <button
+                <div
                   key={p.name}
-                  type="button"
-                  disabled={!p.available}
-                  onClick={() => handleSelectCloud(p.name)}
-                  className={`flex w-full items-center justify-between rounded-lg border px-3 py-2 text-sm transition-colors ${
+                  className={`flex w-full items-center justify-between rounded-lg border px-3 py-2 text-sm ${
                     selectedProvider === p.name
                       ? "border-primary/50 bg-primary/10"
                       : p.available
-                        ? "border-border hover:border-primary/30 hover:bg-muted/50"
-                        : "cursor-not-allowed border-border/50 opacity-50"
+                        ? "border-border"
+                        : "border-border/50"
                   }`}
-                  data-testid={`provider-${p.name}`}
                 >
-                  <span className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    disabled={!p.available}
+                    onClick={() => handleSelectCloud(p.name)}
+                    className={`flex flex-1 items-center gap-2 text-left transition-colors ${
+                      p.available
+                        ? "cursor-pointer hover:opacity-80"
+                        : "cursor-not-allowed opacity-50"
+                    }`}
+                    data-testid={`provider-${p.name}`}
+                  >
                     {p.available ? (
                       <CheckCircle2Icon className="size-3.5 text-emerald-500" />
                     ) : (
                       <CircleIcon className="size-3.5 text-muted-foreground" />
                     )}
                     {providerLabel(p.name)}
-                  </span>
-                  <Badge variant={p.available ? "default" : "outline"}>
-                    {p.available
-                      ? t("providers.configured", "configured")
-                      : t("providers.notConfigured", "not configured")}
-                  </Badge>
-                </button>
+                    <Badge variant={p.available ? "default" : "outline"} className="ml-2">
+                      {p.available
+                        ? t("providers.configured", "configured")
+                        : t("providers.notConfigured", "not configured")}
+                    </Badge>
+                  </button>
+                  {/* Mission C6 §T3.7 — Test connection (operational triage). */}
+                  <TestConnectionButton provider={p.name} isCloud />
+                </div>
               ))}
             </div>
           </div>
@@ -331,14 +428,18 @@ export function ProviderConfig() {
                   )}
                   Ollama
                 </span>
-                <Badge
-                  variant={ollamaProvider.reachable ? "default" : "destructive"}
-                >
-                  {ollamaProvider.reachable
-                    ? t("providers.running", "running") +
-                      ` (${ollamaProvider.models?.length ?? 0} ${t("providers.models", "models")})`
-                    : t("providers.notRunning", "not running")}
-                </Badge>
+                <div className="flex items-center gap-2">
+                  <Badge
+                    variant={ollamaProvider.reachable ? "default" : "destructive"}
+                  >
+                    {ollamaProvider.reachable
+                      ? t("providers.running", "running") +
+                        ` (${ollamaProvider.models?.length ?? 0} ${t("providers.models", "models")})`
+                      : t("providers.notRunning", "not running")}
+                  </Badge>
+                  {/* Mission C6 §T3.7 — Test connection for Ollama (no key required). */}
+                  <TestConnectionButton provider="ollama" isCloud={false} />
+                </div>
               </div>
 
               {/* Model selector */}

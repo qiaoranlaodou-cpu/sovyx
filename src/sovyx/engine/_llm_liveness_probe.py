@@ -50,6 +50,8 @@ from sovyx.llm._provider_health import (
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from sovyx.engine.config import LLMTuningConfig
     from sovyx.llm._provider_health import LLMRouterDiscoveryReport
     from sovyx.llm.providers.ollama import OllamaProvider
@@ -102,6 +104,24 @@ class LLMLivenessProbe:
         # transient blips.
         self._unhealthy_first_observed: float | None = None
         self._running = False
+        # Mission C6 §T4.2 — optional callback wired by bootstrap.py to
+        # propagate verdict transitions to the CogLoopGate's
+        # ``dependency_ready_event``. The probe is constructed BEFORE the
+        # gate in bootstrap; the callback is wired via
+        # :meth:`set_dependency_state_callback` after the gate exists.
+        self._dependency_state_callback: Callable[[bool], None] | None = None
+
+    def set_dependency_state_callback(
+        self,
+        callback: Callable[[bool], None] | None,
+    ) -> None:
+        """Wire the gate's ``set_dependency_ready`` (or any observer).
+
+        Called by bootstrap.py once the ``CogLoopGate`` is constructed so
+        the probe can propagate verdict transitions. Idempotent — passing
+        ``None`` un-wires the callback.
+        """
+        self._dependency_state_callback = callback
 
     async def start(self) -> None:
         """Start the periodic-rescan task.
@@ -240,6 +260,23 @@ class LLMLivenessProbe:
             self._unhealthy_first_observed = None
         else:
             self._unhealthy_first_observed = time.monotonic()
+
+        # Mission C6 §T4.2 — propagate to the gate's dependency_ready_event
+        # so the cognitive-loop worker pauses on degraded states + resumes
+        # on recovery. "Ready" means the router has at least one available
+        # provider; treat PARTIAL_HEALTH as ready (routing continues).
+        if self._dependency_state_callback is not None:
+            ready = new_verdict in (
+                DiscoveryVerdict.FULLY_AVAILABLE,
+                DiscoveryVerdict.PARTIAL_HEALTH,
+            )
+            try:
+                self._dependency_state_callback(ready)
+            except Exception as exc:  # noqa: BLE001 — callback failure must not break the probe
+                logger.warning(
+                    "llm.liveness_probe.callback_failed",
+                    extra={"error": str(exc), "ready": ready},
+                )
 
 
 __all__ = ["LLMLivenessProbe"]
