@@ -270,9 +270,61 @@ the following sections in order (Mission C4 §T3.6 + Mission C5 §T3.4):
    §T3.6).
 4. **Dashboard — bundle integrity** — SPA bundle verdict + missing-chunk
    sample + remediation hint (Mission C5 §T3.4).
+5. **LLM — provider health** — Mission C6 §T3.2 verdict + per-provider
+   matrix summary + remediation hint. Full per-provider detail via
+   `sovyx llm doctor`.
 
 CLI-only operators see the same picture as the dashboard's composite
 banner — no log-grep required.
+
+---
+
+## `sovyx llm`
+
+LLM provider health doctor + interactive setup wizard. Mission C6 §T3.1.
+
+```bash
+sovyx llm doctor                  # human-readable provider matrix
+sovyx llm doctor --json | jq .    # machine-readable
+sovyx llm health                  # alias for doctor
+sovyx llm setup                   # interactive wizard
+sovyx llm setup --non-interactive --provider anthropic --api-key sk-...
+```
+
+### `sovyx llm doctor`
+
+Runs the live discovery scan + per-provider liveness matrix. Returns
+exit 0 on `FULLY_AVAILABLE` / `PARTIAL_HEALTH` verdicts and exit 1 on
+any other verdict — scriptable for CI / monitoring loops.
+
+Output sections:
+
+1. Top-level verdict (color-coded: green for healthy, yellow for warn,
+   red for error/critical).
+2. Per-provider matrix (name, env-var, configured, reachable, failure
+   reason).
+3. Verdict-specific remediation hint.
+
+### `sovyx llm setup`
+
+Interactive wizard for first-time provider onboarding (or rotating
+keys). Prompts for provider choice → API key (hidden input for cloud
+providers) → validates the key against the provider's API → persists
+to `<data_dir>/secrets.env` with `0o600` permissions.
+
+For Ollama (no API key), the wizard just verifies the daemon is
+reachable + lists installed models.
+
+Flags:
+
+* `--provider <name>` — skip the choice prompt.
+* `--api-key <key>` — provide the key inline (cloud providers only).
+* `--non-interactive` — fail-fast on missing inputs (CI / scripted use).
+* `--data-dir <path>` — override the secrets.env location (default
+  `~/.sovyx`).
+
+See [docs/modules/llm-provider-integrity.md](modules/llm-provider-integrity.md)
+for the full verdict taxonomy + REST endpoints reference.
 
 ---
 

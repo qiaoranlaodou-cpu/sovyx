@@ -74,6 +74,7 @@ _DEFAULT_REGISTRY_PATH = _REPO_ROOT / "src" / "sovyx" / "llm" / "_provider_regis
 
 _BOOTSTRAP_PATH = _REPO_ROOT / "src" / "sovyx" / "engine" / "bootstrap.py"
 _ONBOARDING_PATH = _REPO_ROOT / "src" / "sovyx" / "dashboard" / "routes" / "onboarding.py"
+_PROVIDER_SETUP_SHARED_PATH = _REPO_ROOT / "src" / "sovyx" / "cli" / "_provider_setup_shared.py"
 _CONFIGURATION_DOC_PATH = _REPO_ROOT / "docs" / "configuration.md"
 _LOCALE_DIRS = (
     _REPO_ROOT / "dashboard" / "src" / "locales" / "en",
@@ -223,25 +224,68 @@ def _check_onboarding_default_model_surface(
     report: GateReport,
     allowlist: dict[str, set[str]],
 ) -> None:
+    """Surface 4 — default-model mapping has an entry per LLMProviderKey member.
+
+    Mission C6 §T3.4 extracted the legacy ``onboarding._default_model_for``
+    dict to ``cli/_provider_setup_shared._DEFAULT_MODEL_BY_PROVIDER``; the
+    shared module is the SOURCE OF TRUTH post-Phase-1.C. The check walks
+    both files — finding the dict in either one is sufficient (the shared
+    module takes priority).
+    """
     surface_id = "default_model_for"
-    if not _ONBOARDING_PATH.is_file():
-        report.surfaces_skipped.append(f"{surface_id} (file not present)")
-        return
-    tree = ast.parse(_ONBOARDING_PATH.read_text(encoding="utf-8"))
     keys: set[str] = set()
-    for node in ast.walk(tree):
-        if isinstance(node, ast.FunctionDef) and node.name == "_default_model_for":
-            for assign in ast.walk(node):
-                if isinstance(assign, ast.Dict):
-                    for key_node in assign.keys:
-                        if isinstance(key_node, ast.Constant) and isinstance(
-                            key_node.value,
-                            str,
-                        ):
-                            keys.add(key_node.value)
+    candidates_checked = 0
+
+    if _PROVIDER_SETUP_SHARED_PATH.is_file():
+        candidates_checked += 1
+        tree = ast.parse(_PROVIDER_SETUP_SHARED_PATH.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            # Accepts both `_DEFAULT_MODEL_BY_PROVIDER = {...}` and the
+            # type-annotated form `_DEFAULT_MODEL_BY_PROVIDER: dict[...] = {...}`.
+            target_name: str | None = None
+            value_node: ast.expr | None = None
+            if isinstance(node, ast.Assign):
+                for target in node.targets:
+                    if isinstance(target, ast.Name):
+                        target_name = target.id
+                        value_node = node.value
+                        break
+            elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+                target_name = node.target.id
+                value_node = node.value
+            if target_name == "_DEFAULT_MODEL_BY_PROVIDER" and isinstance(value_node, ast.Dict):
+                for key_node in value_node.keys:
+                    if isinstance(key_node, ast.Constant) and isinstance(
+                        key_node.value,
+                        str,
+                    ):
+                        keys.add(key_node.value)
+
+    if not keys and _ONBOARDING_PATH.is_file():
+        candidates_checked += 1
+        tree = ast.parse(_ONBOARDING_PATH.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.FunctionDef) and node.name == "_default_model_for":
+                for assign in ast.walk(node):
+                    if isinstance(assign, ast.Dict):
+                        for key_node in assign.keys:
+                            if isinstance(key_node, ast.Constant) and isinstance(
+                                key_node.value,
+                                str,
+                            ):
+                                keys.add(key_node.value)
+
     if not keys:
-        report.surfaces_skipped.append(f"{surface_id} (function or dict not found)")
+        if candidates_checked == 0:
+            report.surfaces_skipped.append(
+                f"{surface_id} (neither source file present)",
+            )
+        else:
+            report.surfaces_skipped.append(
+                f"{surface_id} (mapping not found — surface drift suspected)",
+            )
         return
+
     report.surfaces_checked.append(surface_id)
     for member in report.env_vars:
         if surface_id in allowlist.get(member, set()):
@@ -252,7 +296,7 @@ def _check_onboarding_default_model_surface(
                     surface_id=surface_id,
                     member_name=member,
                     detail=(
-                        f"'{member}' missing from _default_model_for defaults dict — "
+                        f"'{member}' missing from default-model mapping — "
                         f"onboarding-flow default-model resolution will return empty."
                     ),
                 ),

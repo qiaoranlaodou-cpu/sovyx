@@ -658,6 +658,10 @@ def _run_voice_doctor(
     # the voice surfaces. Pure read; never blocks the doctor exit path.
     _render_dashboard_integrity_surface(output_json=output_json)
 
+    # Mission C6 §T3.2 — surface LLM provider health alongside the voice
+    # + dashboard surfaces. Pure read; never blocks the doctor exit path.
+    _render_llm_health_surface(output_json=output_json)
+
     failure_count = sum(1 for s in report.steps if not s.passed)
 
     # Non-fix path: preserve v0.21.2 contract — exit code equals the
@@ -1834,6 +1838,82 @@ def _render_dashboard_integrity_surface(
         "  [dim]Run 'sovyx dashboard doctor' for the full report, or "
         "'pipx reinstall sovyx' to repair.[/dim]",
     )
+
+
+def _render_llm_health_surface(*, output_json: bool) -> None:
+    """Mission C6 §T3.2 — surface LLM provider health in aggregate ``sovyx doctor``.
+
+    Pure read. Never blocks the doctor exit path. JSON mode is a no-op
+    here because the aggregate ``sovyx doctor --json`` output already
+    summarizes the voice surfaces; the LLM detail lives at
+    ``sovyx llm doctor --json``.
+    """
+    if output_json:
+        return
+    try:
+        import asyncio  # noqa: PLC0415 — lazy to keep doctor cold-path light
+        import os  # noqa: PLC0415
+
+        from sovyx.llm._provider_health import (  # noqa: PLC0415
+            DiscoveryVerdict,
+            scan_llm_provider_health,
+        )
+        from sovyx.llm.providers.ollama import OllamaProvider  # noqa: PLC0415
+    except Exception as exc:  # noqa: BLE001
+        console.print(f"[dim]LLM — provider health: unavailable ({exc}).[/dim]")
+        return
+
+    try:
+        ollama = OllamaProvider()
+        asyncio.run(ollama.ping())
+        ollama_models: tuple[str, ...] = ()
+        if ollama.is_available:
+            try:
+                ollama_models = tuple(asyncio.run(ollama.list_models()))
+            except Exception:  # noqa: BLE001
+                ollama_models = ()
+        report = scan_llm_provider_health(
+            env=os.environ,
+            ollama_ping_result=ollama.is_available,
+            ollama_models=ollama_models if ollama.is_available else None,
+            default_provider="",
+            default_model="",
+        )
+    except Exception as exc:  # noqa: BLE001
+        console.print(f"[dim]LLM — provider health: scan failed ({exc}).[/dim]")
+        return
+
+    console.print("\n[bold]LLM — provider health[/bold]")
+    if report.verdict is DiscoveryVerdict.FULLY_AVAILABLE:
+        console.print(
+            f"  [green]✓[/green]  FULLY_AVAILABLE  "
+            f"[dim]({report.available_count} provider(s), "
+            f"{report.scan_duration_ms:.1f}ms)[/dim]",
+        )
+        return
+
+    severity_color = {
+        DiscoveryVerdict.NO_PROVIDER_CONFIGURED: "red",
+        DiscoveryVerdict.ALL_PROVIDERS_UNHEALTHY: "red",
+        DiscoveryVerdict.CLOUD_KEY_INVALID: "yellow",
+        DiscoveryVerdict.DEFAULT_MODEL_UNAVAILABLE: "yellow",
+        DiscoveryVerdict.OLLAMA_UNREACHABLE: "yellow",
+        DiscoveryVerdict.OLLAMA_NO_MODELS: "yellow",
+        DiscoveryVerdict.PARTIAL_HEALTH: "yellow",
+    }.get(report.verdict, "yellow")
+    console.print(
+        f"  [bold {severity_color}]{report.verdict.value.upper()}[/bold {severity_color}]  "
+        f"[dim](configured={report.configured_count}, "
+        f"available={report.available_count})[/dim]",
+    )
+    failures = [
+        (entry.name, entry.failure_reason)
+        for entry in report.per_provider
+        if entry.configured and entry.failure_reason
+    ]
+    for name, reason in failures[:5]:
+        console.print(f"    [dim]✗[/dim] {name}: {reason}")
+    console.print("  [dim]Run 'sovyx llm doctor' for the full per-provider matrix.[/dim]")
 
 
 def _first_failure_is_saturation(report: PreflightReport) -> bool:

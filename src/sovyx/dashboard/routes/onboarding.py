@@ -8,6 +8,21 @@ import os
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse
 
+from sovyx.cli._provider_setup_shared import (
+    create_provider as _create_provider_impl,
+)
+from sovyx.cli._provider_setup_shared import (
+    default_model_for as _default_model_for_impl,
+)
+from sovyx.cli._provider_setup_shared import (
+    persist_api_key as _persist_api_key_impl,
+)
+from sovyx.cli._provider_setup_shared import (
+    resolve_data_dir as _resolve_data_dir,
+)
+from sovyx.cli._provider_setup_shared import (
+    test_provider as _test_provider_impl,
+)
 from sovyx.dashboard.routes._deps import verify_token
 from sovyx.observability.logging import get_logger
 
@@ -384,124 +399,32 @@ async def complete_onboarding(request: Request) -> JSONResponse:
 # ── Helpers ──────────────────────────────────────────────────────────
 
 
+# Mission C6 §T3.4 — provider-setup helpers extracted to
+# ``sovyx.cli._provider_setup_shared``. The legacy underscore-prefixed
+# names are re-exported here so existing test patches against
+# ``onboarding._create_provider`` / ``_test_provider`` / ``_persist_api_key``
+# continue to resolve transparently. The actual imports live at the top
+# of this module per import-ordering hygiene.
+
+
 def _create_provider(name: str, api_key: str) -> object | None:
-    """Instantiate a provider by name with the given API key."""
-    try:
-        if name == "anthropic":
-            from sovyx.llm.providers.anthropic import AnthropicProvider
-
-            return AnthropicProvider(api_key=api_key)
-        if name == "openai":
-            from sovyx.llm.providers.openai import OpenAIProvider
-
-            return OpenAIProvider(api_key=api_key)
-        if name == "google":
-            from sovyx.llm.providers.google import GoogleProvider
-
-            return GoogleProvider(api_key=api_key)
-        if name == "xai":
-            from sovyx.llm.providers.xai import XAIProvider
-
-            return XAIProvider(api_key=api_key)
-        if name == "deepseek":
-            from sovyx.llm.providers.deepseek import DeepSeekProvider
-
-            return DeepSeekProvider(api_key=api_key)
-        if name == "mistral":
-            from sovyx.llm.providers.mistral import MistralProvider
-
-            return MistralProvider(api_key=api_key)
-        if name == "groq":
-            from sovyx.llm.providers.groq import GroqProvider
-
-            return GroqProvider(api_key=api_key)
-        if name == "together":
-            from sovyx.llm.providers.together import TogetherProvider
-
-            return TogetherProvider(api_key=api_key)
-        if name == "fireworks":
-            from sovyx.llm.providers.fireworks import FireworksProvider
-
-            return FireworksProvider(api_key=api_key)
-    except Exception:  # noqa: BLE001
-        logger.warning("provider_creation_failed", provider=name, exc_info=True)
-    return None
+    """Adaptor re-export — see :func:`sovyx.cli._provider_setup_shared.create_provider`."""
+    return _create_provider_impl(name, api_key)
 
 
 async def _test_provider(provider: object) -> tuple[bool, str]:
-    """Validate a provider by attempting a minimal generation."""
-    try:
-        from sovyx.engine.protocols import LLMProvider
-
-        if not isinstance(provider, LLMProvider):
-            return False, "Not a valid provider"
-        default_model = _default_model_for(getattr(provider, "name", ""))
-        resp = await provider.generate(
-            messages=[{"role": "user", "content": "Hi"}],
-            model=default_model,
-            temperature=0.0,
-            max_tokens=5,
-        )
-        if resp and hasattr(resp, "content") and resp.content:
-            return True, "OK"
-        return True, "Connected (empty response)"
-    except Exception as exc:  # noqa: BLE001
-        return False, str(exc)
+    """Adaptor re-export — see :func:`sovyx.cli._provider_setup_shared.test_provider`."""
+    return await _test_provider_impl(provider)
 
 
 def _default_model_for(provider_name: str) -> str:
-    """Return sensible default model for a provider."""
-    defaults: dict[str, str] = {
-        "anthropic": "claude-sonnet-4-20250514",
-        "openai": "gpt-4o",
-        "google": "gemini-2.5-pro-preview-03-25",
-        "xai": "grok-2",
-        "deepseek": "deepseek-chat",
-        "mistral": "mistral-large-latest",
-        "groq": "llama-3.1-70b-versatile",
-        "together": "meta-llama/Meta-Llama-3.1-70B-Instruct-Turbo",
-        "fireworks": "accounts/fireworks/models/llama-v3p1-70b-instruct",
-        "ollama": "llama3.1:latest",
-    }
-    return defaults.get(provider_name, "")
+    """Adaptor re-export — see :func:`sovyx.cli._provider_setup_shared.default_model_for`."""
+    return _default_model_for_impl(provider_name)
 
 
 def _persist_api_key(request: Request, env_var: str, api_key: str) -> None:
-    """Append API key to secrets.env in the data directory."""
-    from pathlib import Path
-
-    data_dir = getattr(request.app.state, "data_dir", None)
-    if data_dir is None:
-        engine_config = getattr(request.app.state, "engine_config", None)
-        if engine_config is not None:
-            data_dir = engine_config.data_dir
-    if data_dir is None:
-        data_dir = Path.home() / ".sovyx"
-
-    secrets_path = Path(data_dir) / "secrets.env"
-    secrets_path.parent.mkdir(parents=True, exist_ok=True)
-
-    existing_lines: list[str] = []
-    if secrets_path.exists():
-        existing_lines = secrets_path.read_text(encoding="utf-8").splitlines()
-
-    # Replace if key already exists, otherwise append
-    found = False
-    new_lines: list[str] = []
-    for line in existing_lines:
-        if line.strip().startswith(f"{env_var}="):
-            new_lines.append(f"{env_var}={api_key}")
-            found = True
-        else:
-            new_lines.append(line)
-    if not found:
-        new_lines.append(f"{env_var}={api_key}")
-
-    secrets_path.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
-    with contextlib.suppress(OSError):
-        secrets_path.chmod(0o600)
-
-    logger.info("api_key_persisted", env_var=env_var, path=str(secrets_path))
+    """Adaptor — resolves ``data_dir`` from FastAPI ``Request`` then delegates."""
+    _persist_api_key_impl(_resolve_data_dir(request), env_var, api_key)
 
 
 async def _apply_provider(

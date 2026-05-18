@@ -108,4 +108,75 @@ describe("Locale completeness — voice namespace", () => {
       expect(es.has(key), `ES missing ${key}`).toBe(true);
     }
   });
+
+  it("Mission C6 §T3.6 — refined degraded.llm.* taxonomy + providers namespace present in 3 locales", () => {
+    const en = pathSet(enVoice as AnyJson);
+    const pt = pathSet(ptVoice as AnyJson);
+    const es = pathSet(esVoice as AnyJson);
+
+    const refinedReasonKeys = [
+      // noProviderConfigured (refined from noProvider)
+      "degraded.llm.noProviderConfigured.title",
+      "degraded.llm.noProviderConfigured.body",
+      "degraded.llm.noProviderConfigured.runSetup",
+      "degraded.llm.noProviderConfigured.installOllama",
+      // ollamaUnreachable
+      "degraded.llm.ollamaUnreachable.title",
+      "degraded.llm.ollamaUnreachable.body",
+      "degraded.llm.ollamaUnreachable.startOllama",
+      "degraded.llm.ollamaUnreachable.runDoctor",
+      // ollamaNoModels
+      "degraded.llm.ollamaNoModels.title",
+      "degraded.llm.ollamaNoModels.body",
+      "degraded.llm.ollamaNoModels.pullModel",
+      "degraded.llm.ollamaNoModels.runDoctor",
+      // cloudKeyInvalid
+      "degraded.llm.cloudKeyInvalid.title",
+      "degraded.llm.cloudKeyInvalid.body",
+      "degraded.llm.cloudKeyInvalid.openSettings",
+      "degraded.llm.cloudKeyInvalid.testConnection",
+      // allUnhealthy
+      "degraded.llm.allUnhealthy.title",
+      "degraded.llm.allUnhealthy.body",
+      "degraded.llm.allUnhealthy.viewHealth",
+      "degraded.llm.allUnhealthy.runDoctor",
+      // partialHealth
+      "degraded.llm.partialHealth.title",
+      "degraded.llm.partialHealth.body",
+      "degraded.llm.partialHealth.viewHealth",
+      // defaultModelUnavailable
+      "degraded.llm.defaultModelUnavailable.title",
+      "degraded.llm.defaultModelUnavailable.body",
+      "degraded.llm.defaultModelUnavailable.openSettings",
+    ];
+    for (const key of refinedReasonKeys) {
+      expect(en.has(key), `EN missing ${key}`).toBe(true);
+      expect(pt.has(key), `pt-BR missing ${key}`).toBe(true);
+      expect(es.has(key), `ES missing ${key}`).toBe(true);
+    }
+
+    // Mission C6 §T1.3 surface 3 — providers namespace MUST cover every
+    // LLMProviderKey member with both label + envVar entries so Quality
+    // Gate 12 promotes surface 3 from skipped to checked at v0.49.2.
+    const providers = [
+      "anthropic",
+      "openai",
+      "google",
+      "xai",
+      "deepseek",
+      "mistral",
+      "groq",
+      "together",
+      "fireworks",
+      "ollama",
+    ];
+    for (const p of providers) {
+      for (const field of ["label", "envVar"]) {
+        const key = `degraded.llm.providers.${p}.${field}`;
+        expect(en.has(key), `EN missing ${key}`).toBe(true);
+        expect(pt.has(key), `pt-BR missing ${key}`).toBe(true);
+        expect(es.has(key), `ES missing ${key}`).toBe(true);
+      }
+    }
+  });
 });

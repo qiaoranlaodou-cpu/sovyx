@@ -830,6 +830,58 @@
         "body": "O loop cognitivo não pode gerar respostas. Instale o Ollama ou configure uma chave de API.",
         "installOllama": "Instalar Ollama",
         "openSettings": "Abrir configurações de provedores"
+      },
+      "noProviderConfigured": {
+        "title": "Nenhum provedor LLM configurado",
+        "body": "O loop cognitivo não pode gerar respostas. Configure um provedor via `sovyx llm setup`, ou instale o Ollama para um fallback local.",
+        "runSetup": "Executar sovyx llm setup",
+        "installOllama": "Instalar Ollama"
+      },
+      "ollamaUnreachable": {
+        "title": "Daemon do Ollama inacessível",
+        "body": "O Ollama é seu provedor padrão mas o daemon não está respondendo. Inicie com `ollama serve` ou reinicie o serviço.",
+        "startOllama": "Iniciar Ollama",
+        "runDoctor": "Executar sovyx llm doctor"
+      },
+      "ollamaNoModels": {
+        "title": "Ollama sem modelos",
+        "body": "O Ollama está rodando mas nenhum modelo está instalado. Baixe um modelo com `ollama pull llama3.1` (ou qualquer modelo da biblioteca Ollama).",
+        "pullModel": "Navegar biblioteca de modelos",
+        "runDoctor": "Executar sovyx llm doctor"
+      },
+      "cloudKeyInvalid": {
+        "title": "Chave de API LLM inválida",
+        "body": "Toda chave cloud configurada falhou na validação. Rotacione as chaves pelo dashboard, ou execute novamente `sovyx llm setup`.",
+        "openSettings": "Abrir configurações de provedores",
+        "testConnection": "Testar conexão"
+      },
+      "allUnhealthy": {
+        "title": "Todos os provedores LLM degradados",
+        "body": "Todo provedor configurado está atualmente inacessível. Verifique a conectividade de rede e use o botão Testar Conexão por provedor.",
+        "viewHealth": "Ver saúde dos provedores",
+        "runDoctor": "Executar sovyx llm doctor"
+      },
+      "partialHealth": {
+        "title": "LLM com saúde parcial",
+        "body": "Alguns provedores estão degradados mas o roteamento continua. Resolva as entradas degradadas nas configurações de provedores.",
+        "viewHealth": "Ver saúde dos provedores"
+      },
+      "defaultModelUnavailable": {
+        "title": "Modelo padrão indisponível",
+        "body": "O modelo padrão configurado não pode ser servido por nenhum provedor disponível. Atualize mind.yaml ou abra as configurações de provedores.",
+        "openSettings": "Abrir configurações de provedores"
+      },
+      "providers": {
+        "anthropic": {"label": "Anthropic", "envVar": "ANTHROPIC_API_KEY"},
+        "openai": {"label": "OpenAI", "envVar": "OPENAI_API_KEY"},
+        "google": {"label": "Google", "envVar": "GOOGLE_API_KEY"},
+        "xai": {"label": "xAI Grok", "envVar": "XGROK_API_KEY"},
+        "deepseek": {"label": "DeepSeek", "envVar": "DEEPSEEK_API_KEY"},
+        "mistral": {"label": "Mistral", "envVar": "MISTRAL_API_KEY"},
+        "groq": {"label": "Groq", "envVar": "GROQ_API_KEY"},
+        "together": {"label": "Together AI", "envVar": "TOGETHER_API_KEY"},
+        "fireworks": {"label": "Fireworks AI", "envVar": "FIREWORKS_API_KEY"},
+        "ollama": {"label": "Ollama (local)", "envVar": ""}
       }
     },
     "stt": {

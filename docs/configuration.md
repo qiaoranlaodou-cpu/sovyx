@@ -418,6 +418,46 @@ scanner + reactive on-404 arm + composite-banner producer wire) see
 [`docs/modules/dashboard-distribution-integrity.md`](modules/dashboard-distribution-integrity.md)
 for the full triage workflow.
 
+### LLM provider discovery + liveness (Mission C6)
+
+`LLMTuningConfig` extends with six new fields (alongside the
+pre-existing circuit-breaker tunables) that govern the discovery scan,
+periodic liveness probe, and cognitive-loop dependency gate:
+
+```bash
+# Mission C6 §T2.5 — single-task periodic liveness probe.
+# Default ON (anti-pattern #34 inverse — observability always-on).
+export SOVYX_TUNING__LLM__LIVENESS_CHECK_ENABLED=true
+export SOVYX_TUNING__LLM__LIVENESS_CHECK_INTERVAL_SEC=60   # bounded [10, 600]
+
+# Boot-time cloud-key validation is OPT-IN (per ADR-D10) because the
+# probe spends real money on every cloud provider's API. First-call
+# failure + the liveness probe surface invalid keys without paying
+# the boot-time cost; enable only if you want the verdict to reflect
+# real key validity at boot.
+export SOVYX_TUNING__LLM__BOOT_KEY_VALIDATION_ENABLED=false
+export SOVYX_TUNING__LLM__BOOT_KEY_VALIDATION_TIMEOUT_SEC=5   # per-key timeout
+
+# Transient-blip filter — require unhealthy state to persist this
+# long before promoting a healthy→unhealthy transition to the banner.
+# Recovery (unhealthy→healthy) is always promoted immediately.
+export SOVYX_TUNING__LLM__PROVIDER_UNHEALTHY_GRACE_PERIOD_SEC=30
+
+# Mission C6 §T4.4 — short-circuit CognitiveLoop.process_request with a
+# synthetic ActionResult(failed=True, reason="cognitive_dependency_missing")
+# instead of running the full perceive→attend→think→act→reflect loop
+# when the LLM router has no available provider. Defaults True; set
+# False if you want the slower-but-more-instrumented per-phase failure
+# path (useful for debugging brain/embedding-model issues).
+export SOVYX_TUNING__LLM__COGNITIVE_DEGRADED_MODE_FAIL_FAST=true
+```
+
+For the Mission C6 LLM-provider-integrity surface (discovery scanner +
+liveness probe + composite-banner producer + REST endpoints + CLI
+doctor/setup) see
+[`docs/modules/llm-provider-integrity.md`](modules/llm-provider-integrity.md)
+for the verdict taxonomy + triage workflow.
+
 ### macOS-specific voice defaults (v0.32.0+)
 
 Two voice-tuning fields default to platform-conditional values so the

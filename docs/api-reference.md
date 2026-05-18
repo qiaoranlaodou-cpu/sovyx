@@ -306,6 +306,29 @@ to `POST /api/chat` if the stream cannot be opened.
 | ------ | ----------------- | ---------------------------------------------------------- |
 | GET    | `/api/providers`  | Configured providers, current routing, and credit balance. |
 | PUT    | `/api/providers`  | Update provider keys and routing preferences.              |
+| GET    | `/api/llm/health` | Mission C6 §T2.7 — cached `LLMRouterDiscoveryReport` snapshot with verdict + per-provider liveness matrix. Forward-additive (`extra="allow"`). |
+| POST   | `/api/llm/test-connection` | Mission C6 §T2.7 — probe a candidate provider transiently. Body: `{provider, api_key?, model?}`. Returns `{ok, message, latency_ms}`. Never persists; never hot-registers. 422 on invalid provider name or missing key for cloud providers. |
+
+### `axis="llm"` refined reason taxonomy (Mission C6)
+
+The composite `/api/engine/degraded` payload now distinguishes seven
+LLM-axis failure modes (was a single `no_llm_provider` reason
+pre-Mission-C6):
+
+| Reason | Severity | When |
+|---|---|---|
+| `no_provider_configured` | critical | No cloud keys AND Ollama not reachable AND no `default_provider="ollama"` regression signal |
+| `ollama_unreachable` | error | `default_provider="ollama"` AND Ollama ping fails (regression from known-good state) |
+| `ollama_no_models` | warn | Ollama reachable + `list_models() == []` AND no cloud fallback |
+| `cloud_key_invalid` | error | Every configured cloud key validated as invalid + no Ollama fallback |
+| `all_providers_unhealthy` | error | At least one provider configured but none currently available |
+| `default_model_unavailable` | error | Provider available but `default_model` not in its catalogue |
+| `partial_health` | warn | Some providers available + some unhealthy (routing continues) |
+
+The legacy `no_llm_provider` reason is dual-emitted through the v0.49.x
+cycle (ADR-D14); Phase 3 v0.50.0 drops it. See
+[docs/modules/llm-provider-integrity.md](modules/llm-provider-integrity.md)
+for the full taxonomy + action-chip mapping.
 
 ### Telemetry
 
