@@ -53,6 +53,7 @@ if TYPE_CHECKING:
     from sovyx.cognitive.state import CognitiveStateMachine
     from sovyx.cognitive.think import ThinkPhase
     from sovyx.engine.events import EventBus
+    from sovyx.llm.router import LLMRouter
     from sovyx.observability.metrics import _NoOpRegistry
 
 logger = get_logger(__name__)
@@ -100,6 +101,8 @@ class CognitiveLoop:
         reflect: ReflectPhase,
         event_bus: EventBus,
         brain: BrainService | None = None,
+        llm_router: LLMRouter | None = None,
+        cognitive_degraded_mode_fail_fast: bool = True,
     ) -> None:
         self._state = state_machine
         self._perceive = perceive
@@ -109,14 +112,109 @@ class CognitiveLoop:
         self._reflect = reflect
         self._events = event_bus
         self._brain = brain
+        # Mission C6 §T4.1 — dependency gate (anti-pattern #44).
+        # Optional ``llm_router`` keeps backward-compat with the pre-C6
+        # constructor; bootstrap.py passes the registry-resolved router.
+        # When ``None`` the LLM-side dependency check is skipped (treated
+        # as "always available") so existing tests don't need updates.
+        self._llm_router = llm_router
+        self._fail_fast_on_missing_dep = cognitive_degraded_mode_fail_fast
+        # State recorded at :meth:`start`. ``True`` until ``start`` runs
+        # — preserves the legacy "no dependency check" behaviour for
+        # callers that never call ``start`` (some test fixtures).
+        self._dependency_ready: bool = True
+        self._missing_dependencies: tuple[str, ...] = ()
 
     async def start(self) -> None:
-        """Start the cognitive loop."""
-        logger.info("cognitive_loop_started")
+        """Start the cognitive loop with dependency-gate enforcement (Mission C6 §T4.1).
+
+        Verifies every external dependency the loop's phases will need to
+        produce useful output. When any dependency is absent, emits a
+        structured ``cognitive.loop.started_in_degraded_mode`` WARN AND
+        records the missing-dependency list on the instance so
+        :meth:`process_request` short-circuits without firing the
+        invisible perceive→attend→think→act→reflect chain.
+
+        Anti-pattern #44: dependency-gated workers MUST verify their
+        dependency contract at startup, emit a structured signal when
+        the dependency is absent, AND gate every iteration.
+        """
+        missing: list[str] = []
+        verdict_llm: str | None = None
+        if self._llm_router is not None and not self._llm_router.has_available_provider():
+            missing.append("llm_router_no_available_provider")
+            report = getattr(self._llm_router, "discovery_report", None)
+            verdict_llm = (
+                report.verdict.value
+                if report is not None and hasattr(report, "verdict")
+                else "unknown"
+            )
+        brain_ready: bool | None = None
+        if self._brain is not None:
+            brain_ready = self._brain.embedding_model_ready
+            if not brain_ready:
+                missing.append("brain_embedding_model_not_ready")
+        self._missing_dependencies = tuple(missing)
+        self._dependency_ready = not missing
+
+        if missing:
+            # c4-allowlist: cognitive-loop degradation is a CONSEQUENCE of axis=llm/brain (store record already lands via Mission C6 §T2.2 dispatch).  # noqa: E501
+            logger.warning(
+                "cognitive.loop.started_in_degraded_mode",
+                missing_dependencies=list(missing),
+                verdict_llm=verdict_llm,
+                embedding_model_ready=brain_ready,
+                fail_fast=self._fail_fast_on_missing_dep,
+            )
+        else:
+            logger.info("cognitive_loop_started")
 
     async def stop(self) -> None:
         """Stop the cognitive loop."""
         logger.info("cognitive_loop_stopped")
+
+    def _maybe_synthetic_dependency_missing(
+        self,
+        request: CognitiveRequest,
+    ) -> ActionResult | None:
+        """Return a synthetic :class:`ActionResult` when dependencies are missing.
+
+        Mission C6 §T4.4 — when ``cognitive_degraded_mode_fail_fast`` is
+        True AND any dependency the loop needs is absent, short-circuit
+        before running any phase. The synthetic result carries the
+        ``degraded=True`` + ``error=True`` flags + a metadata payload
+        the channels can render as an operator-actionable message.
+
+        Returns ``None`` when the loop is healthy (caller proceeds with
+        the normal phase chain) OR when fail-fast is disabled (caller
+        runs the loop and individual phases surface their own failures).
+        """
+        if self._dependency_ready:
+            return None
+        if not self._fail_fast_on_missing_dep:
+            return None
+        target_channel = str(getattr(request, "channel", "")) or "unknown"
+        reply_to = getattr(request, "request_id", None) or getattr(request, "message_id", None)
+        logger.info(
+            "cognitive.loop.short_circuit_degraded",
+            missing_dependencies=list(self._missing_dependencies),
+            target_channel=target_channel,
+        )
+        return ActionResult(
+            response_text=(
+                "I can't respond right now — the cognitive loop is in degraded "
+                "mode (no LLM provider available). Configure a provider via "
+                "'sovyx llm setup' or check the dashboard provider settings."
+            ),
+            target_channel=target_channel,
+            reply_to=str(reply_to) if reply_to is not None else None,
+            degraded=True,
+            error=True,
+            metadata={
+                "reason": "cognitive_dependency_missing",
+                "missing_dependencies": list(self._missing_dependencies),
+            },
+        )
 
     @trace_saga("cognitive_loop", kind="cognitive")
     async def process_request(self, request: CognitiveRequest) -> ActionResult:
@@ -125,11 +223,21 @@ class CognitiveLoop:
         NEVER raises an exception — always returns ActionResult.
         State machine always resets to IDLE via finally block.
 
+        Mission C6 §T4.4 dependency-gate short-circuit: when
+        ``self._dependency_ready`` is False AND ``cognitive_degraded_mode_fail_fast``
+        is True, returns a synthetic ActionResult immediately without
+        running the perceive→attend→think→act→reflect chain (closes
+        forensic finding H5 — the 439-second silent worker spin).
+
         Wrapped in ``@trace_saga`` so every log emitted during the loop
         (perceive/attend/think/act/reflect, brain calls, LLM calls,
         plugin invokes, brain writes) shares the same ``saga_id`` and
         the operator can reconstruct the full causal chain by filter.
         """
+        short_circuit = self._maybe_synthetic_dependency_missing(request)
+        if short_circuit is not None:
+            return short_circuit
+
         tracer = get_tracer()
         metrics = get_metrics()
 
@@ -166,7 +274,17 @@ class CognitiveLoop:
         response of the ReAct loop is NOT streamed (V2 work).
 
         NEVER raises — always returns ActionResult.
+
+        Mission C6 §T4.4 dependency-gate short-circuit applies to the
+        streaming path as well — the synthetic ActionResult bypasses the
+        ``on_text_chunk`` callback (no chunks fired) so the channel can
+        render the operator-actionable error message instead of an empty
+        stream.
         """
+        short_circuit = self._maybe_synthetic_dependency_missing(request)
+        if short_circuit is not None:
+            return short_circuit
+
         tracer = get_tracer()
         metrics = get_metrics()
 

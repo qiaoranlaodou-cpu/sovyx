@@ -94,6 +94,19 @@ class BrainService:
         self._background_tasks: set[asyncio.Task[None]] = set()
 
     @property
+    def embedding_model_ready(self) -> bool:
+        """Return True iff the embedding model is loaded and usable.
+
+        Mission C6 §T4.3 — fast readiness signal for the CognitiveLoop
+        dependency gate (anti-pattern #44). The brain falls through to
+        FTS5 search when this is False, so the cognitive loop's perceive
+        + retrieval phases still function for non-semantic queries; the
+        gate uses this to decide whether to surface a
+        ``cognitive.loop.started_in_degraded_mode`` signal.
+        """
+        return bool(getattr(self._embedding, "has_embeddings", False))
+
+    @property
     def emotional_baseline(self) -> EmotionalBaselineConfig:
         """Public read-only view of this mind's emotional baseline config."""
         return self._emotional_baseline

@@ -154,6 +154,121 @@ class TestC6OperatorL373L377Replay:
         # instead of staring at a clean lifecycle log.
 
 
+class TestC6CognitiveLoopDependencyGate:
+    """Phase 1.D §F3 + §F5 — H5 structural-side closure.
+
+    Replays operator log L412 (``cognitive_loop_started``) + L412..L3553
+    (439-second worker spin with ZERO ``cognitive.{perceive,attend,think,
+    act,reflect}`` events). Pre-Phase-1.D the loop fired its full
+    lifecycle silently. Post-Phase-1.D the dependency gate either
+    short-circuits each request OR (per ADR-D5 default) emits the
+    operator-visible ``started_in_degraded_mode`` WARN.
+    """
+
+    @pytest.mark.asyncio
+    async def test_l412_cognitive_loop_starts_in_degraded_mode_when_no_llm(
+        self,
+    ) -> None:
+        """Replays the L412 cognitive_loop_started boundary: when the
+        router has no available provider, ``start()`` MUST emit
+        ``cognitive.loop.started_in_degraded_mode`` instead of the
+        legacy bare ``cognitive_loop_started`` INFO."""
+        from unittest.mock import MagicMock, patch
+
+        from sovyx.cognitive.loop import CognitiveLoop
+
+        router = MagicMock()
+        router.has_available_provider = MagicMock(return_value=False)
+        router.discovery_report = None
+        loop = CognitiveLoop(
+            state_machine=MagicMock(),
+            perceive=MagicMock(),
+            attend=MagicMock(),
+            think=MagicMock(),
+            act=MagicMock(),
+            reflect=MagicMock(),
+            event_bus=MagicMock(),
+            brain=None,
+            llm_router=router,
+        )
+        with patch("sovyx.cognitive.loop.logger") as mock_logger:
+            await loop.start()
+        # Verify the WARN fired (structlog bypasses caplog — patch the logger).
+        warn_calls = [
+            c
+            for c in mock_logger.warning.call_args_list
+            if c[0][0] == "cognitive.loop.started_in_degraded_mode"
+        ]
+        assert len(warn_calls) == 1
+        assert loop._dependency_ready is False
+
+    @pytest.mark.asyncio
+    async def test_l412_l3553_zero_phase_events_when_short_circuited(
+        self,
+    ) -> None:
+        """F5 — when fail-fast=True + no LLM, ``process_request`` returns
+        the synthetic ActionResult within < 100 ms WITHOUT firing any
+        ``cognitive.{perceive,attend,think,act,reflect}`` log events.
+
+        Asserts the structural half of H5 closure: the cognitive worker
+        no longer burns cycles producing invisible no-op work — instead
+        it returns an operator-actionable failure result that channels
+        can render.
+        """
+        import time
+        from unittest.mock import AsyncMock, MagicMock
+
+        from sovyx.cognitive.act import ActionResult
+        from sovyx.cognitive.loop import CognitiveLoop
+
+        router = MagicMock()
+        router.has_available_provider = MagicMock(return_value=False)
+        router.discovery_report = None
+        # Phases would emit cognitive.* events if invoked — we use AsyncMock
+        # that fails loudly so any accidental invocation surfaces.
+        loop = CognitiveLoop(
+            state_machine=MagicMock(),
+            perceive=MagicMock(),
+            attend=MagicMock(),
+            think=MagicMock(),
+            act=MagicMock(),
+            reflect=MagicMock(),
+            event_bus=MagicMock(),
+            brain=None,
+            llm_router=router,
+        )
+        await loop.start()
+        # Replace _execute_loop with one that records its invocation
+        loop._execute_loop = AsyncMock(
+            side_effect=AssertionError("loop body must not run when deps missing"),
+        )
+
+        req = MagicMock()
+        req.mind_id = "jonny"
+        req.conversation_id = "conv-1"
+        req.channel = "voice"
+        req.request_id = "req-1"
+
+        started = time.perf_counter()
+        result = await loop.process_request(req)
+        elapsed_ms = (time.perf_counter() - started) * 1000.0
+
+        # Short-circuit within tight time budget (the spec says < 100 ms;
+        # in practice this is sub-millisecond because no I/O).
+        assert elapsed_ms < 100.0, f"Short-circuit too slow: {elapsed_ms:.2f}ms"
+
+        assert isinstance(result, ActionResult)
+        assert result.degraded is True
+        assert result.error is True
+        assert result.metadata["reason"] == "cognitive_dependency_missing"
+        # H5 structural assertion: no phase code ran. The fact that
+        # ``_execute_loop`` is the side_effect-raising AsyncMock above
+        # (re-asserted by ``assert_not_called`` here) suffices — if any
+        # phase had fired, the side_effect would have raised AssertionError
+        # before we reached this line.
+        loop._execute_loop.assert_not_called()
+
+
 class TestC6PreMissionWouldHaveFailed:
     """Documents what the pre-mission scanner could NOT distinguish.
 

@@ -984,6 +984,12 @@ async def bootstrap(
                 reflect=reflect,
                 event_bus=event_bus,
                 brain=brain_service,
+                # Mission C6 §T4.1 dependency gate — pass the live router
+                # so ``CognitiveLoop.start`` can check ``has_available_provider``
+                # and emit ``cognitive.loop.started_in_degraded_mode`` when
+                # no provider is available. Anti-pattern #44 compliance.
+                llm_router=router,
+                cognitive_degraded_mode_fail_fast=llm_tuning.cognitive_degraded_mode_fail_fast,
             )
             registry.register_instance(CognitiveLoop, cog_loop)
 
