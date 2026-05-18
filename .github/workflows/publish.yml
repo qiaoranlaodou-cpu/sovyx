@@ -84,6 +84,20 @@ jobs:
               --static-dir /tmp/wheel-check/sovyx/dashboard/static
           echo "✓ Wheel-internal dashboard bundle integrity verified (Mission C5 §T1.4)"
 
+      - name: Verify LLM provider wire-discipline
+        # Mission C6 §T1.4 — STRICT post-build gate (publish path is bypass-proof
+        # even while Gate 12 is LENIENT in scripts/verify_gates.sh until v0.50.0).
+        # Closes the 5-surface drift class so a new 10th-or-Nth cloud provider
+        # added to LLMProviderKey without parallel wiring in bootstrap.py +
+        # onboarding.py + _default_model_for + locale i18n + docs cannot ship
+        # silently. Runs against the repo tree (the registry + checker live in
+        # the source tree; wheel-internal verify is N/A — wire-discipline is
+        # always evaluated against the canonical registry, not the artifact).
+        run: |
+          set -euo pipefail
+          uv run python scripts/dev/check_llm_provider_discipline.py
+          echo "✓ LLM provider wire-discipline verified (Mission C6 §T1.4 STRICT)"
+
       - name: Upload dist artifacts
         uses: actions/upload-artifact@v4
         with:

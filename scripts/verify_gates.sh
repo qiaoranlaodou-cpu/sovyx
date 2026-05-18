@@ -45,7 +45,7 @@ else
 fi
 
 GATE_NUM=0
-GATE_TOTAL=11
+GATE_TOTAL=12
 FAILURES=()
 
 ok() {
@@ -256,6 +256,27 @@ else
     # Non-zero exit — LENIENT phase, warn only; do NOT fail verify_gates.sh.
     # Phase 3 STRICT promotion will replace this branch with `bad ...`.
     printf '%s⚠%s gate %d/%d — dashboard bundle integrity LENIENT warn (Phase 1.A v0.47.0; STRICT at v0.48.0); log: %s\n' \
+        "$YELLOW" "$RESET" "$GATE_NUM" "$GATE_TOTAL" "$LOG"
+fi
+
+# ── Gate 12: LLM provider wire-discipline (Mission C6 §T1.4) ─────────
+# Mission C6 Phase 1.A LENIENT — warn-only locally; STRICT in publish.yml's
+# post-build verify (Mission C6 §T1.4). Phase 3 v0.50.0 promotes this to
+# STRICT in verify_gates.sh as well, per ADR-D12.
+GATE_NUM=12
+LOG="$LOG_DIR/12-llm-provider-discipline.log"
+if uv run python scripts/dev/check_llm_provider_discipline.py >"$LOG" 2>&1; then
+    if grep -q "discipline: PASS" "$LOG"; then
+        ok "llm provider discipline — PASS"
+    else
+        # exit 0 but no summary line — gate ran in an unexpected shape, warn
+        printf '%s⚠%s gate %d/%d — llm provider discipline LENIENT warn: exit 0 without PASS line; log: %s\n' \
+            "$YELLOW" "$RESET" "$GATE_NUM" "$GATE_TOTAL" "$LOG"
+    fi
+else
+    # Non-zero exit — LENIENT phase, warn only; do NOT fail verify_gates.sh.
+    # Phase 3 v0.50.0 STRICT promotion will replace this branch with `bad ...`.
+    printf '%s⚠%s gate %d/%d — llm provider discipline LENIENT warn (Phase 1.A v0.49.0; STRICT at v0.50.0); log: %s\n' \
         "$YELLOW" "$RESET" "$GATE_NUM" "$GATE_TOTAL" "$LOG"
 fi
 

@@ -41,13 +41,13 @@ Sovereign Minds Engine — persistent AI companion with real memory, cognitive l
 
 ```bash
 ./scripts/install_hooks.sh    # one-time per clone — installs pre-push hook
-./scripts/verify_gates.sh     # runs all 11 gates + writes .git/.last-gates-pass marker
+./scripts/verify_gates.sh     # runs all 12 gates + writes .git/.last-gates-pass marker
 git push                      # hook validates marker fresh + HEAD-matched, else REJECTS
 ```
 
 The hook at `.githooks/pre-push` (activated by `install_hooks.sh` via `git config core.hooksPath .githooks`) checks `.git/.last-gates-pass` for a HEAD-matching marker within 30 min (override: `SOVYX_GATES_MAX_AGE_SEC`). Escape hatch `git push --no-verify` requires explicit operator approval + commit-body rationale.
 
-The 11 gates (in order):
+The 12 gates (in order):
 
 ```bash
 uv run ruff check src/ tests/                                          # 1. lint
@@ -61,6 +61,7 @@ uv run python scripts/dev/check_boundary_round_trip_coverage.py        # 8. boun
 uv run python scripts/dev/check_ladder_iteration_discipline.py         # 9. ladder iteration (Mission C3 §T4.1)
 uv run python scripts/dev/check_degraded_signal_surface.py             # 10. degraded signal surface (Mission C4 §T5.1)
 uv run python scripts/dev/check_dashboard_bundle_integrity.py          # 11. dashboard bundle integrity (Mission C5 §T1.3) — LENIENT in v0.47.x; STRICT at v0.48.0
+uv run python scripts/dev/check_llm_provider_discipline.py             # 12. llm provider wire-discipline (Mission C6 §T1.4) — LENIENT in v0.49.x; STRICT at v0.50.0
 ```
 
 Plus `uv lock --check` when bumping versions. If running gates ad-hoc, grep the summary line — never trust the harness exit code alone. Pre-v0.42.2 the pattern `pytest ... 2>&1 | tail -N` masked 6 real failures across 4 cycles (`feedback_ci_preflight.md` + `feedback_no_speculation.md` Addendum 2026-05-14).
