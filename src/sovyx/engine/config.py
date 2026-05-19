@@ -2757,6 +2757,20 @@ class ObservabilityFeaturesConfig(BaseSettings):
     anomaly_detection: bool = True
     tamper_chain: bool = False
     schema_validation: bool = True
+    # Mission H4 §8 T4.7 ADR-D15 — opt-in tracemalloc (default OFF; 25-30%
+    # memory overhead). When True, bootstrap calls ``tracemalloc.start()``
+    # so the ResourceRegistry's ``tracemalloc.current_kb`` /
+    # ``tracemalloc.peak_kb`` snapshot fields are meaningful + the Phase
+    # 1.E heap-snapshot trigger has real allocator data.
+    tracemalloc: bool = False
+    # Mission H4 §8 T4.5 + anti-pattern #34 — kill-switch for the
+    # ResourceCohortGovernor. Default ON; flipping False makes the
+    # snapshotter skip governor.evaluate_snapshot() entirely (lazy
+    # singleton not even constructed). Useful as a clean rollback path
+    # if the governor produces spurious BUDGET_EXCEEDED noise in early
+    # Phase 2 calibration. The structured `self.health.snapshot` stream
+    # is unaffected.
+    cohort_governor: bool = True
     # Phase 11 Task 11.6 — opt-in dedicated Prometheus scrape port. Default
     # off because operators commonly run behind a firewall that doesn't
     # expose 9101; the dashboard also serves /metrics on its own port for
@@ -2860,6 +2874,27 @@ class ObservabilityTuningConfig(BaseSettings):
     # tests can exercise the loop quickly; ``le=3600`` so a misconfigured
     # daemon can't go a whole hour silent on the gap-detection probe.
     canary_interval_seconds: int = Field(default=60, ge=5, le=3600)
+
+    # ── Mission H4 §8 T4.7 — ResourceCohortGovernor budgets ──
+    # 12 knobs operator-tunable via ``SOVYX_OBSERVABILITY__TUNING__*``.
+    # Defaults match the Phase 1.D hardcoded values shipped in v0.49.17
+    # so existing telemetry baselines are preserved. The governor reads
+    # these via ``ResourceCohortGovernor.from_tuning(tuning)`` at
+    # bootstrap; tests inject custom budgets directly.
+    cohort_rss_growth_threshold_mb: int = Field(default=512, ge=1, le=65_536)
+    cohort_thread_growth_threshold: int = Field(default=32, ge=1, le=10_000)
+    cohort_window_s: int = Field(default=60, ge=5, le=3_600)
+    cohort_lock_dict_soft_cap: int = Field(default=6_000, ge=1, le=10_000_000)
+    cohort_onnx_session_soft_cap: int = Field(default=8, ge=1, le=1_024)
+    cohort_breaker_threshold: int = Field(default=3, ge=1, le=100)
+    cohort_breaker_window_s: int = Field(default=3_600, ge=60, le=86_400)
+    exception_cohort_window_s: int = Field(default=300, ge=5, le=3_600)
+    exception_cohort_retained_bytes_cap: int = Field(
+        default=16 * 1024 * 1024, ge=1024, le=10 * 1024 * 1024 * 1024
+    )
+    tracemalloc_nframes: int = Field(default=25, ge=1, le=200)
+    heap_snapshot_max_files: int = Field(default=10, ge=1, le=1_000)
+    thread_snapshot_max_files: int = Field(default=10, ge=1, le=1_000)
 
 
 class ObservabilityOtelConfig(BaseSettings):

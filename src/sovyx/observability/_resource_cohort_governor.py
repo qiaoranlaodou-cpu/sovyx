@@ -64,6 +64,8 @@ from sovyx.observability.logging import get_logger
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
+    from sovyx.engine.config import ObservabilityTuningConfig
+
 logger = get_logger(__name__)
 
 
@@ -125,6 +127,45 @@ _DEFAULT_BUDGETS: tuple[CohortBudget, ...] = (
 )
 
 
+def _budgets_from_tuning(tuning: ObservabilityTuningConfig) -> tuple[CohortBudget, ...]:
+    """Build a budget tuple from operator-tunable knobs.
+
+    Mission H4 §8 T4.7 ADR-D12 — the governor consumes the
+    ``cohort_*`` knobs on :class:`ObservabilityTuningConfig` instead of
+    hardcoded constants so operators can re-tune via
+    ``SOVYX_OBSERVABILITY__TUNING__*`` env vars without a code change.
+    The defaults shipped on the config class match the v0.49.17
+    constants so existing baselines hold.
+    """
+    return (
+        CohortBudget(
+            axis=CohortAxis.RSS_GROWTH,
+            threshold=tuning.cohort_rss_growth_threshold_mb * 1024 * 1024,
+            window_s=tuning.cohort_window_s,
+        ),
+        CohortBudget(
+            axis=CohortAxis.THREAD_COUNT,
+            threshold=tuning.cohort_thread_growth_threshold,
+            window_s=tuning.cohort_window_s,
+        ),
+        CohortBudget(
+            axis=CohortAxis.LOCK_DICT_CARDINALITY,
+            threshold=tuning.cohort_lock_dict_soft_cap,
+            window_s=tuning.cohort_window_s,
+        ),
+        CohortBudget(
+            axis=CohortAxis.ONNX_SESSION,
+            threshold=tuning.cohort_onnx_session_soft_cap,
+            window_s=tuning.cohort_window_s,
+        ),
+        CohortBudget(
+            axis=CohortAxis.EXCEPTION_COHORT,
+            threshold=tuning.exception_cohort_retained_bytes_cap,
+            window_s=tuning.exception_cohort_window_s,
+        ),
+    )
+
+
 _OBSERVATION_RING_MAX: int = 32  # bounded history per cohort
 
 
@@ -159,6 +200,19 @@ class ResourceCohortGovernor:
         default_factory=lambda: deque(maxlen=_OBSERVATION_RING_MAX),
     )
     _lock: Lock = field(default_factory=Lock)
+
+    @classmethod
+    def from_tuning(
+        cls, tuning: ObservabilityTuningConfig, *, enabled: bool = True
+    ) -> ResourceCohortGovernor:
+        """Build a governor from operator-tunable knobs.
+
+        Mission H4 §8 T4.7 ADR-D12 — bootstrap calls this with the live
+        :class:`ObservabilityTuningConfig` so the 12 ``cohort_*`` env
+        overrides take effect. Tests using the bare ``ResourceCohortGovernor()``
+        constructor get the v0.49.17 hardcoded defaults — backward-compat.
+        """
+        return cls(budgets=_budgets_from_tuning(tuning), enabled=enabled)
 
     def evaluate_snapshot(self, snapshot: Mapping[str, object]) -> list[CohortEvaluation]:
         """Evaluate every cohort against the given snapshot.
@@ -397,7 +451,59 @@ def emit_axis_entries(evaluations: list[CohortEvaluation]) -> int:
             },
         )
         _record_to_composite_store(evaluation)
+        _increment_cohort_budget_counter(evaluation)
     return emitted
+
+
+def _increment_cohort_budget_counter(evaluation: CohortEvaluation) -> None:
+    """Best-effort OTel counter increment for the cohort-breach event.
+
+    Mission H4 §T2.6 + ADR-D20 — paired with the structured WARN above.
+    Counter lookup is best-effort: a setup-time race where MetricsRegistry
+    isn't ready yet falls back to a debug-level log + skips the increment.
+    The structured WARN + composite-store entry remain the load-bearing
+    surfaces.
+    """
+    try:
+        from sovyx.observability.metrics import get_metrics  # noqa: PLC0415 — lazy
+
+        counter = getattr(get_metrics(), "voice_health_cohort_budget_exceeded", None)
+        if counter is None:
+            return
+        # Severity per ADR-D6: 1 cohort = warning (governor default). A
+        # future caller that aggregates multiple BUDGET_EXCEEDED events
+        # within one tick can escalate by inspecting the returned counter
+        # state on the composite endpoint.
+        counter.add(
+            1,
+            attributes={
+                "cohort": evaluation.axis.value,
+                "severity": "warning",
+            },
+        )
+    except Exception:  # noqa: BLE001 — counter must NEVER break the snapshot path
+        logger.debug(
+            "engine.resources.cohort_budget_counter_failed",
+            cohort=evaluation.axis.value,
+            exc_info=True,
+        )
+
+
+def record_resource_snapshot_emission(*, final: bool) -> None:
+    """Per-snapshot-tick counter increment — Mission H4 §T2.6 + ADR-D20.
+
+    Called by :func:`ResourceSnapshotter._emit_snapshot` after the
+    structured-log emission. Best-effort; failures absorbed.
+    """
+    try:
+        from sovyx.observability.metrics import get_metrics  # noqa: PLC0415 — lazy
+
+        counter = getattr(get_metrics(), "voice_health_resource_snapshot_emission", None)
+        if counter is None:
+            return
+        counter.add(1, attributes={"final": str(final).lower()})
+    except Exception:  # noqa: BLE001 — counter must NEVER break the snapshot path
+        logger.debug("engine.resources.snapshot_emission_counter_failed", exc_info=True)
 
 
 def _record_to_composite_store(evaluation: CohortEvaluation) -> None:
@@ -478,5 +584,6 @@ __all__ = [
     "ResourceCohortGovernor",
     "emit_axis_entries",
     "get_default_resource_cohort_governor",
+    "record_resource_snapshot_emission",
     "reset_default_resource_cohort_governor",
 ]

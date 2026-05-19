@@ -377,8 +377,10 @@ class ResourceSnapshotter:
             from sovyx.observability._resource_cohort_governor import (  # noqa: PLC0415 — lazy import
                 emit_axis_entries,
                 get_default_resource_cohort_governor,
+                record_resource_snapshot_emission,
             )
 
+            record_resource_snapshot_emission(final=final)
             evaluations = get_default_resource_cohort_governor().evaluate_snapshot(payload)
             emit_axis_entries(evaluations)
         except Exception:  # noqa: BLE001 — governor must NEVER break the snapshot path

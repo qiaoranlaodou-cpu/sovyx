@@ -617,6 +617,42 @@ class MetricsRegistry:
             "Operators dashboard verdict-router output AND cascade-layer "
             "Diagnosis output on one chart. See mission §4.20 ADR-D20.",
         )
+
+        # ── Mission H4 §T2.6 + ADR-D20 — resource-cohort instrumentation ──
+        # Two new counters complete the H4 Phase 1.D observability surface:
+        # one per-snapshot-tick emission (paired with the structured
+        # `self.health.snapshot` log line), and one per
+        # `ResourceCohortGovernor` BUDGET_EXCEEDED verdict (paired with the
+        # `engine.resources.cohort_budget_exceeded` WARN + composite-store
+        # entry under axis="engine_resources"). Together they let Grafana /
+        # Prometheus dashboards correlate cohort breach rate against the
+        # raw psutil / asyncio / registry deltas WITHOUT having to ingest
+        # the structured-log stream. Forward-additive per ADR-D11
+        # (schema_version="2.0.0" semantics implicit via the new attribute
+        # set: cohort, observed, budget, severity).
+        self.voice_health_resource_snapshot_emission = self._counter(
+            "sovyx.voice.health.resource_snapshot_emission",
+            "Mission H4 per-snapshot-tick emission counter (label: final). "
+            "Increments once per ResourceSnapshotter._emit_snapshot call so "
+            "operators can verify the snapshotter pulse is healthy + correlate "
+            "the rate against `process.cpu_percent` to detect snapshot-loop "
+            "starvation. final=True fires once at shutdown. Mission spec §4.20 "
+            "ADR-D20.",
+        )
+        self.voice_health_cohort_budget_exceeded = self._counter(
+            "sovyx.voice.health.cohort_budget_exceeded",
+            "Mission H4 per-cohort budget-breach counter (labels: cohort, "
+            "severity). Increments once per "
+            "ResourceCohortGovernor.evaluate_snapshot() result where verdict "
+            "== BUDGET_EXCEEDED. Cohort label is one of "
+            "{rss_growth, thread_count, lock_dict_cardinality, onnx_session, "
+            "exception_cohort}; severity is one of {warning, error, critical} "
+            "per ADR-D6 escalation. Routes alongside the structured WARN "
+            "`engine.resources.cohort_budget_exceeded` + the C4 "
+            "EngineDegradedStore entry under axis=engine_resources. Mission "
+            "spec §8 T4.1 + ADR-D20.",
+        )
+
         self.voice_health_bypass_probe_wait_ms = self._histogram(
             "sovyx.voice.health.bypass.probe_wait_ms",
             "Wall-clock time the CaptureIntegrityCoordinator waited in "

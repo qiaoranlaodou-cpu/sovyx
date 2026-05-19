@@ -308,6 +308,7 @@ _SUBMODULE_MAP: dict[str, tuple[str, ...]] = {
         "ResourceCohortGovernor",
         "emit_axis_entries",
         "get_default_resource_cohort_governor",
+        "record_resource_snapshot_emission",
         "reset_default_resource_cohort_governor",
     ),
     "sovyx.observability._thread_dispatch": ("dispatch_to_thread",),

@@ -306,6 +306,85 @@ _SIGNATURES: list[FailureSignature] = [
         "warning",
         None,
     ),
+    # ── Mission H4 — ResourceCohortGovernor cohort breaches ──
+    # Five cohort-specific hints + one generic catch-all. The structured
+    # event name is the same for every cohort (engine.resources.cohort_
+    # budget_exceeded) but the ``engine.resources.cohort`` field
+    # disambiguates. Match the canonical cohort labels emitted by
+    # :func:`sovyx.observability._resource_cohort_governor.emit_axis_entries`.
+    FailureSignature(
+        {
+            "event": "engine.resources.cohort_budget_exceeded",
+            "engine.resources.cohort": "rss_growth",
+        },
+        "Process RSS grew above the configured budget. Inspect "
+        "`onnx.session_count` + `lock_dict.per_owner` on the same snapshot "
+        "to attribute. Enable `observability.features.tracemalloc=True` for "
+        "allocator-level forensics on the next breach.",
+        "warning",
+        "docs/operations/resource-hygiene.md",
+    ),
+    FailureSignature(
+        {
+            "event": "engine.resources.cohort_budget_exceeded",
+            "engine.resources.cohort": "thread_count",
+        },
+        "Thread count grew above the configured budget. Likely "
+        "ThreadPoolExecutor default-executor saturation from "
+        "`dispatch_to_thread` calls under failover load. Inspect "
+        "`to_thread.dispatch_count_per_label` on the snapshot for the "
+        "noisy label.",
+        "warning",
+        "docs/operations/resource-hygiene.md",
+    ),
+    FailureSignature(
+        {
+            "event": "engine.resources.cohort_budget_exceeded",
+            "engine.resources.cohort": "lock_dict_cardinality",
+        },
+        "Aggregate LRULockDict cardinality crossed the soft cap. Inspect "
+        "`lock_dict.per_owner` for the saturated owner_id and bump that "
+        "instance's `maxsize` OR audit the eviction churn rate.",
+        "warning",
+        "docs/operations/resource-hygiene.md",
+    ),
+    FailureSignature(
+        {
+            "event": "engine.resources.cohort_budget_exceeded",
+            "engine.resources.cohort": "onnx_session",
+        },
+        "ONNX InferenceSession count exceeds the expected ceiling. Audit "
+        "`onnx.session_labels` on the snapshot for unexpected sessions; "
+        "single-mind GA expects 4-5 (VAD + STT + wake-word + brain + "
+        "optional TTS). Multiple instances of the same label suggest a "
+        "lifecycle leak — sessions are not being garbage-collected.",
+        "warning",
+        "docs/operations/resource-hygiene.md",
+    ),
+    FailureSignature(
+        {
+            "event": "engine.resources.cohort_budget_exceeded",
+            "engine.resources.cohort": "exception_cohort",
+        },
+        "Accumulated `ExceptionGroup` retained-bytes-estimate crossed the "
+        "cap — usually a 500-storm class (e.g. Mission C2 ValidationError "
+        "bursts). Inspect `anomaly.error_rate_spike` events nearby; the "
+        "underlying boundary mismatch needs to be fixed at the producer "
+        "site.",
+        "warning",
+        "docs/operations/resource-hygiene.md",
+    ),
+    # Catch-all for any future cohort label that isn't in the explicit list
+    # above. Keep AFTER the specific signatures so they win on first-match.
+    FailureSignature(
+        {"event": _re(r"^engine\.resources\.cohort_budget_exceeded$")},
+        "Resource cohort breached its budget. Inspect the "
+        "`engine.resources.cohort` + `engine.resources.observed` + "
+        "`engine.resources.budget` fields for attribution. See the "
+        "operations runbook for cohort-specific remediation.",
+        "warning",
+        "docs/operations/resource-hygiene.md",
+    ),
 ]
 
 

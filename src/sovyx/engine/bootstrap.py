@@ -446,6 +446,48 @@ async def bootstrap(
             spawn(hotpath_snapshotter.run(), name="hotpath-snapshotter")
             registry.register_instance(HotPathSnapshotter, hotpath_snapshotter)
 
+            # ── Mission H4 §T4.5 — ResourceCohortGovernor wire-up ──
+            # Gated by ``observability.features.cohort_governor`` (default
+            # True per anti-pattern #34 inverse — observability is on by
+            # default; the kill-switch exists for clean rollback). The
+            # snapshotter calls the governor via its lazy-singleton — this
+            # block primes the singleton with the operator-tunable budgets
+            # so env-var overrides take effect from tick #1, rather than
+            # falling back to the v0.49.17 hardcoded defaults.
+            #
+            # Mission H4 §ADR-D15 — opt-in tracemalloc. Default OFF (25-30%
+            # memory overhead). When True, ``tracemalloc.start()`` runs here
+            # so the snapshot's ``tracemalloc.current_kb`` /
+            # ``tracemalloc.peak_kb`` fields become meaningful + the Phase
+            # 1.E heap-snapshot trigger has real allocator data.
+            if engine_config.observability.features.cohort_governor:
+                from sovyx.observability._resource_cohort_governor import (
+                    ResourceCohortGovernor,
+                    reset_default_resource_cohort_governor,
+                )
+
+                reset_default_resource_cohort_governor()
+                from sovyx.observability._resource_cohort_governor import (
+                    _SINGLETON_LOCK,
+                )
+
+                governor = ResourceCohortGovernor.from_tuning(
+                    engine_config.observability.tuning, enabled=True
+                )
+                import sovyx.observability._resource_cohort_governor as _governor_mod
+
+                with _SINGLETON_LOCK:
+                    _governor_mod._SINGLETON = governor
+                registry.register_instance(ResourceCohortGovernor, governor)
+
+            if engine_config.observability.features.tracemalloc:
+                import tracemalloc
+
+                if not tracemalloc.is_tracing():
+                    tracemalloc.start(
+                        engine_config.observability.tuning.tracemalloc_nframes,
+                    )
+
         # 0.55. Synthetic canary heartbeat (§27.3 — Phase 11+ Task 11+.10).
         # Emits ``meta.canary.tick`` every ``canary_interval_seconds``
         # (default 60 s). An external operator script — outside this repo —
