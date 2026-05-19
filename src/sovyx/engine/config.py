@@ -1279,6 +1279,42 @@ class VoiceTuningConfig(BaseSettings):
 
     Override via ``SOVYX_TUNING__VOICE__APO_DETECTOR_DUAL_EMIT_ENABLED=false``."""
 
+    # ── Mission H3 §T4.4 ADR-D18 — composite-store wire shim kill switches.
+    # Default True per anti-pattern #34 inverse (observability always-on).
+    # Phase 1.D v0.49.13 lands the producer wire at
+    # ``capture_integrity.py:_quarantine_endpoint`` that records each
+    # quarantine event into :class:`EngineDegradedStore` so the
+    # ``<DegradedBanner>`` renders the per-endpoint state alongside C4's
+    # ladder-exhaust banner. Operators who manage quarantine via external
+    # tooling can flip the knob False to suppress the composite-store
+    # write without disabling the underlying quarantine + recheck logic.
+    quarantine_composite_store_emit_enabled: bool = True
+    """Mission H3 §T4.4 ADR-D18 — composite-store wire shim. When True
+    (default), :meth:`CaptureIntegrityCoordinator._quarantine_endpoint`
+    records the quarantine event as a ``DegradedEntry`` with
+    ``axis="voice"`` + ``reason="quarantine.<resolved_reason>"`` on
+    :class:`EngineDegradedStore`. The composite ``<DegradedBanner>``
+    aggregates with the C4 ``failover_ladder_exhausted`` axis entry to
+    surface multi-axis severity escalation per ADR-D6 (1=warn,
+    2=error, 3+=critical).
+
+    Override via ``SOVYX_TUNING__VOICE__QUARANTINE_COMPOSITE_STORE_EMIT_ENABLED=false``
+    to suppress the banner write while preserving the underlying
+    quarantine + recheck logic."""
+
+    quarantine_resolution_outcome_emit_enabled: bool = True
+    """Mission H3 §T2.6 ADR-D20 — OTel counter kill switch. When True
+    (default), :meth:`CaptureIntegrityCoordinator._quarantine_endpoint`
+    fires :func:`record_quarantine_resolution_outcome` alongside the C1
+    LENIENT-phase :func:`record_quarantine_reason_dual_emit` counter.
+    Phase 3 STRICT v0.53.0 removes the C1 counter; this knob retires at
+    the same time (the new counter is always-on infrastructure).
+
+    Override via ``SOVYX_TUNING__VOICE__QUARANTINE_RESOLUTION_OUTCOME_EMIT_ENABLED=false``
+    if downstream observability stacks (Grafana, Datadog) need the
+    pre-Mission-H3 counter shape exclusively during a transitional
+    deployment window."""
+
     # ── Mission MISSION-voice-linux-silent-mic-remediation-2026-05-04
     # §Phase 2 T2.6 — runtime hot failover after endpoint quarantine.
     #

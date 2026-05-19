@@ -839,6 +839,40 @@
         "viewHistory": "Ver historial de failover",
         "reconnectUsb": "Reconectar USB"
       },
+      "quarantine": {
+        "apo_degraded": {
+          "title": "Endpoint de captura en cuarentena — DSP de captura",
+          "body": "Una mejora de audio a nivel del SO está destruyendo la señal del micrófono. Desactiva las mejoras por dispositivo en la configuración de sonido del SO."
+        },
+        "vad_frontend_dead": {
+          "title": "Endpoint de captura en cuarentena — frontend VAD muerto",
+          "body": "El detector de actividad de voz de Sovyx no responde. Reinicia el daemon para refrescar la sesión Silero."
+        },
+        "format_mismatch": {
+          "title": "Endpoint de captura en cuarentena — formato incompatible",
+          "body": "El formato del flujo de captura no coincide con el esperado por VAD. Intenta otro dispositivo de entrada predeterminado o re-conecta."
+        },
+        "driver_silent": {
+          "title": "Endpoint de captura en cuarentena — driver silencioso",
+          "body": "El driver de audio abrió pero no entrega señal. Verifica silencio a nivel del SO y re-conecta."
+        },
+        "capture_dead": {
+          "title": "Endpoint de captura en cuarentena — sustrato muerto",
+          "body": "Todas las APIs del host entregaron PCM en cero. Reconecta físicamente el micrófono o reinicia el servicio de audio del SO."
+        },
+        "kernel_invalidated": {
+          "title": "Endpoint de captura en cuarentena — invalidado por el kernel",
+          "body": "El driver de audio está en estado bloqueado. Reconecta el dispositivo o reinicia si el problema persiste."
+        },
+        "unclassified": {
+          "title": "Endpoint de captura en cuarentena — no clasificado",
+          "body": "Sovyx encontró un veredicto inesperado. Abre un issue con la salida de log reciente."
+        },
+        "action": {
+          "runDoctor": "Ejecutar sovyx doctor voice",
+          "viewLogs": "Ver logs recientes"
+        }
+      },
       "captureIntegrity": {
         "bypassActivated": {
           "title": "Bypass de la cadena de captura activado",

@@ -75,7 +75,18 @@ jobs:
   test:
     name: Test (${{ matrix.os }} / Python ${{ matrix.python-version }})
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 25
+    # Mission H3 v0.49.13 — bumped 25 → 35 after Phase 1.B v0.49.11 ran
+    # the Windows-latest cell to 25m25s timeout on a clean test suite
+    # (~16,250 tests). Local Windows runs the full suite in ~11 min, but
+    # GitHub Actions Windows runners regularly add 50-80 % wall-clock
+    # overhead vs local on Python test suites of this size. With Phase
+    # 1.B + 1.C + 1.D adding ~50 new tests, the typical CI Windows wall
+    # clock landed within ~22-24 min on green runs and crossed 25 m on
+    # GHA-contended runs. 35 m gives Windows a 50 % headroom over the
+    # observed worst-case while keeping Linux + macOS unaffected (those
+    # cells finish in 8-10 min). Sibling of CLAUDE.md anti-pattern #22
+    # (Windows timing noise) at the CI level.
+    timeout-minutes: 35
     # Every cell is a blocking gate. The Windows + macOS rows spent one
     # soft-launch run as ``experimental: true`` (commit 0a9e75f), which
     # surfaced 24 macOS failures in two clean clusters — fixed in

@@ -1296,6 +1296,78 @@ class CaptureIntegrityCoordinator:
             derived_reason=resolved_reason_value,
             resolved_reason=resolved_reason_value,
         )
+        # Mission H3 §T4.1 ADR-D18 — composite-store wire shim. Gated by
+        # the new tuning knob ``quarantine_composite_store_emit_enabled``
+        # (default True). Best-effort guard — the EngineDegradedStore
+        # API is observability-only and MUST NOT break the quarantine
+        # write path on failure.
+        if getattr(tuning, "quarantine_composite_store_emit_enabled", True):
+            try:
+                from sovyx.engine._degraded_store import (
+                    DegradedEntry,
+                    get_default_degraded_store,
+                    make_action_chip,
+                    now_monotonic,
+                )
+
+                _h3_now = now_monotonic()
+                _h3_reason_namespace = f"quarantine.{resolved_reason_value}"
+                # Severity escalation per ADR-D6: CAPTURE_DEAD and
+                # KERNEL_INVALIDATED are physical-cure terminal verdicts
+                # (substrate fully silent / kernel-wedge) → "error".
+                # APO_DEGRADED / VAD_FRONTEND_DEAD / FORMAT_MISMATCH /
+                # DRIVER_SILENT remain operator-actionable warnings.
+                _h3_severity = (
+                    "error"
+                    if resolved_reason_enum
+                    in (
+                        QuarantineReason.CAPTURE_DEAD,
+                        QuarantineReason.KERNEL_INVALIDATED,
+                    )
+                    else "warning"
+                )
+                get_default_degraded_store().record(
+                    DegradedEntry(
+                        axis="voice",
+                        reason=_h3_reason_namespace,
+                        severity=_h3_severity,
+                        title_token=f"degraded.voice.quarantine.{resolved_reason_value}.title",
+                        body_token=f"degraded.voice.quarantine.{resolved_reason_value}.body",
+                        action_chips=(
+                            make_action_chip(
+                                "degraded.voice.quarantine.action.runDoctor",
+                                "navigate",
+                                "/voice/health",
+                                style="primary",
+                            ),
+                            make_action_chip(
+                                "degraded.voice.quarantine.action.viewLogs",
+                                "navigate",
+                                "/voice/logs",
+                            ),
+                        ),
+                        metadata={
+                            "endpoint_guid": last_probe.endpoint_guid,
+                            "device_friendly_name": (self._capture_task.active_device_name),
+                            "host_api": self._capture_task.host_api_name or "",
+                            "verdict": (
+                                terminal_verdict.value
+                                if terminal_verdict is not None
+                                else "unknown"
+                            ),
+                            "voice.platform": self._platform_key,
+                        },
+                        first_observed_monotonic=_h3_now,
+                        last_observed_monotonic=_h3_now,
+                        occurrence_count=1,
+                    ),
+                )
+            except Exception:  # noqa: BLE001 — observability only
+                logger.debug(
+                    "h3_degraded_store_record_failed",
+                    axis="voice",
+                    resolved_reason=resolved_reason_value,
+                )
 
 
 def _unrecoverable_remediation_hint(

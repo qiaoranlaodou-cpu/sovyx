@@ -839,6 +839,40 @@
         "viewHistory": "View failover history",
         "reconnectUsb": "Reconnect USB"
       },
+      "quarantine": {
+        "apo_degraded": {
+          "title": "Capture endpoint quarantined — capture-side DSP",
+          "body": "An OS-level audio enhancement is destroying the microphone signal. Disable per-device enhancements in your OS sound settings."
+        },
+        "vad_frontend_dead": {
+          "title": "Capture endpoint quarantined — VAD frontend dead",
+          "body": "Sovyx's voice-activity detector is unresponsive. Restart the daemon to refresh the Silero session."
+        },
+        "format_mismatch": {
+          "title": "Capture endpoint quarantined — format mismatch",
+          "body": "The capture stream shape does not match VAD expectations. Try a different default input device or replug."
+        },
+        "driver_silent": {
+          "title": "Capture endpoint quarantined — driver silent",
+          "body": "The audio driver opened but is not delivering signal. Check OS-level mute, then replug."
+        },
+        "capture_dead": {
+          "title": "Capture endpoint quarantined — substrate dead",
+          "body": "Every host API delivered exact-zero PCM. Physically replug the microphone or restart the OS audio service."
+        },
+        "kernel_invalidated": {
+          "title": "Capture endpoint quarantined — kernel-invalidated",
+          "body": "The audio driver is in a wedged state. Replug the device or reboot if the issue persists."
+        },
+        "unclassified": {
+          "title": "Capture endpoint quarantined — unclassified",
+          "body": "Sovyx encountered an unexpected verdict. File an issue with the recent log output."
+        },
+        "action": {
+          "runDoctor": "Run sovyx doctor voice",
+          "viewLogs": "View recent logs"
+        }
+      },
       "captureIntegrity": {
         "bypassActivated": {
           "title": "Capture-chain bypass activated",
