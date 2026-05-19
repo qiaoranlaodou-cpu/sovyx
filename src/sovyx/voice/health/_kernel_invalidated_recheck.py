@@ -190,7 +190,7 @@ class KernelInvalidatedRechecker:
         snapshot = tuple(
             entry
             for entry in self._quarantine.snapshot()
-            if is_recheck_eligible(entry.derived_reason or entry.reason)
+            if is_recheck_eligible(entry.resolved_reason or entry.derived_reason or entry.reason)
         )
         if not snapshot:
             return
@@ -245,7 +245,9 @@ class KernelInvalidatedRechecker:
             # EndpointQuarantine.add() INHERITS the original verdict-
             # derived class from the prior entry. The lifecycle re-add
             # tag goes on ``reason`` ("watchdog_recheck") while the
-            # forensic-stable verdict tag survives on ``derived_reason``.
+            # forensic-stable verdict tag survives on ``derived_reason``
+            # and (Mission H3 §T2.4) ``resolved_reason``.
+            # h3-allowlist: lifecycle-tag (kernel-invalidated rechecker re-add)
             self._quarantine.add(
                 endpoint_guid=entry.endpoint_guid,
                 device_friendly_name=entry.device_friendly_name,
@@ -253,7 +255,8 @@ class KernelInvalidatedRechecker:
                 host_api=entry.host_api,
                 reason="watchdog_recheck",
                 physical_device_id=entry.physical_device_id,
-                # derived_reason omitted → inherit (T1.7.a guarantee).
+                # derived_reason + resolved_reason omitted → inherit prior
+                # entry's verdict-derived class (C1 §T1.7.a + H3 §T2.2 ADR-D2).
             )
             record_kernel_invalidated_event(
                 platform=result.combo.platform_key or "unknown",

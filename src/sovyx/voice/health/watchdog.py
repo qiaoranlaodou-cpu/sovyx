@@ -559,7 +559,9 @@ class VoiceCaptureWatchdog:
             snapshot = tuple(
                 entry
                 for entry in self._quarantine.snapshot()
-                if is_apo_class_reason(entry.derived_reason or entry.reason)
+                if is_apo_class_reason(
+                    entry.resolved_reason or entry.derived_reason or entry.reason
+                )
             )
             if not snapshot:
                 continue
@@ -783,7 +785,11 @@ class VoiceCaptureWatchdog:
         """
         platform = self._platform_key_for_metric()
         host_api = entry.host_api if entry is not None and entry.host_api else "unknown"
-        reason_key = (entry.derived_reason or entry.reason) if entry is not None else ""
+        reason_key = (
+            (entry.resolved_reason or entry.derived_reason or entry.reason)
+            if entry is not None
+            else ""
+        )
         endpoint = entry.endpoint_guid if entry is not None else (event.endpoint_guid or "")
         if is_apo_class_reason(reason_key):
             record_apo_degraded_event(

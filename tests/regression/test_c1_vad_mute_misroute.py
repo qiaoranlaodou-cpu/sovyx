@@ -318,21 +318,26 @@ class TestVerdictDerivedReasonMap:
     def test_vad_frontend_dead_maps_to_distinct_derived_reason(
         self,
     ) -> None:
-        from sovyx.voice.health.capture_integrity import (
-            _DEFAULT_QUARANTINE_REASON,
-            _VERDICT_TO_QUARANTINE_REASON,
-        )
+        """Mission H3 §T2.1 migrated the 4-entry dict to the SSoT resolver.
 
-        # The map distinguishes the operator's bug verdict from the
-        # legacy APO catch-all — that distinction IS the closure.
+        The verdict-derived classification continues to distinguish the
+        operator's bug verdict (``VAD_FRONTEND_DEAD``) from the legacy
+        APO catch-all — that distinction IS the closure that ships
+        through ``resolve_reason_from_verdict``.
+        """
+        from sovyx.voice.health._quarantine_reasons import (
+            resolve_reason_from_verdict,
+        )
+        from sovyx.voice.health.capture_integrity import _DEFAULT_QUARANTINE_REASON
+
         assert (
-            _VERDICT_TO_QUARANTINE_REASON[IntegrityVerdict.VAD_FRONTEND_DEAD]
+            resolve_reason_from_verdict(IntegrityVerdict.VAD_FRONTEND_DEAD).value
             == "vad_frontend_dead"
         )
-        assert _VERDICT_TO_QUARANTINE_REASON[IntegrityVerdict.APO_DEGRADED] == "apo_degraded"
-        # Pre-mission default is preserved as the fallback for any
-        # legacy / unknown verdict reaching quarantine (LENIENT-cycle
-        # compatibility before the STRICT flip).
+        assert resolve_reason_from_verdict(IntegrityVerdict.APO_DEGRADED).value == "apo_degraded"
+        # Pre-mission literal default preserved as the LENIENT-window
+        # legacy ``reason`` field value (sourced from the SSoT enum at
+        # capture_integrity.py top-level after H3 Phase 1.B).
         assert _DEFAULT_QUARANTINE_REASON == "apo_degraded"
 
 
@@ -348,12 +353,13 @@ class TestVerdictDerivedReasonMap:
 def test_verdict_to_reason_map_total_for_terminal_verdicts(
     verdict_class: IntegrityVerdict, expected_reason: str
 ) -> None:
-    """Every terminal :class:`IntegrityVerdict` that can reach
-    :meth:`_quarantine_endpoint` has an entry in
-    ``_VERDICT_TO_QUARANTINE_REASON``. Forward-compatibility guard:
-    adding a new terminal verdict without mapping triggers a clear
-    test failure here.
-    """
-    from sovyx.voice.health.capture_integrity import _VERDICT_TO_QUARANTINE_REASON
+    """Mission H3 §T2.1 — the SSoT ``resolve_reason_from_verdict``
+    covers every terminal verdict.
 
-    assert _VERDICT_TO_QUARANTINE_REASON[verdict_class] == expected_reason
+    Forward-compatibility guard: adding a new terminal verdict without
+    a paired ``case`` arm in the resolver triggers a clear test failure
+    here (mypy strict ALSO catches it via ``assert_never``).
+    """
+    from sovyx.voice.health._quarantine_reasons import resolve_reason_from_verdict
+
+    assert resolve_reason_from_verdict(verdict_class).value == expected_reason

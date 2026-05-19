@@ -27,10 +27,13 @@ import pytest
 
 from sovyx.engine.config import VoiceTuningConfig
 from sovyx.voice.health._quarantine import EndpointQuarantine
+from sovyx.voice.health._quarantine_reasons import (
+    QuarantineReason,
+    resolve_reason_from_verdict,
+)
 from sovyx.voice.health._vad_frontend_recovery import VADFrontendRecovery
 from sovyx.voice.health.capture_integrity import (
     _DEFAULT_QUARANTINE_REASON,
-    _VERDICT_TO_QUARANTINE_REASON,
     CaptureIntegrityCoordinator,
 )
 from sovyx.voice.health.contract import (
@@ -569,25 +572,44 @@ class TestQuarantineReason:
     """T1.7 verdict→reason map + LENIENT dual-emit semantics."""
 
     def test_verdict_to_reason_map_covers_terminal_verdicts(self) -> None:
-        """Every terminal :class:`IntegrityVerdict` has a derived reason."""
-        # Verdicts that may reach :meth:`_quarantine_endpoint` as a
-        # terminal verdict. HEALTHY/VAD_MUTE/INCONCLUSIVE never reach
-        # quarantine and are intentionally absent.
-        expected_keys = {
+        """Every terminal :class:`IntegrityVerdict` resolves to a reason.
+
+        Mission H3 §T2.1 migrated the legacy 4-entry dict to the SSoT
+        :func:`resolve_reason_from_verdict`. The four terminal verdicts
+        (APO_DEGRADED, DRIVER_SILENT, VAD_FRONTEND_DEAD, FORMAT_MISMATCH)
+        each map to the matching :class:`QuarantineReason` member.
+        """
+        terminal_verdicts = (
             IntegrityVerdict.APO_DEGRADED,
             IntegrityVerdict.DRIVER_SILENT,
             IntegrityVerdict.VAD_FRONTEND_DEAD,
             IntegrityVerdict.FORMAT_MISMATCH,
-        }
-        assert set(_VERDICT_TO_QUARANTINE_REASON.keys()) == expected_keys
+        )
+        for verdict in terminal_verdicts:
+            assert isinstance(resolve_reason_from_verdict(verdict), QuarantineReason)
 
     def test_reason_values_are_low_cardinality_strings(self) -> None:
-        """Derived reasons are low-cardinality snake_case strings."""
-        for verdict, reason in _VERDICT_TO_QUARANTINE_REASON.items():
-            assert reason == verdict.value, f"map drift: {verdict.value} → {reason!r}"
+        """Resolved reasons are low-cardinality snake_case strings matching
+        the source IntegrityVerdict ``.value`` for the canonical 4 verdicts."""
+        terminal_verdicts = (
+            IntegrityVerdict.APO_DEGRADED,
+            IntegrityVerdict.DRIVER_SILENT,
+            IntegrityVerdict.VAD_FRONTEND_DEAD,
+            IntegrityVerdict.FORMAT_MISMATCH,
+        )
+        for verdict in terminal_verdicts:
+            reason = resolve_reason_from_verdict(verdict)
+            assert reason.value == verdict.value, f"map drift: {verdict.value} → {reason!r}"
 
     def test_default_reason_is_legacy_apo_degraded(self) -> None:
-        """Unknown / None verdict falls back to the legacy default."""
+        """Unknown / None verdict falls back to the legacy default (LENIENT window).
+
+        Mission H3 ADR-D2 preserves the literal ``"apo_degraded"``
+        legacy default on :attr:`QuarantineEntry.reason` during the
+        triple-field LENIENT window; the canonical SSoT value lives on
+        :attr:`QuarantineEntry.resolved_reason`. Phase 3 STRICT v0.53.0
+        drops the legacy field and promotes ``resolved_reason``.
+        """
         assert _DEFAULT_QUARANTINE_REASON == "apo_degraded"
 
     @pytest.mark.asyncio()

@@ -43,6 +43,11 @@ METRIC_CAPTURE_INTEGRITY_VERDICTS = "sovyx.voice.health.capture_integrity.verdic
 METRIC_VAD_FRONTEND_RESET_OUTCOMES = "sovyx.voice.health.vad_frontend_reset.outcomes"
 METRIC_COORDINATOR_OUTCOMES = "sovyx.voice.health.coordinator.outcomes"
 METRIC_QUARANTINE_REASON_DUAL_EMIT = "sovyx.voice.health.quarantine.reason_dual_emit"
+# Mission H3 §T2.6 ADR-D20 — replaces the C1 LENIENT-phase
+# ``METRIC_QUARANTINE_REASON_DUAL_EMIT`` counter at v0.53.0 STRICT. Fires
+# once per ``EndpointQuarantine.add()`` call with the verdict / diagnosis
+# source attribution + resolved_reason output + H2 platform metadata.
+METRIC_QUARANTINE_RESOLUTION = "sovyx.voice.health.quarantine_resolution"
 
 
 # ── Record helpers ──────────────────────────────────────────────────
@@ -321,6 +326,53 @@ def record_quarantine_reason_dual_emit(
     )
 
 
+def record_quarantine_resolution_outcome(
+    *,
+    verdict: str = "",
+    diagnosis: str = "",
+    resolved_reason: str,
+    platform: str = "",
+    bypass_family: str = "",
+) -> None:
+    """Mission H3 §ADR-D20 — verdict/diagnosis → resolved_reason counter.
+
+    Fires once per :meth:`EndpointQuarantine.add` call. Replaces the C1
+    LENIENT-phase :func:`record_quarantine_reason_dual_emit` calibration
+    counter at v0.53.0 STRICT.
+
+    Args:
+        verdict: :class:`IntegrityVerdict` value when the producer is
+            the coordinator's verdict-router (capture-integrity path).
+            Empty string when the producer is the cascade-layer.
+        diagnosis: :class:`Diagnosis` value when the producer is the
+            cascade-layer (kernel-invalidated rechecker / factory
+            integration). Empty string when the producer is the
+            coordinator.
+        resolved_reason: The :class:`QuarantineReason` value returned by
+            :func:`resolve_reason_from_verdict` /
+            :func:`resolve_reason_from_diagnosis`.
+        platform: Optional H2-resolved platform metadata (``"linux"`` |
+            ``"windows"`` | ``"darwin"`` | ``"other"``). Inherits from
+            the bypass coordinator's ``_platform_key`` field where
+            available.
+        bypass_family: Optional H2-resolved bypass-family metadata
+            (``"voice_clarity"`` | ``"alsa_capture_chain"`` | ...).
+    """
+    counter = getattr(get_metrics(), "voice_health_quarantine_resolution", None)
+    if counter is None:
+        return
+    counter.add(
+        1,
+        attributes={
+            "verdict": verdict or "n/a",
+            "diagnosis": diagnosis or "n/a",
+            "resolved_reason": resolved_reason or "unknown",
+            "platform": platform or "unknown",
+            "bypass_family": bypass_family or "unknown",
+        },
+    )
+
+
 # ── Internal helpers ────────────────────────────────────────────────
 
 
@@ -351,6 +403,7 @@ __all__ = [
     "METRIC_CAPTURE_INTEGRITY_VERDICTS",
     "METRIC_COORDINATOR_OUTCOMES",
     "METRIC_QUARANTINE_REASON_DUAL_EMIT",
+    "METRIC_QUARANTINE_RESOLUTION",
     "METRIC_VAD_FRONTEND_RESET_OUTCOMES",
     "record_bypass_improvement_resolution",
     "record_bypass_probe_wait_ms",
@@ -360,5 +413,6 @@ __all__ = [
     "record_coordinator_benign_skip",
     "record_coordinator_outcome",
     "record_quarantine_reason_dual_emit",
+    "record_quarantine_resolution_outcome",
     "record_vad_frontend_reset_outcome",
 ]

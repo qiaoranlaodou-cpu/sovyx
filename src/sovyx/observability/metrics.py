@@ -599,6 +599,24 @@ class MetricsRegistry:
             "verdict→reason map before STRICT flip drops the legacy "
             "apo_degraded default. See mission §4.2 ADR-D2.",
         )
+        # Mission H3 §T2.6 ADR-D20 — verdict/diagnosis → resolved_reason
+        # counter. Replaces the C1 LENIENT calibration counter above at
+        # v0.53.0 STRICT. Fires once per ``EndpointQuarantine.add()`` call
+        # with the verdict / diagnosis source attribution + resolved_reason
+        # output + H2 platform metadata. Five low-cardinality attributes
+        # let operators correlate verdict → resolved-reason → platform →
+        # bypass-family across one dashboard query without grepping the
+        # structured log.
+        self.voice_health_quarantine_resolution = self._counter(
+            "sovyx.voice.health.quarantine_resolution",
+            "Mission H3 verdict/diagnosis → resolved_reason counter "
+            "(labels: verdict, diagnosis, resolved_reason, platform, "
+            "bypass_family). Fires once per EndpointQuarantine.add() "
+            "call. Replaces the LENIENT calibration counter "
+            "voice_health_quarantine_reason_dual_emit at v0.53.0 STRICT. "
+            "Operators dashboard verdict-router output AND cascade-layer "
+            "Diagnosis output on one chart. See mission §4.20 ADR-D20.",
+        )
         self.voice_health_bypass_probe_wait_ms = self._histogram(
             "sovyx.voice.health.bypass.probe_wait_ms",
             "Wall-clock time the CaptureIntegrityCoordinator waited in "

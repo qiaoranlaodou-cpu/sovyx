@@ -25,7 +25,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Literal, cast
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, computed_field
 from starlette.status import (
     HTTP_404_NOT_FOUND,
     HTTP_409_CONFLICT,
@@ -276,15 +276,23 @@ class QuarantineEntryModel(BaseModel):
     operators can see which capture endpoints sovyx has stopped probing
     and why.
 
-    Mission C1 §T2.2 — exposes both :attr:`reason` (legacy lifecycle
-    tag — ``"apo_degraded"`` / ``"watchdog_recheck"`` / …) and
-    :attr:`derived_reason` (verdict-driven class —
-    ``"apo_degraded"`` / ``"vad_frontend_dead"`` / ``"format_mismatch"`` /
-    ``"driver_silent"``). Frontend prefers ``derived_reason`` when
-    non-empty; falls back to ``reason``. The v0.45.0 STRICT flip
-    promotes ``derived_reason`` to ``reason`` and drops the legacy
-    field.
+    Mission C1 §T2.2 — exposes :attr:`reason` (legacy lifecycle tag —
+    ``"apo_degraded"`` / ``"watchdog_recheck"`` / …) and
+    :attr:`derived_reason` (Mission C1 LENIENT alias).
+    Mission H3 §T2.8 + ADR-D2 — adds :attr:`resolved_reason` as the
+    canonical SSoT-resolved field and :attr:`effective_reason` computed
+    property that frontends + monitoring tooling read for the
+    ``resolved or derived or reason`` field-chain fallback. Phase 3
+    STRICT v0.53.0 promotes ``resolved_reason`` → ``reason`` and drops
+    ``derived_reason``.
+
+    ``model_config`` ships ``extra="allow"`` per CLAUDE.md anti-pattern
+    #40 — every QuarantineEntry field that ships downstream is forward-
+    additive; future H3-sibling fields (e.g. composite-store metadata)
+    land here without breaking older clients.
     """
+
+    model_config = ConfigDict(extra="allow")
 
     endpoint_guid: str
     device_friendly_name: str
@@ -295,6 +303,20 @@ class QuarantineEntryModel(BaseModel):
     seconds_until_expiry: float
     reason: str
     derived_reason: str = ""
+    resolved_reason: str = ""
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def effective_reason(self) -> str:
+        """Mission H3 ADR-D2 — H3-canonical field-chain fallback.
+
+        Returns the first non-empty value in priority order:
+        :attr:`resolved_reason` (H3 SSoT-resolved) →
+        :attr:`derived_reason` (Mission C1 LENIENT alias) →
+        :attr:`reason` (legacy default). Phase 3 STRICT v0.53.0
+        simplifies the body to ``return self.reason``.
+        """
+        return self.resolved_reason or self.derived_reason or self.reason
 
     @classmethod
     def from_domain(
@@ -324,6 +346,7 @@ class QuarantineEntryModel(BaseModel):
             seconds_until_expiry=min(quarantine_s, max(0.0, raw)),
             reason=entry.reason,
             derived_reason=entry.derived_reason,
+            resolved_reason=entry.resolved_reason,
         )
 
 

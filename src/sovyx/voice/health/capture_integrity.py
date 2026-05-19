@@ -43,8 +43,13 @@ from sovyx.voice.health._metrics_bypass_coordinator import (
     record_coordinator_benign_skip,
     record_coordinator_outcome,
     record_quarantine_reason_dual_emit,
+    record_quarantine_resolution_outcome,
 )
 from sovyx.voice.health._quarantine import get_default_quarantine
+from sovyx.voice.health._quarantine_reasons import (
+    QuarantineReason,
+    resolve_reason_from_verdict,
+)
 from sovyx.voice.health._vad_frontend_recovery import VADFrontendRecovery
 from sovyx.voice.health.bypass._strategy import BypassApplyError, BypassRevertError
 from sovyx.voice.health.contract import (
@@ -86,29 +91,23 @@ _MIN_SAMPLES_FOR_ANALYSIS = _VAD_WINDOW_SAMPLES * 4
 _RMS_FLOOR_DB = -120.0
 
 
-# Mission C1 §T1.7 — terminal-verdict → quarantine derived-reason map.
-# Each :class:`IntegrityVerdict` that can reach
-# :meth:`CaptureIntegrityCoordinator._quarantine_endpoint` as a terminal
-# verdict maps to a low-cardinality reason string persisted on
-# :attr:`QuarantineEntry.derived_reason`. The legacy
-# :attr:`QuarantineEntry.reason` field stays ``"apo_degraded"`` for the
-# LENIENT v0.44.x cycle so downstream consumers (watchdog recheck,
-# dashboard, runtime failover) keep working unchanged; the v0.45.0
-# STRICT flip drops the legacy field and promotes ``derived_reason``.
-#
-# Verdicts NOT in this map (HEALTHY, VAD_MUTE, INCONCLUSIVE) MUST NEVER
-# reach :meth:`_quarantine_endpoint` — HEALTHY short-circuits before
-# dispatch, VAD_MUTE is a benign-skip return, INCONCLUSIVE retries.
-# Unknown verdicts fall through to :data:`_DEFAULT_QUARANTINE_REASON`
-# (the legacy ``"apo_degraded"``) so adding a future verdict without
-# explicit dispatch is forward-compatible.
-_VERDICT_TO_QUARANTINE_REASON: dict[IntegrityVerdict, str] = {
-    IntegrityVerdict.APO_DEGRADED: "apo_degraded",
-    IntegrityVerdict.DRIVER_SILENT: "driver_silent",
-    IntegrityVerdict.VAD_FRONTEND_DEAD: "vad_frontend_dead",
-    IntegrityVerdict.FORMAT_MISMATCH: "format_mismatch",
-}
-_DEFAULT_QUARANTINE_REASON = "apo_degraded"
+# Mission H3 §T2.1 — the legacy 4-entry ``_VERDICT_TO_QUARANTINE_REASON``
+# dict + ``_DEFAULT_QUARANTINE_REASON = "apo_degraded"`` literal default
+# were REPLACED by the SSoT resolver
+# :func:`sovyx.voice.health._quarantine_reasons.resolve_reason_from_verdict`
+# in v0.49.11. Verdicts that MUST NOT reach the quarantine site
+# (HEALTHY, VAD_MUTE, INCONCLUSIVE) now raise :class:`ValueError` at
+# runtime — programming-error fail-loudly per ADR-D3, replacing the
+# silent ``"apo_degraded"`` fallback that misled the v0.43.1 forensic
+# audit. See ``docs-internal/missions/MISSION-h3-quarantine-reason-verdict-map-2026-05-18.md``.
+_DEFAULT_QUARANTINE_REASON = QuarantineReason.APO_DEGRADED.value
+"""Mission H3 §T2.1 LENIENT — legacy :attr:`QuarantineEntry.reason`
+field default during the triple-field calibration window. Phase 3
+STRICT flip v0.53.0 promotes :attr:`QuarantineEntry.resolved_reason`
+to ``reason`` and drops this constant. Operators reading old playbooks
+that reference ``"apo_degraded"`` on every entry continue to resolve
+correctly during the window; the SSoT-resolved value lives on
+:attr:`QuarantineEntry.resolved_reason`."""
 
 # Rolloff cumulative-energy fraction. 0.85 is the standard MIR choice
 # (librosa default); tightening below 0.85 makes the probe more
@@ -1246,23 +1245,35 @@ class CaptureIntegrityCoordinator:
                 device_name=self._capture_task.active_device_name,
             )
             return
-        derived_reason = (
-            _VERDICT_TO_QUARANTINE_REASON.get(terminal_verdict, _DEFAULT_QUARANTINE_REASON)
-            if terminal_verdict is not None
-            else _DEFAULT_QUARANTINE_REASON
-        )
+        # Mission H3 §T2.1 ADR-D3 — SSoT resolver replaces the legacy
+        # 4-entry dict + literal fallback. The resolver raises
+        # ``ValueError`` on HEALTHY / VAD_MUTE / INCONCLUSIVE (programming
+        # error — coordinator dispatch branches must handle those
+        # earlier). For unset terminal_verdict (legacy callers pre-T1.7
+        # that omitted the kwarg), fall back to APO_DEGRADED to preserve
+        # pre-mission behavior.
+        if terminal_verdict is None:
+            resolved_reason_enum = QuarantineReason.APO_DEGRADED
+        else:
+            resolved_reason_enum = resolve_reason_from_verdict(terminal_verdict)
+        resolved_reason_value = resolved_reason_enum.value
         # The global quarantine's TTL is shared with KERNEL_INVALIDATED
         # (`kernel_invalidated_quarantine_s`). The APO-specific knob
         # :attr:`apo_quarantine_s` is consulted by the watchdog's
-        # APO-recheck loop — the coordinator just tags the entry with
-        # the ``"apo_degraded"`` reason so the watchdog can distinguish
-        # APO entries from kernel-invalidated entries.
+        # APO-recheck loop — the coordinator tags the entry with the
+        # legacy ``"apo_degraded"`` reason for backward compat during
+        # the LENIENT triple-field window while the canonical
+        # SSoT-resolved value lives on :attr:`QuarantineEntry.resolved_reason`.
+        # Phase 3 STRICT flip v0.53.0 promotes the resolved value to
+        # ``reason`` and drops the legacy default.
         self._quarantine.add(
             endpoint_guid=last_probe.endpoint_guid,
             device_friendly_name=self._capture_task.active_device_name,
             host_api=self._capture_task.host_api_name or "",
+            # h3-allowlist: ADR-D10 legacy default during LENIENT window
             reason=_DEFAULT_QUARANTINE_REASON,
-            derived_reason=derived_reason,
+            derived_reason=resolved_reason_value,
+            resolved_reason=resolved_reason_value,
         )
         record_apo_degraded_event(
             platform=self._platform_key,
@@ -1270,13 +1281,20 @@ class CaptureIntegrityCoordinator:
         )
         record_quarantine_reason_dual_emit(
             legacy_reason=_DEFAULT_QUARANTINE_REASON,
-            derived_reason=derived_reason,
+            derived_reason=resolved_reason_value,
+        )
+        record_quarantine_resolution_outcome(
+            verdict=(terminal_verdict.value if terminal_verdict is not None else ""),
+            diagnosis="",
+            resolved_reason=resolved_reason_value,
+            platform=self._platform_key,
         )
         logger.warning(
             "capture_integrity_coordinator_quarantined",
             endpoint_guid=last_probe.endpoint_guid,
             reason=_DEFAULT_QUARANTINE_REASON,
-            derived_reason=derived_reason,
+            derived_reason=resolved_reason_value,
+            resolved_reason=resolved_reason_value,
         )
 
 

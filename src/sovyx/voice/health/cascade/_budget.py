@@ -123,6 +123,16 @@ def _quarantine_endpoint(
     """
     if quarantine is None:
         return False
+    # Mission H3 §T2.B + ADR-D2 — this is the cascade-layer centraliser
+    # that forwards lifecycle tags (``"probe_pinned"`` / ``"probe_store"``
+    # / ``"probe_cascade"``) from its three call sites in
+    # ``cascade/_executor_phases.py``. The ``reason=reason`` passthrough
+    # is a legitimate variable-substitution at a lifecycle-tag boundary —
+    # the cascade-layer's terminal-classification resolver call (when one
+    # is added in a future phase) will populate ``resolved_reason``
+    # explicitly. For now the resolved_reason defaults to None (inherit-
+    # from-prior) which is correct for these lifecycle-tag re-adds.
+    # h3-allowlist: lifecycle-tag-centraliser (cascade probe_* dispatcher)
     quarantine.add(
         endpoint_guid=endpoint_guid,
         device_friendly_name=device_friendly_name,

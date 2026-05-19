@@ -372,14 +372,23 @@ def _scan_file(
         if kind in ("enum_member", "resolver_call", "field_passthrough"):
             continue
 
+        # The allowlist comment may live on the line of the ``reason=``
+        # keyword (multi-line call) OR the line of the call's opening
+        # paren (single-line call). Use the reason-expression's own
+        # ``lineno`` first; fall back to the Call node's lineno.
+        reason_line = getattr(reason_expr, "lineno", node.lineno)
+        allowlisted = _line_has_allowlist(source_lines, reason_line) or _line_has_allowlist(
+            source_lines, node.lineno
+        )
+
         # Lifecycle literal requires explicit allowlist.
         if kind == "literal_lifecycle":
-            if _line_has_allowlist(source_lines, node.lineno):
+            if allowlisted:
                 continue
             violations.append(
                 Violation(
                     file_path=rel_path,
-                    line=node.lineno,
+                    line=reason_line,
                     column=node.col_offset,
                     receiver=receiver_repr,
                     method=method_name,
@@ -391,12 +400,12 @@ def _scan_file(
 
         # Terminal-classification literal or unknown literal — VIOLATION.
         if kind == "literal_terminal":
-            if _line_has_allowlist(source_lines, node.lineno):
+            if allowlisted:
                 continue
             violations.append(
                 Violation(
                     file_path=rel_path,
-                    line=node.lineno,
+                    line=reason_line,
                     column=node.col_offset,
                     receiver=receiver_repr,
                     method=method_name,
@@ -407,12 +416,12 @@ def _scan_file(
             continue
 
         if kind == "literal_unknown":
-            if _line_has_allowlist(source_lines, node.lineno):
+            if allowlisted:
                 continue
             violations.append(
                 Violation(
                     file_path=rel_path,
-                    line=node.lineno,
+                    line=reason_line,
                     column=node.col_offset,
                     receiver=receiver_repr,
                     method=method_name,
@@ -423,12 +432,12 @@ def _scan_file(
             continue
 
         # Non-SSoT expression — VIOLATION unless allowlisted.
-        if _line_has_allowlist(source_lines, node.lineno):
+        if allowlisted:
             continue
         violations.append(
             Violation(
                 file_path=rel_path,
-                line=node.lineno,
+                line=reason_line,
                 column=node.col_offset,
                 receiver=receiver_repr,
                 method=method_name,
