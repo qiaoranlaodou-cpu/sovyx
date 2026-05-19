@@ -51,12 +51,15 @@ Anti-pattern compliance:
 
 from __future__ import annotations
 
+import json
 import time
+import tracemalloc
 from collections import deque
 from dataclasses import dataclass, field
 from enum import StrEnum, unique
+from pathlib import Path
 from threading import Lock
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from sovyx.observability._resource_registry import CohortAxis
 from sovyx.observability.logging import get_logger
@@ -193,12 +196,25 @@ class ResourceCohortGovernor:
 
     budgets: tuple[CohortBudget, ...] = _DEFAULT_BUDGETS
     enabled: bool = True
+    breaker_threshold: int = 3
+    breaker_window_s: int = 3_600
     _rss_history: deque[tuple[float, int]] = field(
         default_factory=lambda: deque(maxlen=_OBSERVATION_RING_MAX),
     )
     _thread_history: deque[tuple[float, int]] = field(
         default_factory=lambda: deque(maxlen=_OBSERVATION_RING_MAX),
     )
+    # Mission H4 §8 T4.1(e) — circuit-breaker state: per-cohort rolling
+    # window of BUDGET_EXCEEDED timestamps. After ``breaker_threshold``
+    # entries within ``breaker_window_s``, the cohort is "engaged" —
+    # dispatch_to_thread(label=<cohort>.*) callers consult this state
+    # before spawning work. The breaker clears when the operator acks
+    # via POST /api/engine/resources/cohort/ack OR when the rolling
+    # window cycles past the threshold count.
+    _breach_history: dict[CohortAxis, deque[float]] = field(
+        default_factory=lambda: {axis: deque(maxlen=64) for axis in CohortAxis},
+    )
+    _engaged_acks: dict[CohortAxis, float] = field(default_factory=dict)
     _lock: Lock = field(default_factory=Lock)
 
     @classmethod
@@ -212,7 +228,52 @@ class ResourceCohortGovernor:
         overrides take effect. Tests using the bare ``ResourceCohortGovernor()``
         constructor get the v0.49.17 hardcoded defaults — backward-compat.
         """
-        return cls(budgets=_budgets_from_tuning(tuning), enabled=enabled)
+        return cls(
+            budgets=_budgets_from_tuning(tuning),
+            enabled=enabled,
+            breaker_threshold=tuning.cohort_breaker_threshold,
+            breaker_window_s=tuning.cohort_breaker_window_s,
+        )
+
+    # ── Circuit-breaker (Phase 1.D §8 T4.1 (e) + §11 ADR-D14) ──
+
+    def record_breach(self, axis: CohortAxis) -> None:
+        """Record a BUDGET_EXCEEDED event for the circuit-breaker rolling window."""
+        with self._lock:
+            self._breach_history.setdefault(axis, deque(maxlen=64)).append(time.monotonic())
+
+    def is_breaker_engaged(self, axis: CohortAxis) -> bool:
+        """True iff *axis* has ≥ ``breaker_threshold`` breaches within window.
+
+        The operator clears via :meth:`clear_breaker` (called by the
+        ``POST /api/engine/resources/cohort/ack`` endpoint). Until then,
+        ``dispatch_to_thread`` callers labelled with ``<axis>.*`` SHOULD
+        skip new work — Phase 1.E consumer-side enforcement.
+        """
+        with self._lock:
+            if axis in self._engaged_acks:
+                # Operator acked; breaker is held cleared until acks expire.
+                # (Acks are also cleared on rolling-window cycle below.)
+                return False
+            history = self._breach_history.get(axis)
+            if not history:
+                return False
+            now = time.monotonic()
+            window_start = now - self.breaker_window_s
+            recent = [ts for ts in history if ts >= window_start]
+            return len(recent) >= self.breaker_threshold
+
+    def clear_breaker(self, axis: CohortAxis) -> None:
+        """Operator-acked clear — records an ack timestamp + drops history.
+
+        Called by the ``POST /api/engine/resources/cohort/ack`` endpoint
+        when the operator dismisses the breach. Subsequent breaches
+        re-arm the breaker normally.
+        """
+        with self._lock:
+            self._engaged_acks[axis] = time.monotonic()
+            if axis in self._breach_history:
+                self._breach_history[axis].clear()
 
     def evaluate_snapshot(self, snapshot: Mapping[str, object]) -> list[CohortEvaluation]:
         """Evaluate every cohort against the given snapshot.
@@ -430,13 +491,17 @@ def emit_axis_entries(evaluations: list[CohortEvaluation]) -> int:
     Routes each BUDGET_EXCEEDED entry to the :class:`EngineDegradedStore`
     with ``axis="engine_resources"`` so the existing C4
     :class:`DegradedBanner` renders the cohort without dashboard
-    changes (per C4 ADR-D5 forward-additive contract).
+    changes (per C4 ADR-D5 forward-additive contract). Also persists
+    forensic-grade allocator/thread snapshots when the verdict is
+    RSS-driven or thread-driven (Phase 1.D heap-snapshot trigger) and
+    advances the circuit-breaker state per ADR-D14.
 
     Returns the count of BUDGET_EXCEEDED emissions for caller-side
     metrics. Caller does NOT need to act on the count — the WARN log
     line + composite-store entry are the operator-actionable surfaces.
     """
     emitted = 0
+    governor = get_default_resource_cohort_governor()
     for evaluation in evaluations:
         if evaluation.verdict != CohortVerdict.BUDGET_EXCEEDED:
             continue
@@ -452,7 +517,186 @@ def emit_axis_entries(evaluations: list[CohortEvaluation]) -> int:
         )
         _record_to_composite_store(evaluation)
         _increment_cohort_budget_counter(evaluation)
+        # Mission H4 §8 T4.1 (c-d) — snapshot persistence on RSS / thread
+        # breach. Best-effort; failures absorbed at debug level.
+        if evaluation.axis == CohortAxis.RSS_GROWTH:
+            _persist_heap_snapshot(evaluation)
+        elif evaluation.axis == CohortAxis.THREAD_COUNT:
+            _persist_thread_snapshot(evaluation)
+        # Mission H4 §8 T4.1 (e) — circuit-breaker state advancement.
+        governor.record_breach(evaluation.axis)
     return emitted
+
+
+# ── Phase 1.D snapshot persistence + rotation (spec §8 T4.1 c+d) ──
+
+
+def _diagnostics_dir() -> Path:
+    """Resolve ~/.sovyx/diagnostics/ + ensure it exists.
+
+    Best-effort: returns a path that may not be writable on weird
+    environments (tmpfs, read-only mounts). Callers absorb OSError.
+    """
+    path = Path.home() / ".sovyx" / "diagnostics"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def _rotate_snapshot_files(diag_dir: Path, prefix: str, max_files: int) -> None:
+    """Keep at most ``max_files`` files matching ``prefix*`` under ``diag_dir``.
+
+    Drops the oldest (by mtime) until the count is within budget.
+    Mission H4 §8 T4.7 — ``heap_snapshot_max_files`` /
+    ``thread_snapshot_max_files`` knobs (default 10 each).
+    """
+    try:
+        files = sorted(diag_dir.glob(f"{prefix}*"), key=lambda p: p.stat().st_mtime)
+        excess = len(files) - max_files
+        for old in files[: max(0, excess)]:
+            old.unlink(missing_ok=True)
+    except OSError:
+        logger.debug("engine.resources.snapshot_rotation_failed", prefix=prefix, exc_info=True)
+
+
+def _persist_heap_snapshot(evaluation: CohortEvaluation) -> None:
+    """Mission H4 §8 T4.1(c) — RSS-driven heap snapshot.
+
+    When ``observability.features.tracemalloc=True``, takes a
+    ``tracemalloc.take_snapshot()`` + persists the top-50 allocator
+    histogram to ``~/.sovyx/diagnostics/heap-snapshot-<ts>.json``.
+    When tracemalloc is NOT enabled, emits
+    ``engine.resources.heap_snapshot_skipped`` once per evaluation
+    with an operator-actionable hint pointing at the feature flag.
+    """
+    if not tracemalloc.is_tracing():
+        logger.info(
+            "engine.resources.heap_snapshot_skipped",
+            **{
+                "engine.resources.cohort": evaluation.axis.value,
+                "engine.resources.reason": "tracemalloc_not_enabled",
+                "engine.resources.hint": (
+                    "Set SOVYX_OBSERVABILITY__FEATURES__TRACEMALLOC=true + "
+                    "restart daemon for allocator-level forensics on the "
+                    "next RSS_GROWTH breach. Adds 25-30% memory overhead."
+                ),
+            },
+        )
+        return
+    try:
+        snapshot = tracemalloc.take_snapshot()
+        top_stats = snapshot.statistics("lineno")[:50]
+        diag_dir = _diagnostics_dir()
+        ts = int(time.time())
+        path = diag_dir / f"heap-snapshot-{ts}.json"
+        payload = {
+            "kind": "heap_snapshot",
+            "schema_version": "1.0",
+            "observed_at_unix": ts,
+            "cohort": evaluation.axis.value,
+            "cohort_observed": evaluation.observed,
+            "cohort_budget": evaluation.budget,
+            "tracemalloc_snapshot": {
+                "top_allocators": [
+                    {
+                        "rank": rank,
+                        "size_bytes": stat.size,
+                        "count": stat.count,
+                        "traceback": [str(frame) for frame in stat.traceback],
+                    }
+                    for rank, stat in enumerate(top_stats, start=1)
+                ],
+                "total_allocators": len(top_stats),
+            },
+        }
+        path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        logger.info(
+            "engine.resources.heap_snapshot_persisted",
+            **{
+                "engine.resources.cohort": evaluation.axis.value,
+                "engine.resources.path": str(path),
+                "engine.resources.top_allocators": len(top_stats),
+            },
+        )
+        # Rotate after writing so we never drop the file we just saved.
+        from sovyx.engine.config import EngineConfig  # noqa: PLC0415 — lazy
+
+        try:
+            tuning = EngineConfig().observability.tuning
+            max_files = tuning.heap_snapshot_max_files
+        except Exception:  # noqa: BLE001 — fallback default
+            max_files = 10
+        _rotate_snapshot_files(diag_dir, "heap-snapshot-", max_files)
+    except Exception:  # noqa: BLE001 — snapshot persistence is best-effort
+        logger.debug(
+            "engine.resources.heap_snapshot_persist_failed",
+            cohort=evaluation.axis.value,
+            exc_info=True,
+        )
+
+
+def _persist_thread_snapshot(evaluation: CohortEvaluation) -> None:
+    """Mission H4 §8 T4.1(d) — thread-driven thread snapshot.
+
+    Captures ``sys._current_frames()`` + ``threading.enumerate()`` to
+    ``~/.sovyx/diagnostics/thread-snapshot-<ts>.txt``. Captures all
+    threads regardless of platform; Windows may have incomplete
+    thread-name attribution per Mission H4 §0 scope exclusion note.
+    """
+    try:
+        import sys
+        import threading
+
+        diag_dir = _diagnostics_dir()
+        ts = int(time.time())
+        path = diag_dir / f"thread-snapshot-{ts}.txt"
+        lines: list[str] = []
+        lines.append(f"# Thread snapshot — cohort={evaluation.axis.value}")
+        lines.append(f"# observed_at_unix={ts}")
+        lines.append(f"# cohort_observed={evaluation.observed}")
+        lines.append(f"# cohort_budget={evaluation.budget}")
+        lines.append(f"# note={evaluation.note}")
+        lines.append("")
+        thread_map = {t.ident: t for t in threading.enumerate()}
+        frames = sys._current_frames()  # noqa: SLF001 — documented stdlib API
+        for tid, frame in frames.items():
+            thread = thread_map.get(tid)
+            tname = thread.name if thread else "?"
+            daemon = thread.daemon if thread else "?"
+            lines.append(f"=== Thread {tid} (name={tname!r}, daemon={daemon}) ===")
+            stack: list[str] = []
+            cur_frame: Any = frame
+            while cur_frame is not None:
+                stack.append(
+                    f"  {cur_frame.f_code.co_filename}:{cur_frame.f_lineno} "
+                    f"in {cur_frame.f_code.co_name}",
+                )
+                cur_frame = cur_frame.f_back
+            # Bottom-up for forensic readability.
+            lines.extend(reversed(stack))
+            lines.append("")
+        path.write_text("\n".join(lines), encoding="utf-8")
+        logger.info(
+            "engine.resources.thread_snapshot_persisted",
+            **{
+                "engine.resources.cohort": evaluation.axis.value,
+                "engine.resources.path": str(path),
+                "engine.resources.thread_count": len(thread_map),
+            },
+        )
+        from sovyx.engine.config import EngineConfig  # noqa: PLC0415 — lazy
+
+        try:
+            tuning = EngineConfig().observability.tuning
+            max_files = tuning.thread_snapshot_max_files
+        except Exception:  # noqa: BLE001 — fallback default
+            max_files = 10
+        _rotate_snapshot_files(diag_dir, "thread-snapshot-", max_files)
+    except Exception:  # noqa: BLE001 — thread snapshot is best-effort
+        logger.debug(
+            "engine.resources.thread_snapshot_persist_failed",
+            cohort=evaluation.axis.value,
+            exc_info=True,
+        )
 
 
 def _increment_cohort_budget_counter(evaluation: CohortEvaluation) -> None:

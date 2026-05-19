@@ -482,6 +482,36 @@ class HeartbeatMixin:
             )
             self._maybe_trigger_bypass_coordinator()
 
+            # Mission H4 §8 T4.6 — Phase 1.D heap-snapshot trigger.
+            # When the deaf-cluster signature matches v0.43.1 forensic
+            # anchor (consecutive deaf-warnings ≥ 5 + coordinator
+            # terminal + ladder exhausted), emit a structured event
+            # that the ResourceCohortGovernor's RSS_GROWTH path will
+            # honour via tracemalloc.take_snapshot persistence (when
+            # the feature flag is on). Throttle is provided by C3's
+            # post-ladder-exhaustion 60 s window above — this trigger
+            # fires at most once per ladder cycle.
+            failover_ladder_in_progress = bool(
+                getattr(self, "_failover_ladder_in_progress", False)
+            )
+            if (
+                coordinator_terminal
+                and failover_ladder_in_progress
+                and self._deaf_warnings_consecutive >= 5
+            ):
+                logger.warning(
+                    "voice.deaf_cluster.heap_snapshot_requested",
+                    mind_id=self._config.mind_id,
+                    cohort="voice_failover",
+                    consecutive_deaf_warnings=self._deaf_warnings_consecutive,
+                    hint=(
+                        "Forensic-anchor signature matched (Mission H4 §H4). "
+                        "Set SOVYX_OBSERVABILITY__FEATURES__TRACEMALLOC=true "
+                        "+ restart daemon to capture allocator-level "
+                        "forensics on the next cluster."
+                    ),
+                )
+
             # Mission C4 §Phase 2 — Soft Recovery Governor.
             # After N consecutive deaf-warnings while BOTH
             # ``_coordinator_terminated`` AND ``_failover_ladder_exhausted``

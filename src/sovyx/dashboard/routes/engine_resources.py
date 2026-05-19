@@ -34,14 +34,21 @@ Anti-pattern compliance:
 
 from __future__ import annotations
 
+import json
 import time
+from pathlib import Path
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
+from starlette.status import HTTP_404_NOT_FOUND
 
 from sovyx.dashboard.routes._deps import verify_token
+from sovyx.observability._resource_cohort_governor import (
+    get_default_resource_cohort_governor,
+)
 from sovyx.observability._resource_registry import (
     _HEALTH_SNAPSHOT_FIELDS,
+    CohortAxis,
     get_default_resource_registry,
 )
 from sovyx.observability.logging import get_logger
@@ -163,7 +170,137 @@ async def get_engine_resources() -> EngineResourcesResponse:
     return _build_response()
 
 
+class CohortAckRequest(BaseModel):
+    """Mission H4 §8 T4.1(e) + §ADR-D14 — operator-ack request body.
+
+    Clears the circuit-breaker for ``cohort`` and records an ack
+    timestamp in the governor's in-memory state. Operators see this
+    chip on the ``<DegradedBanner>`` axis="engine_resources" entry.
+    """
+
+    cohort: str = Field(
+        ...,
+        min_length=1,
+        max_length=64,
+        description="One of CohortAxis values (rss_growth / thread_count / "
+        "lock_dict_cardinality / onnx_session / exception_cohort).",
+    )
+
+
+class CohortAckResponse(BaseModel):
+    """Acknowledgement response with the new breaker state."""
+
+    cohort: str
+    breaker_engaged: bool
+    acked_at_unix: float
+
+
+@router.post(
+    "/resources/cohort/ack",
+    response_model=CohortAckResponse,
+)
+async def post_cohort_ack(body: CohortAckRequest) -> CohortAckResponse:
+    """Mission H4 §8 T4.1(e) — operator clears the cohort circuit-breaker.
+
+    Per Mission H4 §0 item #12. Mirrors the C4
+    ``POST /api/voice/degraded/ack`` shape but routes through the
+    governor's in-process state rather than the SQLite ack-store —
+    the breach state is per-cohort + ephemeral (governor is process-
+    local, restart wipes), not persistent like the voice-degraded acks.
+
+    Validates ``cohort`` against :class:`CohortAxis` and returns 422
+    on unknown values; otherwise clears the breaker + returns the new
+    state.
+    """
+    try:
+        axis = CohortAxis(body.cohort)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"unknown cohort {body.cohort!r}; valid: {sorted(a.value for a in CohortAxis)}"
+            ),
+        ) from exc
+    governor = get_default_resource_cohort_governor()
+    governor.clear_breaker(axis)
+    return CohortAckResponse(
+        cohort=axis.value,
+        breaker_engaged=governor.is_breaker_engaged(axis),
+        acked_at_unix=time.time(),
+    )
+
+
+def _diagnostics_dir() -> Path:
+    """Resolve ~/.sovyx/diagnostics/ — mirrors the governor's helper."""
+    return Path.home() / ".sovyx" / "diagnostics"
+
+
+@router.get("/resources/heap-snapshot/{timestamp}")
+async def get_heap_snapshot(timestamp: int) -> dict[str, object]:
+    """Mission H4 §0 item #11 — serve a persisted heap-snapshot JSON.
+
+    The governor persists snapshots to ``~/.sovyx/diagnostics/heap-
+    snapshot-<ts>.json`` when ``observability.features.tracemalloc=True``
+    and an RSS_GROWTH cohort fires. Rotation keeps the last 10 files;
+    older timestamps return 404 (the snapshot was rotated out).
+
+    Path-traversal: ``timestamp`` is constrained to int by FastAPI;
+    Path concat is safe — no user-controlled string segments.
+    """
+    path = _diagnostics_dir() / f"heap-snapshot-{timestamp}.json"
+    if not path.is_file():
+        raise HTTPException(
+            status_code=HTTP_404_NOT_FOUND,
+            detail=(
+                f"heap-snapshot-{timestamp}.json not found — may have been "
+                "rotated past the heap_snapshot_max_files cap (default 10) "
+                "OR tracemalloc was not enabled when the cohort fired."
+            ),
+        )
+    try:
+        loaded: dict[str, object] = json.loads(path.read_text(encoding="utf-8"))
+        return loaded
+    except (OSError, json.JSONDecodeError) as exc:
+        logger.warning(
+            "engine.resources.heap_snapshot_read_failed",
+            path=str(path),
+            exc_type=type(exc).__name__,
+        )
+        raise HTTPException(status_code=500, detail="heap-snapshot file unreadable") from exc
+
+
+@router.get("/resources/thread-snapshot/{timestamp}")
+async def get_thread_snapshot(timestamp: int) -> dict[str, str]:
+    """Mission H4 §0 item — serve a persisted thread-snapshot text file.
+
+    The governor persists snapshots to ``~/.sovyx/diagnostics/thread-
+    snapshot-<ts>.txt`` when a THREAD_COUNT cohort fires (no
+    tracemalloc gate — thread snapshots are always available via
+    ``sys._current_frames()`` + ``threading.enumerate()``).
+    """
+    path = _diagnostics_dir() / f"thread-snapshot-{timestamp}.txt"
+    if not path.is_file():
+        raise HTTPException(
+            status_code=HTTP_404_NOT_FOUND,
+            detail=(
+                f"thread-snapshot-{timestamp}.txt not found — may have been "
+                "rotated past the thread_snapshot_max_files cap (default 10)."
+            ),
+        )
+    try:
+        return {"content": path.read_text(encoding="utf-8"), "timestamp": str(timestamp)}
+    except OSError as exc:
+        logger.warning(
+            "engine.resources.thread_snapshot_read_failed",
+            path=str(path),
+            exc_type=type(exc).__name__,
+        )
+        raise HTTPException(status_code=500, detail="thread-snapshot file unreadable") from exc
+
+
 __all__ = [
+    "CohortAckRequest",
+    "CohortAckResponse",
     "EngineResourcesResponse",
     "ResourceCohortMetrics",
     "_build_response",
