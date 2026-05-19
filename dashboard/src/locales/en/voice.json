@@ -1075,6 +1075,36 @@
       },
       "reinstall": "Reinstall via pipx",
       "runDoctor": "Run sovyx dashboard doctor"
+    },
+    "engine_resources": {
+      "rss_growth_spike": {
+        "title": "Process memory growing rapidly",
+        "body": "RSS grew by {{observed}} bytes within the cohort window (budget {{budget}}). This often precedes an OOM kill. Open the resources dashboard to inspect per-cohort allocators."
+      },
+      "thread_count_spike": {
+        "title": "Thread count climbing rapidly",
+        "body": "Threads grew by {{observed}} within the cohort window (budget {{budget}}). A failover-replay storm or unbounded executor pool is likely. Inspect the thread snapshot under diagnostics."
+      },
+      "lock_dict_cardinality_saturated": {
+        "title": "Lock-dict aggregate cardinality saturated",
+        "body": "Aggregate LRULockDict cardinality reached {{observed}} (soft cap {{budget}}). One LRULockDict is likely missing an eviction policy. Restart the daemon if the growth continues."
+      },
+      "onnx_session_unexpected_count": {
+        "title": "Unexpected ONNX session count",
+        "body": "Live ONNX InferenceSession count is {{observed}} (expected {{budget}}). Sessions are not being released — likely a leaked reference. Restart the daemon if growth continues."
+      },
+      "exception_cohort_retention_high": {
+        "title": "ExceptionGroup retention high",
+        "body": "Estimated retained bytes from recent ExceptionGroup chains is {{observed}} (cap {{budget}}). A failure storm is retaining tracebacks. Inspect the structured-log stream for repeated failures."
+      },
+      "heap_snapshot_triggered": {
+        "title": "Heap snapshot captured",
+        "body": "A forensic heap snapshot was persisted to {{heap_snapshot_path}}. Click the action chip to view the top allocators."
+      },
+      "actions": {
+        "viewResources": "View engine resources",
+        "viewHeapSnapshot": "View heap snapshot"
+      }
     }
   }
 }

@@ -172,6 +172,25 @@ def _budgets_from_tuning(tuning: ObservabilityTuningConfig) -> tuple[CohortBudge
 _OBSERVATION_RING_MAX: int = 32  # bounded history per cohort
 
 
+# Mission H4 §0 line 30 + v0.49.24 spec-literal reason names. Each
+# ``CohortAxis`` BUDGET_EXCEEDED verdict maps to a stable
+# ``engine_resources.<reason>`` string that operators / dashboards /
+# alert rules read; the suffix conveys the verdict semantics (RSS
+# growth is a *spike*, lock-dict cardinality is *saturated*, ONNX
+# session count is *unexpected*, etc.). The 6th reason
+# ``heap_snapshot_triggered`` is emitted by the
+# :meth:`ResourceCohortGovernor.request_heap_snapshot` success path
+# (operator-actionable surface for the persisted forensic file).
+_REASON_FOR_AXIS: dict[CohortAxis, str] = {
+    CohortAxis.RSS_GROWTH: "engine_resources.rss_growth_spike",
+    CohortAxis.THREAD_COUNT: "engine_resources.thread_count_spike",
+    CohortAxis.LOCK_DICT_CARDINALITY: "engine_resources.lock_dict_cardinality_saturated",
+    CohortAxis.ONNX_SESSION: "engine_resources.onnx_session_unexpected_count",
+    CohortAxis.EXCEPTION_COHORT: "engine_resources.exception_cohort_retention_high",
+}
+_REASON_HEAP_SNAPSHOT_TRIGGERED: str = "engine_resources.heap_snapshot_triggered"
+
+
 @dataclass
 class ResourceCohortGovernor:
     """Per-snapshot-tick cohort budget evaluator.
@@ -677,7 +696,78 @@ def _persist_heap_snapshot_direct(
             exc_info=True,
         )
         return None
+    # Mission H4 §0 line 30 — 6th spec-literal reason. Emit the
+    # ``heap_snapshot_triggered`` DegradedEntry as an operator-visible
+    # surface for the persisted forensic file. Action chip deep-links
+    # the operator at the HeapSnapshotViewer widget for the captured
+    # timestamp.
+    _record_heap_snapshot_to_composite_store(
+        cohort=cohort,
+        path=path,
+        timestamp=ts,
+        cohort_observed=cohort_observed,
+        cohort_budget=cohort_budget,
+    )
     return path
+
+
+def _record_heap_snapshot_to_composite_store(
+    *,
+    cohort: str,
+    path: Path,
+    timestamp: int,
+    cohort_observed: int | None,
+    cohort_budget: int | None,
+) -> None:
+    """Mission H4 §0 line 30 — emit the 6th spec-literal reason.
+
+    Records ``engine_resources.heap_snapshot_triggered`` into the C4
+    composite store on every successful tracemalloc snapshot capture.
+    The action chip deep-links the operator at the HeapSnapshotViewer
+    widget for the captured timestamp so the forensic file is one click
+    away from the banner.
+
+    Best-effort: store unavailability cannot block the snapshot path.
+    """
+    try:
+        from sovyx.engine._degraded_store import (  # noqa: PLC0415 — lazy
+            ActionChip,
+            DegradedEntry,
+            get_default_degraded_store,
+        )
+
+        now_monotonic = time.monotonic()
+        entry = DegradedEntry(
+            axis="engine_resources",
+            reason=_REASON_HEAP_SNAPSHOT_TRIGGERED,
+            severity="warning",
+            title_token="degraded.engine_resources.heap_snapshot_triggered.title",
+            body_token="degraded.engine_resources.heap_snapshot_triggered.body",
+            action_chips=(
+                ActionChip(
+                    label_token="degraded.engine_resources.actions.viewHeapSnapshot",
+                    action="navigate",
+                    target=f"/engine/resources?heapSnapshot={timestamp}",
+                ),
+            ),
+            metadata={
+                "cohort": cohort,
+                "heap_snapshot_path": str(path),
+                "heap_snapshot_timestamp": timestamp,
+                "cohort_observed": cohort_observed,
+                "cohort_budget": cohort_budget,
+            },
+            first_observed_monotonic=now_monotonic,
+            last_observed_monotonic=now_monotonic,
+            occurrence_count=1,
+        )
+        get_default_degraded_store().record(entry)
+    except Exception:  # noqa: BLE001 — composite store never breaks snapshot
+        logger.debug(
+            "engine.resources.heap_snapshot_composite_store_record_failed",
+            cohort=cohort,
+            exc_info=True,
+        )
 
 
 def _persist_heap_snapshot(evaluation: CohortEvaluation) -> None:
@@ -826,15 +916,25 @@ def _record_to_composite_store(evaluation: CohortEvaluation) -> None:
         )
 
         now_monotonic = time.monotonic()
-        reason = f"engine_resources.{evaluation.axis.value}"
+        # Mission H4 §0 line 30 spec-literal reason names — v0.49.24
+        # closure. The reason string carries the verdict semantics
+        # (``..._spike`` for delta-based cohorts, ``..._saturated`` for
+        # aggregate caps, etc.) so dashboards + alert rules + i18n
+        # tokens have a stable taxonomy distinct from the internal
+        # ``CohortAxis`` value identifiers.
+        reason = _REASON_FOR_AXIS.get(
+            evaluation.axis,
+            f"engine_resources.{evaluation.axis.value}",
+        )
+        reason_suffix = reason.split(".", 1)[1] if "." in reason else reason
         # Severity per ADR-D6: 1 cohort = warn. The composite endpoint
         # escalates to error/critical when N axes co-occur.
         entry = DegradedEntry(
             axis="engine_resources",
             reason=reason,
             severity="warning",
-            title_token=f"degraded.engine_resources.{evaluation.axis.value}.title",
-            body_token=f"degraded.engine_resources.{evaluation.axis.value}.body",
+            title_token=f"degraded.engine_resources.{reason_suffix}.title",
+            body_token=f"degraded.engine_resources.{reason_suffix}.body",
             action_chips=(
                 ActionChip(
                     label_token="degraded.engine_resources.actions.viewResources",
@@ -895,4 +995,7 @@ __all__ = [
     # The cohort-name-driven helper is exposed for unit tests + future
     # callers; the canonical wire-up is via ResourceCohortGovernor.request_heap_snapshot.
     "_persist_heap_snapshot_direct",
+    # Mission H4 §0 line 30 + v0.49.24 — spec-literal reason names.
+    "_REASON_FOR_AXIS",
+    "_REASON_HEAP_SNAPSHOT_TRIGGERED",
 ]

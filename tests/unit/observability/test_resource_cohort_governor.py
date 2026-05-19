@@ -170,7 +170,8 @@ class TestEmitAxisEntries:
         snapshot = get_default_degraded_store().snapshot()
         engine_axis_entries = [e for e in snapshot if e.axis == "engine_resources"]
         assert engine_axis_entries
-        assert any(e.reason == "engine_resources.thread_count" for e in engine_axis_entries)
+        # v0.49.24 — spec-literal reason name (was "engine_resources.thread_count").
+        assert any(e.reason == "engine_resources.thread_count_spike" for e in engine_axis_entries)
 
     def test_healthy_does_not_record(self) -> None:
         governor = ResourceCohortGovernor()
@@ -209,3 +210,85 @@ class TestGovernorSingleton:
         reset_default_resource_cohort_governor()
         b = get_default_resource_cohort_governor()
         assert a is not b
+
+
+class TestSpecLiteralReasonNames:
+    """Mission H4 §0 line 30 + v0.49.24 — spec-literal reason taxonomy.
+
+    The 6 reason strings the spec lists at section §0 line 30 MUST
+    match exactly what the governor emits — operators, alert rules,
+    and i18n token keys all depend on this taxonomy.
+    """
+
+    def test_reason_for_axis_mapping_matches_spec_literal(self) -> None:
+        from sovyx.observability._resource_cohort_governor import _REASON_FOR_AXIS
+
+        # Spec §0 line 30 — 5 cohort-driven reasons. The full path is
+        # ``engine_resources.<reason>`` so banner/dashboard see a fully
+        # qualified namespace string.
+        assert _REASON_FOR_AXIS[CohortAxis.RSS_GROWTH] == "engine_resources.rss_growth_spike"
+        assert _REASON_FOR_AXIS[CohortAxis.THREAD_COUNT] == "engine_resources.thread_count_spike"
+        assert (
+            _REASON_FOR_AXIS[CohortAxis.LOCK_DICT_CARDINALITY]
+            == "engine_resources.lock_dict_cardinality_saturated"
+        )
+        assert (
+            _REASON_FOR_AXIS[CohortAxis.ONNX_SESSION]
+            == "engine_resources.onnx_session_unexpected_count"
+        )
+        assert (
+            _REASON_FOR_AXIS[CohortAxis.EXCEPTION_COHORT]
+            == "engine_resources.exception_cohort_retention_high"
+        )
+
+    def test_heap_snapshot_triggered_reason_constant(self) -> None:
+        from sovyx.observability._resource_cohort_governor import (
+            _REASON_HEAP_SNAPSHOT_TRIGGERED,
+        )
+
+        # Spec §0 line 30 — 6th reason emitted by the heap-snapshot
+        # capture success path (not a budget breach but a forensic-
+        # artifact-persisted notification).
+        assert _REASON_HEAP_SNAPSHOT_TRIGGERED == "engine_resources.heap_snapshot_triggered"
+
+    def test_record_to_composite_store_uses_spec_literal_reason(self) -> None:
+        """End-to-end: a BUDGET_EXCEEDED evaluation produces a
+        DegradedEntry whose reason matches the spec literal.
+        """
+        from sovyx.observability._resource_cohort_governor import (
+            CohortEvaluation,
+            _record_to_composite_store,
+        )
+
+        for axis, expected_reason in [
+            (CohortAxis.RSS_GROWTH, "engine_resources.rss_growth_spike"),
+            (CohortAxis.THREAD_COUNT, "engine_resources.thread_count_spike"),
+            (
+                CohortAxis.LOCK_DICT_CARDINALITY,
+                "engine_resources.lock_dict_cardinality_saturated",
+            ),
+            (CohortAxis.ONNX_SESSION, "engine_resources.onnx_session_unexpected_count"),
+            (
+                CohortAxis.EXCEPTION_COHORT,
+                "engine_resources.exception_cohort_retention_high",
+            ),
+        ]:
+            reset_default_degraded_store()
+            evaluation = CohortEvaluation(
+                axis=axis,
+                verdict=CohortVerdict.BUDGET_EXCEEDED,
+                observed=999,
+                budget=100,
+                note="synthetic",
+            )
+            _record_to_composite_store(evaluation)
+            entries = get_default_degraded_store().snapshot()
+            assert len(entries) == 1
+            entry = entries[0]
+            assert entry.reason == expected_reason
+            assert entry.axis == "engine_resources"
+            # Title/body tokens MUST derive from the reason suffix so the
+            # i18n keys at degraded.engine_resources.<reason>.title resolve.
+            suffix = expected_reason.split(".", 1)[1]
+            assert entry.title_token == f"degraded.engine_resources.{suffix}.title"
+            assert entry.body_token == f"degraded.engine_resources.{suffix}.body"

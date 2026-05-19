@@ -1075,6 +1075,36 @@
       },
       "reinstall": "Reinstalar via pipx",
       "runDoctor": "Executar sovyx dashboard doctor"
+    },
+    "engine_resources": {
+      "rss_growth_spike": {
+        "title": "Memória do processo crescendo rapidamente",
+        "body": "RSS cresceu {{observed}} bytes na janela do cohort (orçamento {{budget}}). Isso geralmente antecede um OOM kill. Abra o painel de recursos para inspecionar os alocadores por cohort."
+      },
+      "thread_count_spike": {
+        "title": "Contagem de threads crescendo rapidamente",
+        "body": "Threads cresceram {{observed}} na janela do cohort (orçamento {{budget}}). Uma tempestade de failover-replay ou pool de executor sem limite é provável. Inspecione o thread snapshot em diagnostics."
+      },
+      "lock_dict_cardinality_saturated": {
+        "title": "Cardinalidade agregada de lock-dict saturada",
+        "body": "A cardinalidade total de LRULockDict atingiu {{observed}} (cap soft {{budget}}). Provavelmente um LRULockDict está sem política de eviction. Reinicie o daemon se o crescimento continuar."
+      },
+      "onnx_session_unexpected_count": {
+        "title": "Contagem inesperada de sessões ONNX",
+        "body": "Sessões ONNX InferenceSession ativas: {{observed}} (esperado {{budget}}). Sessões não estão sendo liberadas — referência vazada. Reinicie o daemon se o crescimento continuar."
+      },
+      "exception_cohort_retention_high": {
+        "title": "Retenção alta em cohort de exceções",
+        "body": "Bytes estimados retidos por cadeias ExceptionGroup recentes: {{observed}} (cap {{budget}}). Uma tempestade de falhas está retendo tracebacks. Inspecione o stream de logs estruturados para falhas repetidas."
+      },
+      "heap_snapshot_triggered": {
+        "title": "Snapshot de heap capturado",
+        "body": "Um snapshot forense do heap foi persistido em {{heap_snapshot_path}}. Clique no chip de ação para ver os alocadores principais."
+      },
+      "actions": {
+        "viewResources": "Ver recursos do engine",
+        "viewHeapSnapshot": "Ver snapshot do heap"
+      }
     }
   }
 }

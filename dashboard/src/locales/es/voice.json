@@ -1075,6 +1075,36 @@
       },
       "reinstall": "Reinstalar vía pipx",
       "runDoctor": "Ejecutar sovyx dashboard doctor"
+    },
+    "engine_resources": {
+      "rss_growth_spike": {
+        "title": "Memoria del proceso creciendo rápidamente",
+        "body": "RSS creció {{observed}} bytes en la ventana del cohort (presupuesto {{budget}}). Esto suele preceder un OOM kill. Abre el panel de recursos para inspeccionar los asignadores por cohort."
+      },
+      "thread_count_spike": {
+        "title": "Cantidad de hilos creciendo rápidamente",
+        "body": "Los hilos crecieron {{observed}} en la ventana del cohort (presupuesto {{budget}}). Una tormenta de failover-replay o pool de ejecutor sin límite es probable. Inspecciona el thread snapshot en diagnostics."
+      },
+      "lock_dict_cardinality_saturated": {
+        "title": "Cardinalidad agregada de lock-dict saturada",
+        "body": "La cardinalidad total de LRULockDict alcanzó {{observed}} (cap soft {{budget}}). Probablemente un LRULockDict carece de política de eviction. Reinicia el daemon si el crecimiento continúa."
+      },
+      "onnx_session_unexpected_count": {
+        "title": "Cantidad inesperada de sesiones ONNX",
+        "body": "Sesiones ONNX InferenceSession activas: {{observed}} (esperado {{budget}}). Las sesiones no se están liberando — referencia con fuga. Reinicia el daemon si el crecimiento continúa."
+      },
+      "exception_cohort_retention_high": {
+        "title": "Retención alta en cohort de excepciones",
+        "body": "Bytes estimados retenidos por cadenas ExceptionGroup recientes: {{observed}} (cap {{budget}}). Una tormenta de fallos está reteniendo tracebacks. Inspecciona el stream de logs estructurados para fallos repetidos."
+      },
+      "heap_snapshot_triggered": {
+        "title": "Snapshot del heap capturado",
+        "body": "Un snapshot forense del heap fue persistido en {{heap_snapshot_path}}. Haz clic en el chip de acción para ver los asignadores principales."
+      },
+      "actions": {
+        "viewResources": "Ver recursos del engine",
+        "viewHeapSnapshot": "Ver snapshot del heap"
+      }
     }
   }
 }

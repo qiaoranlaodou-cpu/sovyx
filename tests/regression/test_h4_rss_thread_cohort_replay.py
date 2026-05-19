@@ -141,8 +141,9 @@ class TestH4ForensicAnchorReplay:
         snapshot = get_default_degraded_store().snapshot()
         engine_axis_entries = [e for e in snapshot if e.axis == "engine_resources"]
         reasons = {e.reason for e in engine_axis_entries}
-        assert "engine_resources.rss_growth" in reasons, reasons
-        assert "engine_resources.thread_count" in reasons, reasons
+        # v0.49.24 — spec-literal reason names (were rss_growth / thread_count).
+        assert "engine_resources.rss_growth_spike" in reasons, reasons
+        assert "engine_resources.thread_count_spike" in reasons, reasons
 
     def test_pre_inflection_ticks_do_not_fire(self) -> None:
         """Ticks 1-4 (baseline + warmup) MUST NOT fire BUDGET_EXCEEDED."""

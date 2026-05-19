@@ -137,6 +137,23 @@ describe("Locale completeness — voice namespace", () => {
       "resources.fields.gc_objects.label",
       "resources.fields.tracemalloc_active.label",
       "resources.fields.exception_retention.label",
+      // Mission H4 v0.49.24 — spec-literal reason taxonomy (§0 line 30).
+      // 6 reasons × 2 fields (title + body) = 12 keys + 2 action chip
+      // labels = 14 entries per locale.
+      "degraded.engine_resources.rss_growth_spike.title",
+      "degraded.engine_resources.rss_growth_spike.body",
+      "degraded.engine_resources.thread_count_spike.title",
+      "degraded.engine_resources.thread_count_spike.body",
+      "degraded.engine_resources.lock_dict_cardinality_saturated.title",
+      "degraded.engine_resources.lock_dict_cardinality_saturated.body",
+      "degraded.engine_resources.onnx_session_unexpected_count.title",
+      "degraded.engine_resources.onnx_session_unexpected_count.body",
+      "degraded.engine_resources.exception_cohort_retention_high.title",
+      "degraded.engine_resources.exception_cohort_retention_high.body",
+      "degraded.engine_resources.heap_snapshot_triggered.title",
+      "degraded.engine_resources.heap_snapshot_triggered.body",
+      "degraded.engine_resources.actions.viewResources",
+      "degraded.engine_resources.actions.viewHeapSnapshot",
     ];
     for (const key of requiredKeys) {
       expect(en.has(key), `EN missing ${key}`).toBe(true);

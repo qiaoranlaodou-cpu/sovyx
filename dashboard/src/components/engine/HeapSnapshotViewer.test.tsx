@@ -198,6 +198,19 @@ describe("HeapSnapshotViewer", () => {
     expect(screen.queryByTestId("heap-snapshot-row-1")).not.toBeInTheDocument();
   });
 
+  it("renders the heap-snapshot-viewer wrapper when payload resolves", async () => {
+    mockApiFetch.mockResolvedValue(mockResponse(200, buildPayload()));
+    render(<HeapSnapshotViewer timestamp={1716143280} />);
+    await waitFor(() => {
+      expect(screen.getByTestId("heap-snapshot-viewer")).toBeInTheDocument();
+    });
+    // The viewer wrapper carries the section heading so screen-readers
+    // announce "Heap snapshot" via the aria-labelledby anchor.
+    expect(
+      screen.getByRole("heading", { name: /heapSnapshot\.title/ }),
+    ).toBeInTheDocument();
+  });
+
   it("re-fetches when the timestamp prop changes", async () => {
     mockApiFetch.mockResolvedValue(mockResponse(200, buildPayload()));
     const { rerender } = render(<HeapSnapshotViewer timestamp={1716143280} />);
