@@ -414,6 +414,15 @@ class SessionRegistry:
         self._force_close_grace_s = force_close_grace_s
         self._sessions: dict[str, list[TestSession]] = {}
         self._locks: LRULockDict[str] = LRULockDict(maxsize=2_048)
+        # Mission H4 §T2.4 — register for cohort observability.
+        from sovyx.observability._resource_registry import (  # noqa: PLC0415 — lazy import
+            register_lock_dict,
+        )
+
+        register_lock_dict(
+            owner_id="voice.device_test.session_locks",
+            dict_ref=self._locks,
+        )
         # v0.38.0 / F2-H01 — single-writer claim across the whole
         # process. Used by the wizard recorder (and any future caller
         # that needs an uninterrupted PortAudio window) to fence VU

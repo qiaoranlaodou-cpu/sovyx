@@ -202,6 +202,14 @@ class EmbeddingEngine:
             sess_options,
             providers=["CPUExecutionProvider"],
         )
+        # Mission H4 §T2.3 — register the session so its lifetime is
+        # observable via the ResourceCohortGovernor's onnx.session_count
+        # cohort. Weakref-tracked; auto-reaped on GC.
+        from sovyx.observability._resource_registry import (  # noqa: PLC0415 — lazy import to avoid circular dependency
+            register_onnx_session,
+        )
+
+        register_onnx_session(label="brain.embedding", session=self._session)
         self._tokenizer = Tokenizer.from_file(str(tokenizer_path))
         self._tokenizer.enable_truncation(max_length=MAX_TOKENS)
         self._tokenizer.enable_padding(  # nosec B106

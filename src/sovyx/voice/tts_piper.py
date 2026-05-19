@@ -311,6 +311,12 @@ class PiperTTS(TTSEngine):
                 sess_options=opts,
                 providers=["CPUExecutionProvider"],
             )
+            # Mission H4 §T2.3 — register session for cohort observability.
+            from sovyx.observability._resource_registry import (  # noqa: PLC0415 — lazy import
+                register_onnx_session,
+            )
+
+            register_onnx_session(label="voice.tts.piper", session=self._session)
         except Exception as exc:  # noqa: BLE001
             msg = f"Failed to create Piper ONNX session: {exc}"
             raise RuntimeError(msg) from exc

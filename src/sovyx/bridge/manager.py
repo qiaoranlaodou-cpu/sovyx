@@ -196,6 +196,13 @@ class BridgeManager:
         self._financial_gate = financial_gate
         self._adapters: dict[ChannelType, ChannelAdapter] = {}
         self._conv_locks: _LRULockDict[ConversationId] = _LRULockDict(maxsize=500)
+        # Mission H4 §T2.4 — register so cardinality is observable on
+        # self.health.snapshot.lock_dict.per_owner["bridge.manager.conv_locks"].
+        from sovyx.observability._resource_registry import (  # noqa: PLC0415 — lazy import
+            register_lock_dict,
+        )
+
+        register_lock_dict(owner_id="bridge.manager.conv_locks", dict_ref=self._conv_locks)
         # v0.31.7 T3.6 (LOW.5) — bounded so abandoned confirmations
         # don't accumulate over the daemon lifetime. See
         # :class:`_BoundedConfirmationsDict` for eviction semantics.

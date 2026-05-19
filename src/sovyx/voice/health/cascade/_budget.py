@@ -88,6 +88,15 @@ def _default_locks() -> LRULockDict[str]:
     global _DEFAULT_LOCKS  # noqa: PLW0603 — lazy singleton, not user-mutable state
     if _DEFAULT_LOCKS is None:
         _DEFAULT_LOCKS = LRULockDict(maxsize=_LIFECYCLE_LOCK_MAX)
+        # Mission H4 §T2.4 — register for cohort observability.
+        from sovyx.observability._resource_registry import (  # noqa: PLC0415 — lazy import
+            register_lock_dict,
+        )
+
+        register_lock_dict(
+            owner_id="voice.health.cascade.budget_locks",
+            dict_ref=_DEFAULT_LOCKS,
+        )
     return _DEFAULT_LOCKS
 
 

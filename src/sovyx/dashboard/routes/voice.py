@@ -58,6 +58,12 @@ router = APIRouter(prefix="/api/voice", dependencies=[Depends(verify_token)])
 # in ``voice_calibration.py``. Anti-pattern #15: LRULockDict, never
 # raw ``defaultdict(asyncio.Lock)``.
 _ENABLE_LOCKS: LRULockDict[str] = LRULockDict(maxsize=64)
+# Mission H4 §T2.4 — register module-level lock-dict for cohort observability.
+from sovyx.observability._resource_registry import (  # noqa: PLC0415, E402 — module-level registration
+    register_lock_dict,
+)
+
+register_lock_dict(owner_id="dashboard.routes.voice.enable_locks", dict_ref=_ENABLE_LOCKS)
 
 
 # v0.31.7 CR1 — bound on how long ``_on_perception`` waits for the

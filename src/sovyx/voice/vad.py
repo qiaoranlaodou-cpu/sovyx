@@ -530,6 +530,12 @@ class SileroVAD:
             sess_options=opts,
             providers=["CPUExecutionProvider"],
         )
+        # Mission H4 §T2.3 — register session for cohort observability.
+        from sovyx.observability._resource_registry import (  # noqa: PLC0415 — lazy import
+            register_onnx_session,
+        )
+
+        register_onnx_session(label="voice.vad.silero", session=self._session)
 
         # Persistent LSTM state (h0, c0) — survives between frames
         self._state: npt.NDArray[np.float32] = np.zeros(_LSTM_STATE_SHAPE, dtype=np.float32)

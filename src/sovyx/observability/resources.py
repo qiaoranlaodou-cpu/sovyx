@@ -156,6 +156,30 @@ def _capture_psutil_metrics(*, skip_expensive: bool = False) -> dict[str, object
     }
 
 
+def _capture_resource_registry_metrics() -> dict[str, object]:
+    """Return per-cohort registry metrics consumed by snapshot emission.
+
+    Delegates to :meth:`ResourceRegistry.snapshot_fields()`. Imports the
+    registry lazily so the snapshotter doesn't pin the registry module
+    at import time (the registry is initialized at first use; tests can
+    reset it without affecting the snapshotter).
+
+    Failures fall back to an empty dict — observability is best-effort,
+    not load-bearing.
+
+    Mission H4 §T2.1 — Phase 1.B wire-up.
+    """
+    try:
+        from sovyx.observability._resource_registry import (  # noqa: PLC0415 — lazy by design
+            get_default_resource_registry,
+        )
+
+        return get_default_resource_registry().snapshot_fields()
+    except Exception:  # noqa: BLE001 — registry must never break the snapshot path
+        logger.debug("self.health.resource_registry_capture_failed", exc_info=True)
+        return {}
+
+
 def _capture_asyncio_metrics() -> dict[str, object]:
     """Return current event-loop task counts.
 
@@ -298,20 +322,39 @@ class ResourceSnapshotter:
         (``open_files``/``net_connections``) are skipped to avoid a
         Windows-specific ``os.stat()`` hang on closing handles during
         async teardown — see :func:`_capture_psutil_metrics`.
+
+        Mission H4 §T2.1 extension: the payload now includes the
+        per-cohort registry metrics (ONNX session count, LRULockDict
+        cardinality, asyncio.to_thread dispatch counters, gc /
+        tracemalloc / exception-cohort retention) consumed by the Phase
+        1.D :class:`ResourceCohortGovernor`. The ``process.rss_bytes``
+        field dual-emits the legacy ``system.rss_bytes`` alias during
+        the LENIENT calibration window per ADR-D9.
         """
         psutil_metrics = _capture_psutil_metrics(skip_expensive=final)
         asyncio_metrics = _capture_asyncio_metrics()
+        registry_metrics = _capture_resource_registry_metrics()
         queues = _capture_queue_metrics(self._providers)
 
         uptime_s: float | None = None
         if self._started_at is not None:
             uptime_s = round(time.monotonic() - self._started_at, 3)
 
+        # ADR-D9 dual-emit during Mission H4 LENIENT window — both
+        # ``process.rss_bytes`` (canonical) and ``system.rss_bytes``
+        # (legacy alias) appear in the payload. The H4 STRICT flip at
+        # v0.54.0 drops the alias.
+        psutil_with_legacy: dict[str, object] = dict(psutil_metrics)
+        rss = psutil_with_legacy.get("process.rss_bytes")
+        if isinstance(rss, int):
+            psutil_with_legacy["system.rss_bytes"] = rss  # h4-allowlist: legacy alias
+
         payload: dict[str, object] = {
             "self.health.snapshot_final": final,
             "self.health.uptime_s": uptime_s,
-            **psutil_metrics,
+            **psutil_with_legacy,
             **asyncio_metrics,
+            **registry_metrics,
             "self.health.queue_count": len(queues),
             "self.health.queues": [
                 {

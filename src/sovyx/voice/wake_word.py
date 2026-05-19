@@ -478,6 +478,12 @@ class WakeWordDetector:
             sess_options=opts,
             providers=["CPUExecutionProvider"],
         )
+        # Mission H4 §T2.3 — register session for cohort observability.
+        from sovyx.observability._resource_registry import (  # noqa: PLC0415 — lazy import
+            register_onnx_session,
+        )
+
+        register_onnx_session(label="voice.wake_word", session=self._session)
 
         self._verifier: VerifierFn = verifier or default_verifier(self._config.wake_variants)
 

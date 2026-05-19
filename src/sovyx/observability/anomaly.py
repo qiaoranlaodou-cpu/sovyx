@@ -220,8 +220,20 @@ class AnomalyDetector:
             self._observe_error(now)
 
         # 4. Memory growth — only RSS snapshots from ResourceSnapshotter
-        #    carry the canonical ``system.rss_bytes`` field.
-        rss = event_dict.get("system.rss_bytes")
+        #    carry the canonical ``process.rss_bytes`` field. Mission H4
+        #    §T2.2 renamed from the legacy ``system.rss_bytes``; dual-read
+        #    during the LENIENT calibration window (v0.49.15..v0.53.x) so
+        #    external dashboards / log forwarders keyed on the legacy name
+        #    keep working. At STRICT (v0.54.0) the legacy fallback is
+        #    removed. Pre-H4 the consumer read ``system.rss_bytes`` while
+        #    the producer at ``observability/resources.py:149`` emitted
+        #    ``process.rss_bytes`` — the detector had been silently dead
+        #    since landing. v0.43.1 forensic anchor §H4: +1.1 GB RSS over
+        #    60 s never fired ``anomaly.memory_growth_spike`` because of
+        #    this exact drift.
+        rss = event_dict.get("process.rss_bytes")
+        if rss is None:
+            rss = event_dict.get("system.rss_bytes")  # h4-allowlist: legacy alias during LENIENT
         if isinstance(rss, int) and rss > 0:
             self._observe_rss(rss, now)
 

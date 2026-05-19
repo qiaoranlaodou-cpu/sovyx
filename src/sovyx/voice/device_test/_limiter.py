@@ -34,6 +34,15 @@ class TokenReconnectLimiter:
         self._window_seconds = window_seconds
         self._events: dict[str, deque[float]] = {}
         self._locks: LRULockDict[str] = LRULockDict(maxsize=4_096)
+        # Mission H4 §T2.4 — register for cohort observability.
+        from sovyx.observability._resource_registry import (  # noqa: PLC0415 — lazy import
+            register_lock_dict,
+        )
+
+        register_lock_dict(
+            owner_id="voice.device_test.limiter_locks",
+            dict_ref=self._locks,
+        )
 
     async def try_acquire(self, token_key: str) -> bool:
         """Return True if under limit (slot reserved), False if over."""

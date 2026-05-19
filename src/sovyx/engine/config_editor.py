@@ -42,6 +42,12 @@ class ConfigEditor:
 
     def __init__(self, max_locks: int = 64) -> None:
         self._locks: LRULockDict[str] = LRULockDict(maxsize=max_locks)
+        # Mission H4 §T2.4 — register for cohort observability.
+        from sovyx.observability._resource_registry import (  # noqa: PLC0415 — lazy import
+            register_lock_dict,
+        )
+
+        register_lock_dict(owner_id="engine.config_editor.locks", dict_ref=self._locks)
 
     async def update_section(
         self,

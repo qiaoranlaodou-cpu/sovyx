@@ -259,6 +259,16 @@ class VoiceCaptureWatchdog:
             if lifecycle_locks is not None
             else LRULockDict(maxsize=_DEFAULT_LIFECYCLE_LOCK_MAX)
         )
+        # Mission H4 §T2.4 — register so cardinality is observable on
+        # self.health.snapshot.lock_dict.per_owner["voice.health.watchdog.lifecycle_locks"].
+        from sovyx.observability._resource_registry import (  # noqa: PLC0415 — lazy import
+            register_lock_dict,
+        )
+
+        register_lock_dict(
+            owner_id="voice.health.watchdog.lifecycle_locks",
+            dict_ref=self._locks,
+        )
         schedule = tuple(schedule_s) if schedule_s is not None else _DEFAULT_SCHEDULE
         self._max_attempts = max_attempts if max_attempts is not None else _DEFAULT_MAX_ATTEMPTS
         # Trim schedule to max_attempts so a tuning change like

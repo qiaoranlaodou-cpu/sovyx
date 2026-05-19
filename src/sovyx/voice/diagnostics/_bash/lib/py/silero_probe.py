@@ -302,7 +302,7 @@ def main() -> int:
         opts = ort.SessionOptions()
         opts.intra_op_num_threads = 1  # don't starve a concurrent Sovyx daemon
         opts.inter_op_num_threads = 1
-        sess = ort.InferenceSession(
+        sess = ort.InferenceSession(  # h4-allowlist: out-of-process diagnostic helper, no ResourceRegistry
             str(model),
             sess_options=opts,
             providers=["CPUExecutionProvider"],

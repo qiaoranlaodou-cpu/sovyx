@@ -137,6 +137,19 @@ _START_LOCKS: LRULockDict[str] = LRULockDict(maxsize=256)
 # operator stops touching them (CLAUDE.md anti-pattern #15).
 _SIGNING_KEY_LOCKS: LRULockDict[str] = LRULockDict(maxsize=256)
 
+# Mission H4 §T2.4 — register module-level lock-dicts for cohort observability.
+from sovyx.observability._resource_registry import (  # noqa: PLC0415, E402 — module-level registration
+    register_lock_dict,
+)
+
+register_lock_dict(
+    owner_id="dashboard.routes.voice_calibration.start_locks", dict_ref=_START_LOCKS
+)
+register_lock_dict(
+    owner_id="dashboard.routes.voice_calibration.signing_locks",
+    dict_ref=_SIGNING_KEY_LOCKS,
+)
+
 
 # ====================================================================
 # Helpers (resolve data_dir + orchestrator)

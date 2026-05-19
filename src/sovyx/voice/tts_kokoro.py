@@ -246,6 +246,12 @@ class KokoroTTS(TTSEngine):
                 sess_options=opts,
                 providers=["CPUExecutionProvider"],
             )
+            # Mission H4 §T2.3 — register session for cohort observability.
+            from sovyx.observability._resource_registry import (  # noqa: PLC0415 — lazy import
+                register_onnx_session,
+            )
+
+            register_onnx_session(label="voice.tts.kokoro", session=session)
             self._kokoro = Kokoro.from_session(session, str(voices_path))
         except Exception as exc:  # noqa: BLE001
             msg = f"Failed to initialize Kokoro: {exc}"
