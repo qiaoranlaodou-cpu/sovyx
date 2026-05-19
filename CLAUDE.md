@@ -64,6 +64,7 @@ uv run python scripts/dev/check_dashboard_bundle_integrity.py          # 11. das
 uv run python scripts/dev/check_llm_provider_discipline.py             # 12. llm provider wire-discipline (Mission C6 §T1.4) — LENIENT in v0.49.x; STRICT at v0.50.0
 uv run python scripts/dev/check_platform_neutral_event_names.py        # 13. platform-neutral event names (Mission H2 §T1.5) — LENIENT in v0.49.x; STRICT at v0.51.0
 uv run python scripts/dev/check_quarantine_reason_discipline.py        # 14. quarantine reason discipline (Mission H3 §T1.4) — LENIENT in v0.49.10..v0.52.x; STRICT at v0.53.0
+uv run python scripts/dev/check_resource_hygiene_discipline.py         # 15. resource hygiene discipline (Mission H4 §T1.4) — LENIENT in v0.49.14..v0.53.x; STRICT at v0.54.0
 ```
 
 Plus `uv lock --check` when bumping versions. If running gates ad-hoc, grep the summary line — never trust the harness exit code alone. Pre-v0.42.2 the pattern `pytest ... 2>&1 | tail -N` masked 6 real failures across 4 cycles (`feedback_ci_preflight.md` + `feedback_no_speculation.md` Addendum 2026-05-14).

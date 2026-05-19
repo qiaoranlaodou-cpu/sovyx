@@ -34,6 +34,36 @@ if TYPE_CHECKING:
     from sovyx.observability._fast_path import (
         is_fast_path_record as is_fast_path_record,
     )
+    from sovyx.observability._resource_registry import (
+        CohortAxis as CohortAxis,
+    )
+    from sovyx.observability._resource_registry import (
+        FieldSpec as FieldSpec,
+    )
+    from sovyx.observability._resource_registry import (
+        ResourceRegistry as ResourceRegistry,
+    )
+    from sovyx.observability._resource_registry import (
+        get_default_resource_registry as get_default_resource_registry,
+    )
+    from sovyx.observability._resource_registry import (
+        record_exception_cohort as record_exception_cohort,
+    )
+    from sovyx.observability._resource_registry import (
+        record_to_thread_dispatch as record_to_thread_dispatch,
+    )
+    from sovyx.observability._resource_registry import (
+        register_lock_dict as register_lock_dict,
+    )
+    from sovyx.observability._resource_registry import (
+        register_onnx_session as register_onnx_session,
+    )
+    from sovyx.observability._resource_registry import (
+        reset_default_resource_registry as reset_default_resource_registry,
+    )
+    from sovyx.observability._thread_dispatch import (
+        dispatch_to_thread as dispatch_to_thread,
+    )
     from sovyx.observability.alerts import (
         Alert as Alert,
     )
@@ -260,6 +290,18 @@ _SUBMODULE_MAP: dict[str, tuple[str, ...]] = {
         "NonFastPathFilter",
         "is_fast_path_record",
     ),
+    "sovyx.observability._resource_registry": (
+        "CohortAxis",
+        "FieldSpec",
+        "ResourceRegistry",
+        "get_default_resource_registry",
+        "record_exception_cohort",
+        "record_to_thread_dispatch",
+        "register_lock_dict",
+        "register_onnx_session",
+        "reset_default_resource_registry",
+    ),
+    "sovyx.observability._thread_dispatch": ("dispatch_to_thread",),
     "sovyx.observability.envelope": ("EnvelopeProcessor",),
     "sovyx.observability.pii": ("PIIRedactor",),
     "sovyx.observability.ringbuffer": ("RingBufferHandler", "install_crash_hooks"),
@@ -327,16 +369,19 @@ __all__ = [
     "CheckResult",
     "CheckStatus",
     "ClampFieldsProcessor",
+    "CohortAxis",
     "EnvelopeProcessor",
     "ExceptionTreeProcessor",
     "FastPathFilter",
     "FastPathHandler",
+    "FieldSpec",
     "HealthCheck",
     "HealthRegistry",
     "LogEntry",
     "MetricsRegistry",
     "NonFastPathFilter",
     "PIIRedactor",
+    "ResourceRegistry",
     "RingBufferHandler",
     "SLODefinition",
     "SamplingProcessor",
@@ -361,13 +406,20 @@ __all__ = [
     "current_event_id",
     "current_saga_id",
     "current_span_id",
+    "dispatch_to_thread",
     "end_saga",
+    "get_default_resource_registry",
     "get_logger",
     "get_metrics",
     "get_request_context",
     "get_tracer",
     "install_crash_hooks",
     "is_fast_path_record",
+    "record_exception_cohort",
+    "record_to_thread_dispatch",
+    "register_lock_dict",
+    "register_onnx_session",
+    "reset_default_resource_registry",
     "runtime_get_level",
     "runtime_set_level",
     "saga_scope",

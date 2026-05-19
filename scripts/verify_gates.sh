@@ -45,7 +45,7 @@ else
 fi
 
 GATE_NUM=0
-GATE_TOTAL=14
+GATE_TOTAL=15
 FAILURES=()
 
 ok() {
@@ -118,7 +118,7 @@ fi
 # ── Gate 5: pytest (full suite, --ignore=tests/smoke per CLAUDE.md) ──
 GATE_NUM=5
 LOG="$LOG_DIR/05-pytest.log"
-printf '%s…%s gate 5/7 — pytest (full suite, may take 5-10 min)…\n' "$YELLOW" "$RESET"
+printf '%s…%s gate 5/%d — pytest (full suite, may take 5-10 min)…\n' "$YELLOW" "$RESET" "$GATE_TOTAL"
 # Run without -v to avoid Windows CI hang (per Mission Phase 3 hypothesis).
 # `pipefail` ensures pytest's exit code propagates through tee.
 # pytest summary line formats:
@@ -180,7 +180,7 @@ fi
 # ── Gate 7: dashboard vitest ─────────────────────────────────────────
 GATE_NUM=7
 LOG="$LOG_DIR/07-vitest.log"
-printf '%s…%s gate 7/7 — vitest (full suite, may take 1-2 min)…\n' "$YELLOW" "$RESET"
+printf '%s…%s gate 7/%d — vitest (full suite, may take 1-2 min)…\n' "$YELLOW" "$RESET" "$GATE_TOTAL"
 if (cd dashboard && npx vitest run --reporter=dot) >"$LOG" 2>&1; then
     if grep -qE "Tests +[0-9]+ failed" "$LOG"; then
         FAILED=$(grep -oE "[0-9]+ failed" "$LOG" | head -1)
@@ -341,6 +341,32 @@ else
     # Non-zero exit — LENIENT phase, warn only; do NOT fail verify_gates.sh.
     # Phase 3 v0.53.0 STRICT promotion will replace this branch with `bad ...`.
     printf '%s⚠%s gate %d/%d — quarantine reason discipline LENIENT warn (Mission H3 v0.49.10; STRICT at v0.53.0); log: %s\n' \
+        "$YELLOW" "$RESET" "$GATE_NUM" "$GATE_TOTAL" "$LOG"
+fi
+
+# ── Gate 15: resource hygiene discipline (Mission H4 §T1.4) ──────────
+# Mission H4 Phase 1.A LENIENT — warn-only locally; STRICT in publish.yml's
+# post-build verify (Mission H4 §T1.4). Phase 3 v0.54.0 promotes this to
+# STRICT in verify_gates.sh as well, per ADR-D12. Pre-mission baseline:
+# 1 known consumer-name-drift violation at `observability/anomaly.py:224`
+# (reads `system.rss_bytes` which is a legacy alias of `process.rss_bytes`).
+# Phase 1.B v0.49.15 renames the consumer and the violation count drops
+# to 0; until then Gate 15 reports the drift in LENIENT mode.
+GATE_NUM=15
+LOG="$LOG_DIR/15-resource-hygiene-discipline.log"
+if uv run python scripts/dev/check_resource_hygiene_discipline.py >"$LOG" 2>&1; then
+    if grep -q "discipline: PASS" "$LOG"; then
+        ok "resource hygiene discipline — PASS"
+    else
+        # exit 0 but violations present (LENIENT report-only) — surface as warn
+        VIOLATIONS=$(grep -oE "[0-9]+ violation\(s\)" "$LOG" | head -1 || echo "0 violations")
+        printf '%s⚠%s gate %d/%d — resource hygiene discipline LENIENT warn: %s (Mission H4 v0.49.14; STRICT at v0.54.0); log: %s\n' \
+            "$YELLOW" "$RESET" "$GATE_NUM" "$GATE_TOTAL" "$VIOLATIONS" "$LOG"
+    fi
+else
+    # Non-zero exit — LENIENT phase, warn only; do NOT fail verify_gates.sh.
+    # Phase 3 v0.54.0 STRICT promotion will replace this branch with `bad ...`.
+    printf '%s⚠%s gate %d/%d — resource hygiene discipline LENIENT warn (Mission H4 v0.49.14; STRICT at v0.54.0); log: %s\n' \
         "$YELLOW" "$RESET" "$GATE_NUM" "$GATE_TOTAL" "$LOG"
 fi
 

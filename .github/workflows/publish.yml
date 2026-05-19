@@ -147,6 +147,35 @@ jobs:
           uv run python scripts/dev/check_quarantine_reason_discipline.py
           echo "✓ Quarantine reason discipline reported (Mission H3 §T1.4)"
 
+      - name: Verify resource hygiene discipline
+        # Mission H4 §T1.4 — REPORT post-build gate during staged adoption
+        # (Phase 1.A v0.49.14 .. Phase 1.D v0.49.17). Runs the AST scanner
+        # against the repo tree. The scanner walks every `*.py` under
+        # `src/sovyx/` and reports any violation of the four resource-
+        # hygiene invariants: (1) producer parity on
+        # `self.health.snapshot` field literals; (2) consumer parity on
+        # `event_dict.get("...")` reads; (3) construction-site pairing of
+        # `ort.InferenceSession(...)` + `register_onnx_session(...)` and
+        # `LRULockDict(...)` + `register_lock_dict(...)`; (4) future-
+        # migration informational records for bare `asyncio.to_thread(...)`
+        # call sites (informational in LENIENT). Closes the canonical
+        # instance of CLAUDE.md anti-pattern #47 (resource-cohort
+        # instrumentation SSoT + field-name parity) revealed by the
+        # v0.43.1 forensic audit §H4 (anomaly.py:224 reading
+        # `system.rss_bytes` whereas the producer emitted
+        # `process.rss_bytes` — silent-dead memory-growth detector).
+        # The post-build verify is REPORT-only during v0.49.14..v0.53.x
+        # staged adoption (matches Gate 15's LENIENT shape in
+        # verify_gates.sh). Phase 3 v0.54.0 swaps to `--strict` here AND
+        # in verify_gates.sh; the legacy `system.rss_bytes` alias drops +
+        # remaining `asyncio.to_thread` sites either migrate to
+        # `dispatch_to_thread(...)` or carry `# h4-allowlist:` comments
+        # per anti-pattern #47 escape hatch (e).
+        run: |
+          set -euo pipefail
+          uv run python scripts/dev/check_resource_hygiene_discipline.py
+          echo "✓ Resource hygiene discipline reported (Mission H4 §T1.4)"
+
       - name: Upload dist artifacts
         uses: actions/upload-artifact@v4
         with:
