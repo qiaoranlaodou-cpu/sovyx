@@ -1057,6 +1057,17 @@ export type VoiceHealthDiagnosis =
   | "kernel_invalidated"
   | "stream_open_timeout"
   | "heartbeat_timeout"
+  // Mission H3 §T3.3 — extended quarantine reason taxonomy that
+  // surfaces via the dashboard diagnosis pill (``QuarantineEntry.
+  // effective_reason``). ``capture_dead`` distinguishes a fully
+  // silent substrate from ``driver_silent`` (working stream / zero
+  // RMS) and ``kernel_invalidated`` (open-time failure).
+  // ``unclassified`` surfaces only when Gate 14 STRICT bypasses
+  // ship a new verdict without a paired SSoT resolver case.
+  | "capture_dead"
+  | "vad_frontend_dead"
+  | "driver_silent"
+  | "unclassified"
   | "unknown";
 
 export type VoiceHealthProbeMode = "cold" | "warm";
@@ -1189,12 +1200,33 @@ export interface VoiceHealthQuarantineEntry {
   seconds_until_expiry: number;
   reason: string;
   /**
-   * Mission C1 §T2.2 — verdict-driven reason class. Optional during the
-   * LENIENT v0.44.x cycle: pre-mission entries persisted with empty
-   * `derived_reason` parse cleanly. v0.45.0 STRICT flip promotes this
-   * field to required and drops the legacy `reason` field.
+   * Mission C1 §T2.2 — verdict-driven reason class (LENIENT alias).
+   * Optional during the LENIENT v0.44.x cycle: pre-mission entries
+   * persisted with empty `derived_reason` parse cleanly. Phase 3
+   * v0.53.0 STRICT flip drops this field along with the legacy
+   * `reason` (both promoted into a single canonical `reason` field
+   * carrying the SSoT-resolved value).
    */
   derived_reason?: string;
+  /**
+   * Mission H3 §T2.8 + ADR-D2 — canonical SSoT-resolved value
+   * populated by `resolve_reason_from_verdict()` /
+   * `resolve_reason_from_diagnosis()` at the producer. Frontends read
+   * `effective_reason` (computed) for the canonical field-chain
+   * fallback `resolved or derived or reason`. Optional during the
+   * triple-field LENIENT window. Phase 3 STRICT v0.53.0 drops this
+   * field (and `derived_reason`) — the canonical value lives on
+   * `reason`.
+   */
+  resolved_reason?: string;
+  /**
+   * Mission H3 §T2.8 — pydantic computed property. The canonical
+   * field-chain fallback (`resolved_reason or derived_reason or
+   * reason`). Backend always emits this for non-empty entries; older
+   * dashboard builds that haven't picked up the computed field apply
+   * the fallback chain themselves.
+   */
+  effective_reason?: string;
 }
 
 /** GET /api/voice/health/quarantine response. */
@@ -1548,7 +1580,10 @@ export type CaptureRestartReason =
   // validator that mirrors this union.
   | "vad_frontend_dead"
   | "format_mismatch"
-  | "driver_silent";
+  | "driver_silent"
+  // Mission H3 §T3.3 — extended for the new QuarantineReason taxonomy.
+  | "capture_dead"
+  | "unclassified";
 
 export interface CaptureRestartFrame {
   // PipelineFrame base fields:

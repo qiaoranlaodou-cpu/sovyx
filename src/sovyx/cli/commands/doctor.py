@@ -417,10 +417,15 @@ def doctor_voice(
     reason_filter: str | None = typer.Option(
         None,
         "--reason-filter",
-        help="Mission C1 §T2.4: filter the 'Voice — quarantined endpoints' "
-        "section to entries whose verdict-derived reason matches the given "
-        "value (e.g. 'vad_frontend_dead', 'apo_degraded', "
-        "'format_mismatch', 'driver_silent'). Default: show every "
+        help="Mission C1 §T2.4 + Mission H3 §T3.2: filter the 'Voice — "
+        "quarantined endpoints' section to entries whose SSoT-resolved "
+        "(or legacy fallback) reason matches the given value. "
+        "Canonical values: 'apo_degraded' (capture-side DSP); "
+        "'vad_frontend_dead' (Silero LSTM corruption); 'format_mismatch' "
+        "(frame shape mismatch); 'driver_silent' (working stream / zero "
+        "RMS); 'capture_dead' (substrate fully silent, Mission H3 new); "
+        "'kernel_invalidated' (IAudioClient wedged); 'unclassified' "
+        "(Mission H3 taxonomy fallback). Default: show every "
         "quarantined endpoint with its reason class + remediation hint. "
         "Empty quarantine renders an empty section regardless of the "
         "filter.",
@@ -1607,7 +1612,9 @@ def _render_voice_quarantine_surface(
     if reason_filter:
         filter_value = reason_filter.strip()
         entries = tuple(
-            entry for entry in entries if (entry.derived_reason or entry.reason) == filter_value
+            entry
+            for entry in entries
+            if (entry.resolved_reason or entry.derived_reason or entry.reason) == filter_value
         )
 
     console.print("\n[bold]Voice — quarantined endpoints[/bold]")
@@ -1620,7 +1627,8 @@ def _render_voice_quarantine_surface(
 
     now = time.monotonic()
     for entry in entries:
-        reason_key = entry.derived_reason or entry.reason or "unknown"
+        # Mission H3 §T3.2 — H3-canonical field-chain fallback.
+        reason_key = entry.resolved_reason or entry.derived_reason or entry.reason or "unknown"
         seconds_left = max(0.0, entry.expires_at_monotonic - now)
         friendly = entry.device_friendly_name or entry.endpoint_guid or "(unknown)"
         console.print(f"  • [bold]{friendly}[/bold]  [dim](reason: {reason_key})[/dim]")

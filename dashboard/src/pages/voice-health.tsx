@@ -93,7 +93,16 @@ function formatProb(p: number | null | undefined): string {
 
 /* ── Diagnosis pill ── */
 
-/** Map a diagnosis token to a colored pill. Unknown values fall back to "neutral". */
+/** Map a diagnosis token to a colored pill. Unknown values fall back to "neutral".
+ *
+ * Mission H3 §T3.4 — extended palette for the new QuarantineReason
+ * taxonomy. ``vad_frontend_dead`` / ``driver_silent`` migrated from
+ * "neutral" (their pre-H3 default) into the "warn" / "error" tiers
+ * matching the operator-actionable severity. ``capture_dead`` is the
+ * new substrate-dead terminal (error tier). ``unclassified`` retains
+ * the neutral default — Gate 14 STRICT prevents it from shipping for
+ * known verdicts; if it surfaces, the operator should file an issue.
+ */
 function diagnosisTone(
   diagnosis: string,
 ): "ok" | "warn" | "error" | "neutral" {
@@ -104,6 +113,7 @@ function diagnosisTone(
     case "vad_insensitive":
     case "format_mismatch":
     case "apo_degraded":
+    case "vad_frontend_dead":
     case "exclusive_mode_not_available":
     case "insufficient_buffer_size":
     case "invalid_sample_rate_no_auto_convert":
@@ -116,7 +126,11 @@ function diagnosisTone(
     case "permission_revoked_runtime":
     case "stream_open_timeout":
     case "heartbeat_timeout":
+    case "kernel_invalidated":
+    case "capture_dead":
+    case "driver_silent":
       return "error";
+    case "unclassified":
     default:
       return "neutral";
   }
@@ -750,11 +764,13 @@ function MixerKbCard() {
 /**
  * Render the human-readable verdict reason for a quarantine entry.
  *
- * Prefers `derived_reason` (verdict-driven class shipped in Mission C1
- * v0.44.0) over the legacy `reason` field, which during the LENIENT
- * v0.44.x cycle is pinned to `"apo_degraded"` on every entry regardless
- * of the actual verdict. Falls back to `reason` on entries persisted
- * before the mission landed (empty `derived_reason`).
+ * Mission H3 §T3.4 — reads ``resolved_reason`` first (the SSoT-resolved
+ * canonical value shipped in v0.49.11) with fallback to the C1
+ * ``derived_reason`` LENIENT alias and finally the legacy ``reason``
+ * field. The backend's ``QuarantineEntryModel.effective_reason``
+ * computed property exposes the same fallback; clients reading the
+ * raw fields apply it themselves for backward compatibility with
+ * older bundles that haven't picked up the computed field yet.
  */
 function QuarantineReasonBadge({
   entry,
@@ -762,7 +778,8 @@ function QuarantineReasonBadge({
   entry: VoiceHealthQuarantineEntry;
 }) {
   const { t } = useTranslation("voice");
-  const reasonKey = entry.derived_reason || entry.reason;
+  const reasonKey =
+    entry.resolved_reason || entry.derived_reason || entry.reason;
   const label = reasonKey
     ? t(`health.quarantine.reasons.${reasonKey}.label`, {
         defaultValue: reasonKey,
@@ -781,7 +798,12 @@ function QuarantineReasonBadge({
 
 function QuarantineRow({ entry }: { entry: VoiceHealthQuarantineEntry }) {
   const { t } = useTranslation("voice");
-  const reasonKey = entry.derived_reason || entry.reason || "unknown";
+  // Mission H3 §T3.4 — field-chain fallback (resolved > derived > reason).
+  const reasonKey =
+    entry.resolved_reason ||
+    entry.derived_reason ||
+    entry.reason ||
+    "unknown";
   const remediation = t(`health.quarantine.reasons.${reasonKey}.remediation`, {
     defaultValue: "",
   });
@@ -813,7 +835,10 @@ function QuarantineRow({ entry }: { entry: VoiceHealthQuarantineEntry }) {
             {t("health.quarantine.reason")}
           </dt>
           <dd className="font-mono">
-            {entry.derived_reason || entry.reason || "—"}
+            {entry.resolved_reason ||
+              entry.derived_reason ||
+              entry.reason ||
+              "—"}
           </dd>
         </div>
         <div>

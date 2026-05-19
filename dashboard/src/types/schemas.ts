@@ -891,21 +891,35 @@ export const VoiceHealthSnapshotResponseSchema = z.object({
   voice_enabled: z.boolean(),
 });
 
-export const VoiceHealthQuarantineEntrySchema = z.object({
-  endpoint_guid: z.string(),
-  device_friendly_name: z.string(),
-  device_interface_name: z.string(),
-  host_api: z.string(),
-  added_at_monotonic: z.number(),
-  expires_at_monotonic: z.number(),
-  seconds_until_expiry: z.number(),
-  reason: z.string(),
-  // Mission C1 §T2.2 — verdict-driven reason class. Optional during the
-  // LENIENT v0.44.x cycle: pre-mission entries persisted with empty
-  // ``derived_reason`` parse cleanly; v0.45.0 STRICT flip promotes
-  // this field to required (and drops the legacy ``reason`` field).
-  derived_reason: z.string().optional(),
-});
+export const VoiceHealthQuarantineEntrySchema = z
+  .object({
+    endpoint_guid: z.string(),
+    device_friendly_name: z.string(),
+    device_interface_name: z.string(),
+    host_api: z.string(),
+    added_at_monotonic: z.number(),
+    expires_at_monotonic: z.number(),
+    seconds_until_expiry: z.number(),
+    reason: z.string(),
+    // Mission C1 §T2.2 — verdict-driven reason class (LENIENT alias).
+    // Optional during the v0.44.x cycle: pre-mission entries persisted
+    // with empty ``derived_reason`` parse cleanly. Phase 3 v0.53.0
+    // STRICT flip drops this field.
+    derived_reason: z.string().optional(),
+    // Mission H3 §T2.8 + ADR-D2 — canonical SSoT-resolved value.
+    // Optional during the triple-field LENIENT window; v0.53.0 STRICT
+    // drops both alias fields and promotes ``resolved_reason`` →
+    // ``reason``.
+    resolved_reason: z.string().optional(),
+    // Mission H3 §T2.8 — pydantic-side computed property exposing
+    // the canonical field-chain fallback. Optional because clients
+    // that don't decode computed fields still parse cleanly.
+    effective_reason: z.string().optional(),
+  })
+  // Mission H3 §T2.8 — ``extra="allow"`` mirror per anti-pattern #40.
+  // Forward-additive QuarantineEntry fields (e.g. composite-store
+  // metadata in Phase 1.D) land here without breaking older clients.
+  .passthrough();
 
 export const VoiceHealthQuarantineSnapshotResponseSchema = z.object({
   entries: z.array(VoiceHealthQuarantineEntrySchema),
@@ -1271,6 +1285,14 @@ export const CaptureRestartReasonSchema = z.enum([
   "vad_frontend_dead",
   "format_mismatch",
   "driver_silent",
+  // Mission H3 §T3.3 — closed-enum extension for new QuarantineReason
+  // taxonomy values: ``capture_dead`` (substrate fully silent;
+  // ``Diagnosis.NO_SIGNAL`` / ``STREAM_OPEN_TIMEOUT`` /
+  // ``HEARTBEAT_TIMEOUT`` exhausted across every host API; cure is
+  // physical replug / reboot) and ``unclassified`` (taxonomy fallback;
+  // Gate 14 STRICT prevents this from shipping in practice).
+  "capture_dead",
+  "unclassified",
 ]);
 
 export const CaptureRestartFrameSchema = z.object({

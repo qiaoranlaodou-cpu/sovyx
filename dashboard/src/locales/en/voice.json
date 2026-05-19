@@ -326,9 +326,11 @@
       "no_signal": "No signal",
       "low_signal": "Low signal",
       "format_mismatch": "Format mismatch",
-      "apo_degraded": "APO degraded",
+      "apo_degraded": "Capture-side DSP degraded",
       "vad_insensitive": "VAD insensitive",
+      "vad_frontend_dead": "VAD frontend dead",
       "driver_error": "Driver error",
+      "driver_silent": "Driver silent",
       "device_busy": "Device busy",
       "exclusive_mode_not_available": "Exclusive mode not available",
       "insufficient_buffer_size": "Insufficient buffer size",
@@ -338,6 +340,8 @@
       "stream_open_timeout": "Stream open timeout",
       "heartbeat_timeout": "Heartbeat timeout",
       "kernel_invalidated": "Kernel-invalidated",
+      "capture_dead": "Capture dead",
+      "unclassified": "Unclassified",
       "unknown": "Unknown"
     },
     "quarantine": {
@@ -360,12 +364,12 @@
       },
       "reasons": {
         "apo_degraded": {
-          "label": "APO degraded",
-          "remediation": "An audio enhancement (Voice Clarity APO on Windows, module-echo-cancel on Linux, Voice Isolation on macOS) is destroying the microphone signal. Disable per-device audio enhancements in your OS sound settings."
+          "label": "Capture-side DSP degraded",
+          "remediation": "An OS-level audio enhancement (Windows Voice Clarity APO, Linux PulseAudio module-echo-cancel / PipeWire filter chain, macOS Voice Isolation) is destroying the microphone signal. Disable per-device audio enhancements in your OS sound settings. Sovyx's bypass strategies could not recover the signal automatically on this hardware."
         },
         "vad_frontend_dead": {
           "label": "VAD frontend dead",
-          "remediation": "Voice activity detection is not responding to live audio. Sovyx will attempt an automatic reset; if this persists, check microphone gain and the Silero ONNX runtime version."
+          "remediation": "Voice activity detection is not responding to live audio. Sovyx will attempt an automatic reset; if this persists, check microphone gain and the Silero ONNX runtime version. Endpoint is NOT recoverable via cold re-probe — the cure is a daemon restart or model refresh."
         },
         "format_mismatch": {
           "label": "Format mismatch",
@@ -373,7 +377,19 @@
         },
         "driver_silent": {
           "label": "Driver silent",
-          "remediation": "The audio driver is open but not delivering audio. Sovyx will attempt a cascade re-walk; if it does not recover, check whether the microphone is muted at the OS / hardware level."
+          "remediation": "The audio driver is open but not delivering audio (RMS near zero on a working stream). Sovyx will attempt a cascade re-walk; if it does not recover, check whether the microphone is muted at the OS / hardware level."
+        },
+        "capture_dead": {
+          "label": "Capture dead",
+          "remediation": "The audio substrate is fully silent — zero callbacks fired or exact-zero PCM was delivered across every host API. Distinct from 'driver silent' (working stream / RMS near zero): here the substrate itself is dead. Cure: physically unplug and replug the microphone, reboot if replug does not clear, or restart the OS audio service (Linux: `systemctl restart pulseaudio` / `systemctl --user restart pipewire`; Windows: restart 'Windows Audio' via services.msc; macOS: `sudo killall coreaudiod`)."
+        },
+        "kernel_invalidated": {
+          "label": "Kernel-invalidated",
+          "remediation": "The audio driver is in a wedged state that no user-mode recovery can clear. Physically unplug and replug the device, or reboot the machine if the issue persists. This is typically caused by a USB resource timeout or a mid-session driver update."
+        },
+        "unclassified": {
+          "label": "Unclassified",
+          "remediation": "Sovyx encountered an unexpected diagnosis that did not match any known terminal verdict. Please file an issue at https://github.com/anthropic/sovyx/issues with the recent log output (`~/.sovyx/logs/sovyx.log` last 200 lines). This is rare and indicates a Sovyx-internal taxonomy gap that Mission H3's Gate 14 STRICT (v0.53.0) prevents from shipping in practice."
         },
         "unknown": {
           "label": "Unknown",

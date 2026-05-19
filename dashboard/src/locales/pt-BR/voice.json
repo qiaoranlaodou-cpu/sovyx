@@ -326,9 +326,11 @@
       "no_signal": "Sem sinal",
       "low_signal": "Sinal baixo",
       "format_mismatch": "Formato incompatível",
-      "apo_degraded": "APO degradado",
+      "apo_degraded": "DSP de captura degradado",
       "vad_insensitive": "VAD insensível",
+      "vad_frontend_dead": "Frontend VAD morto",
       "driver_error": "Erro de driver",
+      "driver_silent": "Driver silencioso",
       "device_busy": "Dispositivo ocupado",
       "exclusive_mode_not_available": "Modo exclusivo indisponível",
       "insufficient_buffer_size": "Tamanho de buffer insuficiente",
@@ -338,6 +340,8 @@
       "stream_open_timeout": "Timeout ao abrir stream",
       "heartbeat_timeout": "Timeout de heartbeat",
       "kernel_invalidated": "Invalidado pelo kernel",
+      "capture_dead": "Captura morta",
+      "unclassified": "Não classificado",
       "unknown": "Desconhecido"
     },
     "quarantine": {
@@ -360,12 +364,12 @@
       },
       "reasons": {
         "apo_degraded": {
-          "label": "APO degradado",
-          "remediation": "Um realce de áudio (Voice Clarity APO no Windows, module-echo-cancel no Linux, Voice Isolation no macOS) está destruindo o sinal do microfone. Desabilite os realces por dispositivo nas configurações de som do SO."
+          "label": "DSP de captura degradado",
+          "remediation": "Um realce de áudio no nível do SO (Windows Voice Clarity APO, Linux PulseAudio module-echo-cancel / PipeWire filter chain, macOS Voice Isolation) está destruindo o sinal do microfone. Desabilite os realces por dispositivo nas configurações de som do SO. As estratégias de bypass do Sovyx não conseguiram recuperar o sinal automaticamente neste hardware."
         },
         "vad_frontend_dead": {
-          "label": "Frontend de VAD morto",
-          "remediation": "A detecção de atividade de voz não está respondendo ao áudio ao vivo. O Sovyx tentará uma reinicialização automática; se persistir, verifique o ganho do microfone e a versão do runtime ONNX do Silero."
+          "label": "Frontend VAD morto",
+          "remediation": "A detecção de atividade de voz não está respondendo ao áudio ao vivo. O Sovyx tentará uma reinicialização automática; se persistir, verifique o ganho do microfone e a versão do runtime ONNX do Silero. Endpoint NÃO é recuperável via recheck a frio — a cura é reinício do daemon ou atualização do modelo."
         },
         "format_mismatch": {
           "label": "Formato incompatível",
@@ -373,7 +377,19 @@
         },
         "driver_silent": {
           "label": "Driver silencioso",
-          "remediation": "O driver de áudio está aberto mas não está entregando áudio. O Sovyx tentará re-percorrer o cascade; se não recuperar, verifique se o microfone está mudo no SO / hardware."
+          "remediation": "O driver de áudio está aberto mas não está entregando áudio (RMS próximo de zero em um stream funcional). O Sovyx tentará re-percorrer o cascade; se não recuperar, verifique se o microfone está mudo no SO / hardware."
+        },
+        "capture_dead": {
+          "label": "Captura morta",
+          "remediation": "O substrato de áudio está totalmente silencioso — zero callbacks disparados ou PCM zerado em todas as APIs de host. Distinto de 'driver silencioso' (stream funcional / RMS perto de zero): aqui o substrato em si está morto. Cura: reconecte fisicamente o microfone, reinicie se reconectar não resolver, ou reinicie o serviço de áudio do SO (Linux: `systemctl restart pulseaudio` / `systemctl --user restart pipewire`; Windows: reinicie 'Windows Audio' via services.msc; macOS: `sudo killall coreaudiod`)."
+        },
+        "kernel_invalidated": {
+          "label": "Invalidado pelo kernel",
+          "remediation": "O driver de áudio está em um estado travado que nenhuma recuperação no espaço do usuário pode limpar. Desconecte fisicamente e reconecte o dispositivo, ou reinicie a máquina se o problema persistir. Tipicamente causado por timeout de recurso USB ou atualização de driver durante a sessão."
+        },
+        "unclassified": {
+          "label": "Não classificado",
+          "remediation": "O Sovyx encontrou um diagnóstico inesperado que não corresponde a nenhum veredito terminal conhecido. Por favor, abra uma issue em https://github.com/anthropic/sovyx/issues com a saída de log recente (`~/.sovyx/logs/sovyx.log` últimas 200 linhas). Isso é raro e indica uma lacuna de taxonomia interna do Sovyx que o Gate 14 STRICT (Mission H3 v0.53.0) impede de ser distribuída na prática."
         },
         "unknown": {
           "label": "Desconhecido",

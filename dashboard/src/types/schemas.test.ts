@@ -45,6 +45,36 @@ describe("CaptureRestartReasonSchema", () => {
   it("rejects unknown variants", () => {
     expect(() => CaptureRestartReasonSchema.parse("teleport")).toThrow();
   });
+
+  // Mission C1 §20.K — verdict-driven reasons emitted by the
+  // coordinator dispatch path (vad_frontend_dead / format_mismatch /
+  // driver_silent — v0.44.0). The frontend zod parser MUST accept
+  // these or the response fails safeParse at the boundary.
+  it("accepts Mission C1 verdict-driven reasons", () => {
+    expect(CaptureRestartReasonSchema.parse("vad_frontend_dead")).toBe(
+      "vad_frontend_dead",
+    );
+    expect(CaptureRestartReasonSchema.parse("format_mismatch")).toBe(
+      "format_mismatch",
+    );
+    expect(CaptureRestartReasonSchema.parse("driver_silent")).toBe(
+      "driver_silent",
+    );
+  });
+
+  // Mission H3 §T3.3 — extended QuarantineReason taxonomy values.
+  // ``capture_dead`` (substrate fully silent, distinct from
+  // ``driver_silent`` and ``kernel_invalidated``) and ``unclassified``
+  // (taxonomy fallback). The schema rejects these pre-Phase-1.C; the
+  // post-Phase-1.C dashboard accepts both.
+  it("accepts Mission H3 quarantine reason extensions", () => {
+    expect(CaptureRestartReasonSchema.parse("capture_dead")).toBe(
+      "capture_dead",
+    );
+    expect(CaptureRestartReasonSchema.parse("unclassified")).toBe(
+      "unclassified",
+    );
+  });
 });
 
 // T3.12 — every CaptureRestartFrame field is now required at the

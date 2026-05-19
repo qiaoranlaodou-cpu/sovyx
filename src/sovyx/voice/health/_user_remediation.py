@@ -93,12 +93,43 @@ _REMEDIATION_BY_DIAGNOSIS: dict[str, str] = {
         "aggressively attenuating the input."
     ),
     "apo_degraded": (
-        "An audio enhancement (Voice Clarity APO on Windows, "
-        "module-echo-cancel on Linux, Voice Isolation on macOS) is "
-        "destroying the microphone signal. Disable per-device audio "
-        "enhancements in your OS sound settings — sovyx's bypass "
-        "strategies could not recover the signal automatically on "
-        "this hardware."
+        "An OS-level audio enhancement (Windows Voice Clarity APO, "
+        "Linux PulseAudio module-echo-cancel / PipeWire filter chain, "
+        "macOS Voice Isolation) is destroying the microphone signal. "
+        "Disable per-device audio enhancements in your OS sound "
+        "settings — sovyx's bypass strategies could not recover the "
+        "signal automatically on this hardware."
+    ),
+    # Mission H3 §T3.1 — new terminal classification distinct from
+    # ``driver_silent`` (RMS-near-zero on a working stream) and
+    # ``kernel_invalidated`` (open failed at IAudioClient::Initialize).
+    # ``capture_dead`` means: stream opened + reported success, but
+    # zero callbacks fired OR exact-zero PCM was delivered across every
+    # host API. The substrate itself is silent; no in-process cure
+    # exists.
+    "capture_dead": (
+        "The audio substrate is fully silent — zero callbacks fired "
+        "or exact-zero PCM was delivered across every host API. "
+        "Distinct from 'driver silent' (working stream with RMS near "
+        "zero): here the substrate itself is dead. Cure: physically "
+        "unplug and replug the microphone, reboot if replug does not "
+        "clear, or restart the OS audio service (Linux: `systemctl "
+        "restart pulseaudio` / `systemctl --user restart pipewire`; "
+        "Windows: restart 'Windows Audio' via services.msc; macOS: "
+        "`sudo killall coreaudiod`)."
+    ),
+    # Mission H3 §T3.1 — taxonomy fallback. Gate 14 STRICT (v0.53.0)
+    # prevents this from shipping in practice; if it surfaces, the
+    # operator should file an issue rather than rely on it for
+    # remediation guidance.
+    "unclassified": (
+        "Sovyx encountered an unexpected diagnosis that did not match "
+        "any known terminal verdict. Please file an issue at "
+        "https://github.com/anthropic/sovyx/issues with the recent "
+        "log output (`~/.sovyx/logs/sovyx.log` last 200 lines). This "
+        "is rare and indicates a Sovyx-internal taxonomy gap that "
+        "Mission H3's Gate 14 STRICT (v0.53.0) prevents from "
+        "shipping in practice."
     ),
     # Mission C1 §T2.3 — verdict-driven quarantine reason classes.
     # These keys are not :class:`Diagnosis` members; they flow from

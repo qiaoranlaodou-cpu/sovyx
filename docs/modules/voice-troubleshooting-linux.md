@@ -71,3 +71,27 @@ through the neutral `voice.capture_integrity.*` namespace. Legacy
 events continue firing through v0.51.0 STRICT for playbook compatibility;
 operator runbooks SHOULD migrate to the neutral names during the
 v0.49.x..v0.50.x window.
+
+## Quarantine reason taxonomy (Mission H3 v0.49.10+)
+
+When the bypass coordinator exhausts every strategy or the cascade hits
+a terminal substrate condition, the endpoint is quarantined. The
+quarantine entry's `resolved_reason` field (SSoT-resolved per Mission
+H3 §T2.1 ADR-D3) classifies the failure for operator triage:
+
+| `resolved_reason` | Meaning on Linux | Cure |
+|---|---|---|
+| `apo_degraded` | Capture-side DSP destroyed the signal — typically `module-echo-cancel` or a PipeWire filter chain | Disable per-device audio enhancements; `pactl unload-module module-echo-cancel`; inspect `pw-cli list-objects` for filter nodes |
+| `vad_frontend_dead` | Silero LSTM corruption / ONNX session fault inside Sovyx — NOT a Linux capture-chain issue | Daemon restart or model refresh; do NOT pursue OS-side audio remediation |
+| `format_mismatch` | Captured frames do not match VAD shape (16 kHz mono int16) | Change OS default input; replug device |
+| `driver_silent` | ALSA / PipeWire stream is open but delivering exact-zero RMS on a working callback path | Check OS mute state; replug; `arecord -L` to verify the device |
+| `capture_dead` | Substrate fully silent: zero callbacks OR exact-zero PCM across every host API | Physical replug; reboot if persistent; `systemctl --user restart pipewire pipewire-pulse pulseaudio` |
+| `kernel_invalidated` | Kernel-side IAudioClient wedge — predominantly a Windows pattern, rare on Linux | Replug; reboot |
+| `watchdog_recheck` | Lifecycle re-add tag (not a terminal verdict) — read the entry's `derived_reason` / `resolved_reason` for the underlying classification | n/a |
+
+Inspect via the dashboard's Voice Health page or `sovyx doctor voice
+--reason-filter <reason>`. The `resolved_reason` is the canonical field;
+the legacy `reason` field is pinned to `"apo_degraded"` during the
+v0.49.x..v0.52.x triple-field window for backward compatibility with
+operator runbooks that key on the old default. Phase 3 STRICT v0.53.0
+promotes `resolved_reason` → `reason` and removes the divergence.
