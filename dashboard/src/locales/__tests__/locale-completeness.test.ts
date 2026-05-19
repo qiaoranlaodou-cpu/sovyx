@@ -124,6 +124,19 @@ describe("Locale completeness — voice namespace", () => {
       "heapSnapshot.col.size",
       "heapSnapshot.col.count",
       "heapSnapshot.col.traceback",
+      // Mission H4 v0.49.23 — per-field operator labels (closes the
+      // 40-key i18n promise from spec §6 T3.5 — title + subtitle +
+      // loading + degraded + fieldsLabel + 8 × 2 sections + 9 fields =
+      // 40 keys per locale).
+      "resources.fields.rss_bytes.label",
+      "resources.fields.num_threads.label",
+      "resources.fields.task_count.label",
+      "resources.fields.to_thread_pool.label",
+      "resources.fields.lock_dict_cardinality.label",
+      "resources.fields.onnx_session_count.label",
+      "resources.fields.gc_objects.label",
+      "resources.fields.tracemalloc_active.label",
+      "resources.fields.exception_retention.label",
     ];
     for (const key of requiredKeys) {
       expect(en.has(key), `EN missing ${key}`).toBe(true);

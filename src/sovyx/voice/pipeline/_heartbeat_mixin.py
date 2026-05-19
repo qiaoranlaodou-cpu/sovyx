@@ -511,6 +511,34 @@ class HeartbeatMixin:
                         "forensics on the next cluster."
                     ),
                 )
+                # Mission H4 §8 T4.6 — direct wire into ResourceCohortGovernor's
+                # snapshot persistence path. When tracemalloc is enabled the
+                # governor writes ~/.sovyx/diagnostics/heap-snapshot-<ts>.json
+                # immediately; when disabled it emits
+                # engine.resources.heap_snapshot_skipped (single line, hint
+                # included) instead. Best-effort: governor unavailability
+                # cannot block the heartbeat path.
+                try:
+                    from sovyx.observability._resource_cohort_governor import (  # noqa: PLC0415 — lazy
+                        get_default_resource_cohort_governor,
+                    )
+
+                    get_default_resource_cohort_governor().request_heap_snapshot(
+                        cohort="voice_failover_deaf_cluster",
+                        cohort_observed=int(self._deaf_warnings_consecutive),
+                        cohort_budget=5,
+                        extra_metadata={
+                            "mind_id": self._config.mind_id,
+                            "state": self._state.name,
+                            "trigger": "heartbeat_deaf_cluster_n5",
+                        },
+                    )
+                except Exception:  # noqa: BLE001 — observability isolation
+                    logger.debug(
+                        "voice.deaf_cluster.heap_snapshot_dispatch_failed",
+                        mind_id=self._config.mind_id,
+                        exc_info=True,
+                    )
 
             # Mission C4 §Phase 2 — Soft Recovery Governor.
             # After N consecutive deaf-warnings while BOTH

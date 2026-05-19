@@ -852,6 +852,35 @@
         "title": "Cohort de exceções",
         "description": "Bytes estimados retidos por cadeias ExceptionGroup recentes."
       }
+    },
+    "fields": {
+      "rss_bytes": {
+        "label": "RSS do processo (bytes)"
+      },
+      "num_threads": {
+        "label": "Contagem de threads"
+      },
+      "task_count": {
+        "label": "Tarefas asyncio"
+      },
+      "to_thread_pool": {
+        "label": "Tamanho do pool to_thread"
+      },
+      "lock_dict_cardinality": {
+        "label": "Cardinalidade total de lock-dict"
+      },
+      "onnx_session_count": {
+        "label": "Sessões ONNX"
+      },
+      "gc_objects": {
+        "label": "Objetos rastreados pelo GC"
+      },
+      "tracemalloc_active": {
+        "label": "Rastreio tracemalloc"
+      },
+      "exception_retention": {
+        "label": "Bytes retidos por exceções"
+      }
     }
   },
   "failoverHistory": {

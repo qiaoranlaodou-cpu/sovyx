@@ -852,6 +852,35 @@
         "title": "Exception cohort",
         "description": "Estimated retained bytes from recent ExceptionGroup chains."
       }
+    },
+    "fields": {
+      "rss_bytes": {
+        "label": "Process RSS (bytes)"
+      },
+      "num_threads": {
+        "label": "Thread count"
+      },
+      "task_count": {
+        "label": "asyncio task count"
+      },
+      "to_thread_pool": {
+        "label": "to_thread pool size"
+      },
+      "lock_dict_cardinality": {
+        "label": "Lock-dict total cardinality"
+      },
+      "onnx_session_count": {
+        "label": "ONNX session count"
+      },
+      "gc_objects": {
+        "label": "GC tracked objects"
+      },
+      "tracemalloc_active": {
+        "label": "tracemalloc tracing"
+      },
+      "exception_retention": {
+        "label": "Exception retained bytes"
+      }
     }
   },
   "failoverHistory": {

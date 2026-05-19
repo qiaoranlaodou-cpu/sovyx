@@ -107,6 +107,24 @@ class TestHealthSnapshotFieldsSSoT:
         for spec in _HEALTH_SNAPSHOT_FIELDS.values():
             assert spec.section in known
 
+    def test_canonical_keys_are_unique(self) -> None:
+        """Mission H4 §11 ADR-D2 — SSoT uniqueness.
+
+        Each field MUST have a globally-unique ``canonical_key`` so the
+        producer-side ``register_*`` calls never silently shadow each
+        other. A duplicate would invalidate the Gate 15 invariant that
+        producer↔consumer parity is detectable at AST scan time.
+        """
+        canonical_keys = [spec.canonical_key for spec in _HEALTH_SNAPSHOT_FIELDS.values()]
+        assert len(canonical_keys) == len(set(canonical_keys)), (
+            "Duplicate canonical_key detected in _HEALTH_SNAPSHOT_FIELDS — "
+            "Gate 15 invariant violated. Inspect FieldSpec entries for the "
+            "duplicate and either rename or merge consumers/producers."
+        )
+        # Dict-key parity invariant tested in test_canonical_key_matches_dict_key
+        # above; this test asserts the stronger property that no two entries
+        # share the canonical_key value even if their dict keys differ.
+
 
 class TestCohortAxis:
     """anti-pattern #9 — StrEnum compliance."""

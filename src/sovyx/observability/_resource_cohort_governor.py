@@ -263,6 +263,38 @@ class ResourceCohortGovernor:
             recent = [ts for ts in history if ts >= window_start]
             return len(recent) >= self.breaker_threshold
 
+    def request_heap_snapshot(
+        self,
+        cohort: str,
+        *,
+        cohort_observed: int | None = None,
+        cohort_budget: int | None = None,
+        extra_metadata: Mapping[str, object] | None = None,
+    ) -> Path | None:
+        """Mission H4 §8 T4.6 — on-demand cohort-name-driven heap snapshot.
+
+        Wires the H4 forensic-anchor signature (heartbeat N=5 deaf-cluster
+        + coordinator terminal + ladder in progress) into the governor's
+        persistence path WITHOUT going through the BUDGET_EXCEEDED RSS_GROWTH
+        verdict. Callers tag the cohort with a descriptive label
+        (``"voice_failover_deaf_cluster"``, ``"operator_on_demand"``, etc.)
+        and the governor takes the tracemalloc snapshot + persists +
+        rotates per the standard contract.
+
+        When ``observability.features.tracemalloc=False`` (the default),
+        emits ``engine.resources.heap_snapshot_skipped`` once with an
+        operator hint pointing at the feature flag — no exception, no
+        wasted compute.
+
+        Returns the path written on success, ``None`` on skip / failure.
+        """
+        return _persist_heap_snapshot_direct(
+            cohort=cohort,
+            cohort_observed=cohort_observed,
+            cohort_budget=cohort_budget,
+            extra_metadata=extra_metadata,
+        )
+
     def clear_breaker(self, axis: CohortAxis) -> None:
         """Operator-acked clear — records an ack timestamp + drops history.
 
@@ -558,43 +590,54 @@ def _rotate_snapshot_files(diag_dir: Path, prefix: str, max_files: int) -> None:
         logger.debug("engine.resources.snapshot_rotation_failed", prefix=prefix, exc_info=True)
 
 
-def _persist_heap_snapshot(evaluation: CohortEvaluation) -> None:
-    """Mission H4 §8 T4.1(c) — RSS-driven heap snapshot.
+def _persist_heap_snapshot_direct(
+    cohort: str,
+    *,
+    cohort_observed: int | None = None,
+    cohort_budget: int | None = None,
+    extra_metadata: Mapping[str, object] | None = None,
+) -> Path | None:
+    """Mission H4 §8 T4.1(c) + §8 T4.6 — cohort-name-driven heap snapshot.
 
-    When ``observability.features.tracemalloc=True``, takes a
-    ``tracemalloc.take_snapshot()`` + persists the top-50 allocator
-    histogram to ``~/.sovyx/diagnostics/heap-snapshot-<ts>.json``.
-    When tracemalloc is NOT enabled, emits
-    ``engine.resources.heap_snapshot_skipped`` once per evaluation
-    with an operator-actionable hint pointing at the feature flag.
+    Decoupled from :class:`CohortEvaluation` so callers outside the
+    BUDGET_EXCEEDED path (e.g. the heartbeat N=5 deaf-cluster trigger)
+    can request a snapshot using a descriptive cohort label without
+    fabricating a synthetic evaluation. The original
+    :func:`_persist_heap_snapshot` thin-wraps this for the
+    RSS_GROWTH-driven path.
+
+    Returns the path written on success or None on skip / failure. When
+    ``tracemalloc`` is NOT tracing the function emits
+    ``engine.resources.heap_snapshot_skipped`` once with an operator
+    hint pointing at the feature flag.
     """
     if not tracemalloc.is_tracing():
         logger.info(
             "engine.resources.heap_snapshot_skipped",
             **{
-                "engine.resources.cohort": evaluation.axis.value,
+                "engine.resources.cohort": cohort,
                 "engine.resources.reason": "tracemalloc_not_enabled",
                 "engine.resources.hint": (
                     "Set SOVYX_OBSERVABILITY__FEATURES__TRACEMALLOC=true + "
                     "restart daemon for allocator-level forensics on the "
-                    "next RSS_GROWTH breach. Adds 25-30% memory overhead."
+                    "next cohort breach. Adds 25-30% memory overhead."
                 ),
             },
         )
-        return
+        return None
     try:
         snapshot = tracemalloc.take_snapshot()
         top_stats = snapshot.statistics("lineno")[:50]
         diag_dir = _diagnostics_dir()
         ts = int(time.time())
         path = diag_dir / f"heap-snapshot-{ts}.json"
-        payload = {
+        payload: dict[str, object] = {
             "kind": "heap_snapshot",
             "schema_version": "1.0",
             "observed_at_unix": ts,
-            "cohort": evaluation.axis.value,
-            "cohort_observed": evaluation.observed,
-            "cohort_budget": evaluation.budget,
+            "cohort": cohort,
+            "cohort_observed": cohort_observed,
+            "cohort_budget": cohort_budget,
             "tracemalloc_snapshot": {
                 "top_allocators": [
                     {
@@ -608,16 +651,17 @@ def _persist_heap_snapshot(evaluation: CohortEvaluation) -> None:
                 "total_allocators": len(top_stats),
             },
         }
+        if extra_metadata:
+            payload["extra_metadata"] = dict(extra_metadata)
         path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
         logger.info(
             "engine.resources.heap_snapshot_persisted",
             **{
-                "engine.resources.cohort": evaluation.axis.value,
+                "engine.resources.cohort": cohort,
                 "engine.resources.path": str(path),
                 "engine.resources.top_allocators": len(top_stats),
             },
         )
-        # Rotate after writing so we never drop the file we just saved.
         from sovyx.engine.config import EngineConfig  # noqa: PLC0415 — lazy
 
         try:
@@ -629,9 +673,26 @@ def _persist_heap_snapshot(evaluation: CohortEvaluation) -> None:
     except Exception:  # noqa: BLE001 — snapshot persistence is best-effort
         logger.debug(
             "engine.resources.heap_snapshot_persist_failed",
-            cohort=evaluation.axis.value,
+            cohort=cohort,
             exc_info=True,
         )
+        return None
+    return path
+
+
+def _persist_heap_snapshot(evaluation: CohortEvaluation) -> None:
+    """BUDGET_EXCEEDED RSS_GROWTH wrapper around the cohort-name helper.
+
+    Mission H4 §8 T4.1(c) — fires on the governor's RSS_GROWTH verdict.
+    The cohort-name-driven entrypoint (:func:`_persist_heap_snapshot_direct`)
+    is what new callers (the heartbeat N=5 trigger, future on-demand
+    operator UI) should use.
+    """
+    _persist_heap_snapshot_direct(
+        cohort=evaluation.axis.value,
+        cohort_observed=evaluation.observed,
+        cohort_budget=evaluation.budget,
+    )
 
 
 def _persist_thread_snapshot(evaluation: CohortEvaluation) -> None:
@@ -830,4 +891,8 @@ __all__ = [
     "get_default_resource_cohort_governor",
     "record_resource_snapshot_emission",
     "reset_default_resource_cohort_governor",
+    # Mission H4 §8 T4.6 — public on-demand heap-snapshot entrypoint.
+    # The cohort-name-driven helper is exposed for unit tests + future
+    # callers; the canonical wire-up is via ResourceCohortGovernor.request_heap_snapshot.
+    "_persist_heap_snapshot_direct",
 ]
