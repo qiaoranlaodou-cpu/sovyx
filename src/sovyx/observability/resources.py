@@ -366,3 +366,20 @@ class ResourceSnapshotter:
             ],
         }
         logger.info("self.health.snapshot", **payload)
+
+        # Mission H4 §T4.1 — Phase 1.D ResourceCohortGovernor evaluation.
+        # Best-effort; failures absorbed (governor must NEVER break the
+        # snapshot path). On budget-exceeded, the governor emits a WARN
+        # + records to the C4 composite store under
+        # ``axis="engine_resources"`` so the existing DegradedBanner
+        # renders the new cohort automatically.
+        try:
+            from sovyx.observability._resource_cohort_governor import (  # noqa: PLC0415 — lazy import
+                emit_axis_entries,
+                get_default_resource_cohort_governor,
+            )
+
+            evaluations = get_default_resource_cohort_governor().evaluate_snapshot(payload)
+            emit_axis_entries(evaluations)
+        except Exception:  # noqa: BLE001 — governor must NEVER break the snapshot path
+            logger.debug("self.health.cohort_governor_failed", exc_info=True)
