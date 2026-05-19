@@ -93,8 +93,74 @@ log:
 - BatchSpanProcessor (currently SimpleSpanProcessor for dev comfort).
 - OpenTelemetry `gen_ai.*` semantic conventions for LLM spans.
 
+## Resource hygiene (Mission H4)
+
+The observability subsystem includes a per-cohort resource registry +
+budget governor that closes the v0.43.1 forensic-audit §H4 gap (silent
++1.1 GB RSS / +105 thread spike with no operator-visible attribution).
+
+### `self.health.snapshot` field taxonomy
+
+Every snapshot record carries 28 canonical fields organized into 8
+cohort sections:
+
+- **process** — `process.rss_bytes`, `process.vms_bytes`,
+  `process.cpu_percent`, `process.num_threads`,
+  `process.num_handles_or_fds`, `process.open_files_count`,
+  `process.connections_count`.
+- **asyncio** — `asyncio.task_count`, `asyncio.running_count`,
+  `asyncio.pending_count`.
+- **to_thread** — `to_thread.pool_size`, `to_thread.queue_depth`,
+  `to_thread.max_workers`, `to_thread.dispatch_count_total`,
+  `to_thread.dispatch_count_per_label`.
+- **lock_dict** — `lock_dict.total_cardinality`,
+  `lock_dict.per_owner`, `lock_dict.instance_count`.
+- **onnx** — `onnx.session_count`, `onnx.session_labels`.
+- **gc** — `gc.collections_by_gen`, `gc.objects_count`.
+- **tracemalloc** — `tracemalloc.is_tracing`,
+  `tracemalloc.current_kb`, `tracemalloc.peak_kb`.
+- **exception_cohort** — `exception_cohort.retained_bytes_estimate`,
+  `exception_cohort.distinct_group_id_count`,
+  `exception_cohort.last_observation_monotonic`.
+
+The legacy `system.rss_bytes` alias is dual-emitted alongside
+`process.rss_bytes` during the v0.49.15..v0.53.x LENIENT window for
+backward compatibility (drops at v0.54.0 STRICT).
+
+### `ResourceCohortGovernor` budget verdicts
+
+Every `self.health.snapshot` tick the governor evaluates 5 cohort
+budgets (rss_growth, thread_count, lock_dict_cardinality, onnx_session,
+exception_cohort). A BUDGET_EXCEEDED verdict emits a structured WARN
+`engine.resources.cohort_budget_exceeded` + records into the C4
+`EngineDegradedStore` under `axis="engine_resources"` so the existing
+`<DegradedBanner>` renders the cohort automatically.
+
+### OTel counters
+
+Two counters export to the OTLP exporter when enabled:
+
+- `sovyx.voice.health.resource_snapshot_emission` (labels: `final`).
+- `sovyx.voice.health.cohort_budget_exceeded` (labels: `cohort`,
+  `severity`).
+
+### Operator surfaces
+
+- `GET /api/engine/resources` — JSON envelope of the live snapshot.
+- `sovyx doctor resources` — cohort-grouped table render. Flags:
+  `--json` / `--cohort <name>` / `--explain <field>`.
+
+### Build-time guarantee (Quality Gate 15)
+
+`scripts/dev/check_resource_hygiene_discipline.py` AST-scans for
+producer ↔ consumer field-name parity + construction-site pairing
+for ONNX sessions + LRULockDict instances. LENIENT during
+v0.49.14..v0.53.x; STRICT in `publish.yml`; STRICT in
+`verify_gates.sh` at v0.54.0.
+
 ## See also
 
 - Source: `src/sovyx/observability/`.
 - Tests: `tests/unit/observability/`.
 - Related: [`engine`](./engine.md) (HealthChecker wired at bootstrap), [`dashboard`](./dashboard.md) (`/api/status` and `/metrics` endpoints), [`llm`](./llm.md) (LLM metrics labelled by provider).
+- Resource hygiene playbook: [`../operations/resource-hygiene.md`](../operations/resource-hygiene.md).

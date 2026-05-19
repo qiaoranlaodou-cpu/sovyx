@@ -528,3 +528,54 @@ The defaults are:
 
 Limits are per-token and use a 60-second sliding window. Responses include
 `X-RateLimit-Limit`, `X-RateLimit-Remaining`, and `X-RateLimit-Reset`.
+
+## Engine resources (Mission H4)
+
+### `GET /api/engine/resources`
+
+Returns a single-shot JSON envelope of the live engine resource state.
+Mission H4 Phase 1.C surface; backed by `ResourceRegistry.snapshot_fields()`.
+
+**Response — `EngineResourcesResponse`:**
+
+```json
+{
+  "observed_at_unix": 1716143280.42,
+  "cohorts": {
+    "to_thread.pool_size": 4,
+    "to_thread.dispatch_count_total": 142,
+    "to_thread.dispatch_count_per_label": {
+      "voice.vad.silero": 80,
+      "brain.embedding": 62
+    },
+    "lock_dict.total_cardinality": 156,
+    "lock_dict.per_owner": {
+      "bridge.manager.conv_locks": 12,
+      "voice.health.watchdog.lifecycle_locks": 144
+    },
+    "onnx.session_count": 4,
+    "onnx.session_labels": [
+      "brain.embedding",
+      "voice.vad.silero",
+      "voice.wake_word",
+      "voice.tts.piper"
+    ],
+    "gc.collections_by_gen": [215, 7, 2],
+    "tracemalloc.is_tracing": false
+  },
+  "canonical_field_count": 28,
+  "legacy_alias_count": 1
+}
+```
+
+The envelope is forward-additive (`extra="allow"` per anti-pattern #40):
+Phase 1.E adds `cohort_governor.budget_state` /
+`cohort_governor.circuit_breaker_engaged` / heap-snapshot manifest
+fields without breaking older clients. Frontend consumers use the
+`EngineResourcesResponseSchema` zod twin in
+`dashboard/src/types/schemas.ts`.
+
+**Auth:** Bearer token (`verify_token` dependency).
+
+**Status codes:** 200 always (snapshot is best-effort; an empty
+registry returns the envelope with zero-valued cohort counters).

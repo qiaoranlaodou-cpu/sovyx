@@ -2755,6 +2755,14 @@ def doctor_resources(
         "(process / asyncio / to_thread / lock_dict / onnx / gc / "
         "tracemalloc / exception_cohort).",
     ),
+    explain_field: str | None = typer.Option(
+        None,
+        "--explain",
+        help="Render the operator-actionable hint for one snapshot "
+        "field (e.g. `--explain to_thread.pool_size`). Pairs with "
+        "`engine.resources.cohort_budget_exceeded` WARN diagnosis to "
+        "drive remediation without grepping source.",
+    ),
 ) -> None:
     """Mission H4 §T3.2 — render the engine resource-cohort snapshot.
 
@@ -2776,6 +2784,20 @@ def doctor_resources(
         _HEALTH_SNAPSHOT_FIELDS,
         get_default_resource_registry,
     )
+    from sovyx.observability._resource_remediation import remediation_for
+
+    # --explain takes precedence: render just the hint + exit.
+    if explain_field is not None:
+        hint = remediation_for(explain_field)
+        if output_json:
+            print(json.dumps({"field": explain_field, "hint": hint}, indent=2))
+        else:
+            console = Console()
+            spec = _HEALTH_SNAPSHOT_FIELDS.get(explain_field)
+            section = spec.section if spec else "unknown"
+            console.print(f"[bold]{explain_field}[/bold]  [dim]({section})[/dim]")
+            console.print(hint)
+        return
 
     fields = get_default_resource_registry().snapshot_fields()
 

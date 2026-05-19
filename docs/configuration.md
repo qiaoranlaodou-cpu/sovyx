@@ -537,3 +537,46 @@ Run a full check with `sovyx doctor`. It validates config, checks
 disk/RAM/CPU, tests database connectivity, pings each configured LLM
 provider, and verifies channel tokens. Use `--json` for machine-readable
 output.
+
+## Resource hygiene tuning (Mission H4)
+
+The `ResourceCohortGovernor` evaluates 5 per-cohort budgets on every
+`self.health.snapshot` tick. All thresholds are operator-tunable via
+`SOVYX_OBSERVABILITY__TUNING__*` env vars; defaults match the v0.49.17
+in-code constants so existing telemetry baselines hold.
+
+### Feature flags (`ObservabilityFeaturesConfig`)
+
+| Env var | Default | Purpose |
+|---|---|---|
+| `SOVYX_OBSERVABILITY__FEATURES__COHORT_GOVERNOR` | `true` | Kill-switch for the governor. When `false`, the snapshotter skips `evaluate_snapshot()` entirely; the `self.health.snapshot` log stream is unaffected. |
+| `SOVYX_OBSERVABILITY__FEATURES__TRACEMALLOC` | `false` | Opt-in `tracemalloc.start()` at bootstrap. Adds 25-30% memory overhead — opt-in for forensic deep-dive sessions. Without it `tracemalloc.current_kb`/`peak_kb` fields stay at 0. |
+
+### Cohort budgets (`ObservabilityTuningConfig`)
+
+All knobs validated with pydantic `Field(ge=, le=)` ranges:
+
+| Env var | Default | Range | Meaning |
+|---|---|---|---|
+| `SOVYX_OBSERVABILITY__TUNING__COHORT_RSS_GROWTH_THRESHOLD_MB` | `512` | 1..65 536 | RSS Δ (in MiB) over `cohort_window_s` that triggers the RSS_GROWTH cohort. |
+| `SOVYX_OBSERVABILITY__TUNING__COHORT_THREAD_GROWTH_THRESHOLD` | `32` | 1..10 000 | Thread-count Δ over `cohort_window_s` that triggers THREAD_COUNT. |
+| `SOVYX_OBSERVABILITY__TUNING__COHORT_WINDOW_S` | `60` | 5..3 600 | Rolling-window length for Δ-based cohorts. |
+| `SOVYX_OBSERVABILITY__TUNING__COHORT_LOCK_DICT_SOFT_CAP` | `6 000` | 1..10 000 000 | Aggregate `LRULockDict` cardinality cap. |
+| `SOVYX_OBSERVABILITY__TUNING__COHORT_ONNX_SESSION_SOFT_CAP` | `8` | 1..1 024 | ONNX session count cap. |
+| `SOVYX_OBSERVABILITY__TUNING__COHORT_BREAKER_THRESHOLD` | `3` | 1..100 | Phase 1.E circuit-breaker trip count. |
+| `SOVYX_OBSERVABILITY__TUNING__COHORT_BREAKER_WINDOW_S` | `3 600` | 60..86 400 | Phase 1.E circuit-breaker rolling window. |
+| `SOVYX_OBSERVABILITY__TUNING__EXCEPTION_COHORT_WINDOW_S` | `300` | 5..3 600 | Rolling window for the exception-cohort retention. |
+| `SOVYX_OBSERVABILITY__TUNING__EXCEPTION_COHORT_RETAINED_BYTES_CAP` | `16 MiB` | 1024..10 GiB | Retained-bytes-estimate cap that triggers EXCEPTION_COHORT. |
+| `SOVYX_OBSERVABILITY__TUNING__TRACEMALLOC_NFRAMES` | `25` | 1..200 | Number of frames `tracemalloc.start()` captures per trace. |
+| `SOVYX_OBSERVABILITY__TUNING__HEAP_SNAPSHOT_MAX_FILES` | `10` | 1..1 000 | Phase 1.E heap-snapshot file rotation count. |
+| `SOVYX_OBSERVABILITY__TUNING__THREAD_SNAPSHOT_MAX_FILES` | `10` | 1..1 000 | Phase 1.E thread-snapshot file rotation count. |
+
+### Verification
+
+```bash
+# Confirm the governor is wired (run after bootstrap):
+sovyx doctor resources --cohort to_thread
+
+# Inspect a specific field with operator-actionable hint:
+sovyx doctor resources --explain process.rss_bytes
+```

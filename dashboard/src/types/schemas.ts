@@ -1940,6 +1940,64 @@ export const EngineDegradedResponseSchema = z
   })
   .passthrough();
 
+/* Mission H4 §T3.3 — Engine resources zod twin.
+ *
+ * Mirrors ``EngineResourcesResponse`` + ``ResourceCohortMetrics`` in
+ * ``src/sovyx/dashboard/routes/engine_resources.py``.
+ *
+ * ``.passthrough()`` matches the backend's ``ConfigDict(extra="allow",
+ * populate_by_name=True)`` — Phase 1.E will add cohort-governor budget
+ * verdicts + heap-snapshot manifests forward-additively.
+ *
+ * Field-name shape preserves the dotted-key SSoT (`to_thread.pool_size`
+ * etc.) so log-stream consumers + REST consumers see the same keys.
+ */
+export const ResourceCohortMetricsSchema = z
+  .object({
+    // to_thread block
+    "to_thread.pool_size": z.number().int().nonnegative().optional(),
+    "to_thread.queue_depth": z.number().int().nonnegative().optional(),
+    "to_thread.max_workers": z.number().int().nonnegative().optional(),
+    "to_thread.dispatch_count_total": z.number().int().nonnegative().optional(),
+    "to_thread.dispatch_count_per_label": z.record(z.string(), z.number()).optional(),
+    // lock_dict block
+    "lock_dict.total_cardinality": z.number().int().nonnegative().optional(),
+    "lock_dict.per_owner": z.record(z.string(), z.number()).optional(),
+    "lock_dict.instance_count": z.number().int().nonnegative().optional(),
+    // onnx block
+    "onnx.session_count": z.number().int().nonnegative().optional(),
+    "onnx.session_labels": z.array(z.string()).optional(),
+    // gc block
+    "gc.collections_by_gen": z.array(z.number()).optional(),
+    "gc.objects_count": z.number().int().nonnegative().optional(),
+    // tracemalloc block
+    "tracemalloc.is_tracing": z.boolean().optional(),
+    "tracemalloc.current_kb": z.number().int().nonnegative().optional(),
+    "tracemalloc.peak_kb": z.number().int().nonnegative().optional(),
+    // exception_cohort block
+    "exception_cohort.retained_bytes_estimate": z
+      .number()
+      .int()
+      .nonnegative()
+      .optional(),
+    "exception_cohort.distinct_group_id_count": z
+      .number()
+      .int()
+      .nonnegative()
+      .optional(),
+    "exception_cohort.last_observation_monotonic": z.number().optional(),
+  })
+  .passthrough();
+
+export const EngineResourcesResponseSchema = z
+  .object({
+    observed_at_unix: z.number(),
+    cohorts: ResourceCohortMetricsSchema,
+    canonical_field_count: z.number().int().nonnegative(),
+    legacy_alias_count: z.number().int().nonnegative(),
+  })
+  .passthrough();
+
 /* Mission C3 §T2.9 — Failover-history zod twin.
  *
  * Mirrors ``FailoverHistoryResponse`` + ``FailoverHistoryEntryModel`` +
