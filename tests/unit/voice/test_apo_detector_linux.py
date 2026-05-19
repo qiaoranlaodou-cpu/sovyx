@@ -496,9 +496,7 @@ class TestFactoryEmitsLinuxApoDetectionEvent:
         from sovyx.voice import factory
         from sovyx.voice._apo_detector_linux import LinuxApoReport
 
-        monkeypatch.setenv(
-            "SOVYX_TUNING__VOICE__APO_DETECTOR_DUAL_EMIT_ENABLED", "false"
-        )
+        monkeypatch.setenv("SOVYX_TUNING__VOICE__APO_DETECTOR_DUAL_EMIT_ENABLED", "false")
         fake_reports = [
             LinuxApoReport(
                 session_manager="pipewire",
