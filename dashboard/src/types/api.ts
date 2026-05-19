@@ -924,9 +924,16 @@ export interface VoiceCatalogResponse {
   recommended_per_language: Record<string, string>;
 }
 
-// ── Voice capture APO diagnostics ──
+// ── Voice capture integrity diagnostics ──
+//
+// Mission H2 §T3.1 — `CaptureIntegrityEndpoint` is the canonical
+// neutral name; `CaptureApoEndpoint` is preserved as a backwards-
+// compatible alias through v0.51.0 STRICT per anti-pattern #20.
+// The three v2.0.0 schema metadata fields (`voice.platform`,
+// `voice.bypass_family`, `voice.event_schema_version`) are optional
+// during the dual-emission window; promoted to required at v0.51.0.
 
-export interface CaptureApoEndpoint {
+export interface CaptureIntegrityEndpoint {
   endpoint_id: string;
   endpoint_name: string;
   enumerator: string;
@@ -935,7 +942,16 @@ export interface CaptureApoEndpoint {
   raw_clsids: string[];
   voice_clarity_active: boolean;
   is_active_device: boolean;
+  // Mission H2 v0.49.7+ platform metadata — optional+nullable
+  // through v0.51.0 STRICT (anti-pattern #29 frame-typed observability
+  // discipline).
+  "voice.platform"?: "linux" | "windows" | "darwin" | "other" | null;
+  "voice.bypass_family"?: string | null;
+  "voice.event_schema_version"?: "2.0.0" | null;
 }
+
+/** @deprecated Mission H2 — use {@link CaptureIntegrityEndpoint}; alias drops at v0.51.0 STRICT. */
+export type CaptureApoEndpoint = CaptureIntegrityEndpoint;
 
 export interface CaptureDiagnosticsResponse {
   platform_supported: boolean;

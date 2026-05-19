@@ -479,6 +479,51 @@ class TestFactoryEmitsLinuxApoDetectionEvent:
         assert self._has_event(caplog, "audio.capture_chain.scan.linux")
         assert self._has_event(caplog, "audio.capture_chain.echo_cancel_detected")
 
+    def test_apo_detector_dual_emit_kill_switch_suppresses_legacy(
+        self,
+        caplog: pytest.LogCaptureFixture,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Mission H2 — `SOVYX_TUNING__VOICE__APO_DETECTOR_DUAL_EMIT_ENABLED=false`
+        suppresses the legacy `audio.apo.scan.linux` +
+        `audio.apo.echo_cancel_detected` emissions while preserving the
+        neutral `audio.capture_chain.*` siblings always-on. Lets
+        operators pre-test the v0.51.0 STRICT flip behaviour without
+        waiting for the tag bump.
+        """
+        import logging
+
+        from sovyx.voice import factory
+        from sovyx.voice._apo_detector_linux import LinuxApoReport
+
+        monkeypatch.setenv(
+            "SOVYX_TUNING__VOICE__APO_DETECTOR_DUAL_EMIT_ENABLED", "false"
+        )
+        fake_reports = [
+            LinuxApoReport(
+                session_manager="pipewire",
+                known_apos=("module-echo-cancel",),
+                raw_entries=(),
+                echo_cancel_active=True,
+            ),
+        ]
+        with (
+            patch.object(sys, "platform", "linux"),
+            patch(
+                "sovyx.voice._apo_detector_linux.detect_capture_apos_linux",
+                return_value=fake_reports,
+            ),
+            caplog.at_level(logging.INFO, logger="sovyx.voice.factory"),
+        ):
+            factory._emit_linux_capture_apo_detection(resolved_name="hw:0,0")
+
+        # Neutral events ALWAYS fire (anti-pattern #34 inverse).
+        assert self._has_event(caplog, "audio.capture_chain.scan.linux")
+        assert self._has_event(caplog, "audio.capture_chain.echo_cancel_detected")
+        # Legacy events SUPPRESSED by the kill switch.
+        assert not self._has_event(caplog, "audio.apo.scan.linux")
+        assert not self._has_event(caplog, "audio.apo.echo_cancel_detected")
+
     def test_emits_scan_event_even_when_empty(
         self,
         caplog: pytest.LogCaptureFixture,

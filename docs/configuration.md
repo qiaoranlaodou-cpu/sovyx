@@ -458,6 +458,45 @@ doctor/setup) see
 [`docs/modules/llm-provider-integrity.md`](modules/llm-provider-integrity.md)
 for the verdict taxonomy + triage workflow.
 
+### Capture-integrity dual-emission kill switches (Mission H2)
+
+`VoiceTuningConfig` extends with two boolean kill switches that gate
+the legacy event-name emissions during the ADR-D14 staged-adoption
+window (v0.49.6..v0.50.x). Both default `True` per anti-pattern #34
+inverse (observability defaults always-on); the neutral
+`voice.capture_integrity.*` / `audio.capture_chain.*` events ALWAYS
+fire. Operators can flip these `False` to pre-test the v0.51.0 STRICT
+behaviour (legacy events dropped) without waiting for the tag bump:
+
+```bash
+# Mission H2 §T1.3 — bypass-coordinator dual-emission kill switch.
+# Controls voice_apo_bypass_activated / voice_apo_bypass_ineffective /
+# voice_apo_bypass_failed / audio.apo.bypassed (the 6 emit sites in
+# _bypass_coordinator_mixin.py). When False, only the neutral
+# voice.capture_integrity.* events fire.
+export SOVYX_TUNING__VOICE__CAPTURE_INTEGRITY_DUAL_EMIT_ENABLED=true
+
+# Mission H2 §T4.1 — apo-detector + factory diagnostic dual-emission
+# kill switch. Controls audio.apo.scan / audio.apo.scan.linux /
+# audio.apo.echo_cancel_detected / startup.audio.apo_scan. When False,
+# only the neutral audio.capture_chain.scan / .scan.linux /
+# .echo_cancel_detected / startup.audio.capture_chain_scan fire.
+export SOVYX_TUNING__VOICE__APO_DETECTOR_DUAL_EMIT_ENABLED=true
+```
+
+Both knobs are retired at v0.51.0 STRICT when the legacy emission
+blocks are dropped from the wrapper helper + factory diagnostic +
+self-diagnosis sites unconditionally. The Mission H2 spec at
+`docs-internal/missions/MISSION-h2-platform-neutral-event-naming-2026-05-18.md`
+§11 + §16 documents the full rollback matrix; operators triaging a
+late-stage observability regression can flip either knob `False`
+without restart-disrupting the running daemon (the env var is read on
+every emit, not cached at boot).
+
+For the cross-platform capture-chain terminology + Linux operator
+remediation playbook see
+[`docs/modules/voice-troubleshooting-linux.md`](modules/voice-troubleshooting-linux.md).
+
 ### macOS-specific voice defaults (v0.32.0+)
 
 Two voice-tuning fields default to platform-conditional values so the

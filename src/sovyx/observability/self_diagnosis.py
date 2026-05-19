@@ -234,6 +234,9 @@ async def _emit_apo_scan() -> None:
     # Mission H2 §T4.3 — dual-emit neutral sibling of startup.audio.apo_scan.
     # The legacy event preserved through v0.51.0 STRICT per ADR-D14;
     # the neutral name carries the same payload + v2.0.0 schema marker.
+    # Reads the same ``SOVYX_TUNING__VOICE__APO_DETECTOR_DUAL_EMIT_ENABLED``
+    # kill switch as the factory diagnostic path so operators flipping the
+    # env var see consistent behaviour across both emission sites.
     _self_diag_payload = {
         "audio.platform": sys.platform,
         "audio.endpoint_count": len(endpoints),
@@ -244,8 +247,12 @@ async def _emit_apo_scan() -> None:
         "startup.audio.capture_chain_scan",
         **{**_self_diag_payload, "voice.event_schema_version": "2.0.0"},
     )
-    # h2-allowlist: dual-emission per ADR-D14
-    logger.info("startup.audio.apo_scan", **_self_diag_payload)
+    _dual_emit = os.environ.get(
+        "SOVYX_TUNING__VOICE__APO_DETECTOR_DUAL_EMIT_ENABLED", "true"
+    ).strip().lower() not in {"false", "0", "no", "off", ""}
+    if _dual_emit:
+        # h2-allowlist: dual-emission per ADR-D14
+        logger.info("startup.audio.apo_scan", **_self_diag_payload)
 
 
 async def _emit_network(config: EngineConfig) -> None:

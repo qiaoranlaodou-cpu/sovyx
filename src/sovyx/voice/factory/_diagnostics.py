@@ -25,11 +25,31 @@ Owns:
 from __future__ import annotations
 
 import asyncio
+import os
 import sys
 
 from sovyx.observability.logging import get_logger
 
 logger = get_logger(__name__)
+
+
+# Mission H2 §T4.2 — env-var kill switch for the apo-detector dual-emission.
+# Mirrors the shape of `_is_dual_emit_enabled` in
+# `voice/pipeline/_capture_integrity_emit.py` (the bypass-coordinator side).
+# Default True per anti-pattern #34 inverse (observability always-on). The
+# `apo_detector_dual_emit_enabled` field on `VoiceTuningConfig` uses the
+# same env-var prefix + name so operator-side configuration works
+# identically to the canonical config path. Reading the env var directly
+# avoids the ~50ms cost of instantiating EngineConfig at the boot diagnostic
+# emit site.
+_APO_DETECTOR_DUAL_EMIT_ENV = "SOVYX_TUNING__VOICE__APO_DETECTOR_DUAL_EMIT_ENABLED"
+_FALSEY_TOKENS = frozenset({"false", "0", "no", "off", ""})
+
+
+def _apo_detector_dual_emit_enabled() -> bool:
+    """Return True when the legacy `audio.apo.*` emissions should fire."""
+    raw = os.environ.get(_APO_DETECTOR_DUAL_EMIT_ENV, "true").strip().lower()
+    return raw not in _FALSEY_TOKENS
 
 
 __all__ = [
@@ -577,7 +597,11 @@ def _emit_capture_apo_detection(*, resolved_name: str | None) -> None:
     # event continues firing through v0.51.0 STRICT per ADR-D14; the new
     # ``audio.capture_chain.scan`` carries identical payload + the v2.0.0
     # schema marker so cross-platform consumers (Linux operator dashboards
-    # in particular) can filter on the neutral name.
+    # in particular) can filter on the neutral name. The
+    # ``apo_detector_dual_emit_enabled`` kill switch (anti-pattern #34
+    # inverse — default True) lets operators pre-test the v0.51.0
+    # STRICT behaviour by suppressing the legacy emission while keeping
+    # the neutral one always-on.
     _scan_payload = {
         "voice.endpoint_count": len(reports),
         "voice.active_endpoint_id": active.endpoint_id if active else None,
@@ -605,8 +629,9 @@ def _emit_capture_apo_detection(*, resolved_name: str | None) -> None:
             "voice.event_schema_version": "2.0.0",
         },
     )
-    # h2-allowlist: dual-emission per ADR-D14
-    logger.info("audio.apo.scan", **_scan_payload)
+    if _apo_detector_dual_emit_enabled():
+        # h2-allowlist: dual-emission per ADR-D14
+        logger.info("audio.apo.scan", **_scan_payload)
     # h2-allowlist: Windows-only canonical term per Mission H2 §0 scope exclusion
     logger.info(
         "audio.apo.voice_clarity_detected",
@@ -745,8 +770,10 @@ def _emit_linux_capture_apo_detection(*, resolved_name: str | None) -> None:
         "audio.capture_chain.scan.linux",
         **{**_scan_linux_payload, "voice.event_schema_version": "2.0.0"},
     )
-    # h2-allowlist: dual-emission per ADR-D14
-    logger.info("audio.apo.scan.linux", **_scan_linux_payload)
+    _dual_emit = _apo_detector_dual_emit_enabled()
+    if _dual_emit:
+        # h2-allowlist: dual-emission per ADR-D14
+        logger.info("audio.apo.scan.linux", **_scan_linux_payload)
 
     _echo_payload = {
         "voice.detected": echo_cancel_global,
@@ -757,5 +784,6 @@ def _emit_linux_capture_apo_detection(*, resolved_name: str | None) -> None:
         "audio.capture_chain.echo_cancel_detected",
         **{**_echo_payload, "voice.event_schema_version": "2.0.0"},
     )
-    # h2-allowlist: dual-emission per ADR-D14
-    logger.info("audio.apo.echo_cancel_detected", **_echo_payload)
+    if _dual_emit:
+        # h2-allowlist: dual-emission per ADR-D14
+        logger.info("audio.apo.echo_cancel_detected", **_echo_payload)
