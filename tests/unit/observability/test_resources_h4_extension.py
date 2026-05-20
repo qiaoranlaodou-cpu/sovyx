@@ -34,7 +34,10 @@ from sovyx.observability.resources import ResourceSnapshotter
 
 _H4_NEW_FIELDS: frozenset[str] = frozenset(
     {
+        # Spec §3 F2 canonical 22-field list (v0.49.31 closure adds the
+        # final 5 fields that v0.49.14..v0.49.30 had silently missed).
         "to_thread.pool_size",
+        "to_thread.active_workers",  # v0.49.31 — F2 canonical alias of pool_size
         "to_thread.queue_depth",
         "to_thread.max_workers",
         "to_thread.dispatch_count_total",
@@ -52,6 +55,12 @@ _H4_NEW_FIELDS: frozenset[str] = frozenset(
         "exception_cohort.retained_bytes_estimate",
         "exception_cohort.distinct_group_id_count",
         "exception_cohort.last_observation_monotonic",
+        # v0.49.31 — Spec §0 item 4 + §T2.1 + §3 F2 extension fields.
+        "process.memory_percent",
+        "process.cpu_times_user_s",
+        "process.cpu_times_system_s",
+        "asyncio.current_running_task_name",
+        "asyncio.default_executor_state",
     },
 )
 
@@ -121,6 +130,10 @@ class TestSnapshotPayloadH4Extension:
                 "process.num_handles_or_fds": 50,
                 "process.open_files_count": 10,
                 "process.connections_count": 5,
+                # v0.49.31 — psutil extension fields per spec §0 item 4.
+                "process.memory_percent": 12.5,
+                "process.cpu_times_user_s": 1.23,
+                "process.cpu_times_system_s": 0.45,
             }
             snapshotter._emit_snapshot(final=False)
         snapshot_calls = [
@@ -151,3 +164,69 @@ class TestSnapshotPayloadH4Extension:
         assert payload["lock_dict.total_cardinality"] == 7
         assert payload["lock_dict.per_owner"] == {"abc": 7}
         assert payload["lock_dict.instance_count"] == 1
+
+
+class TestSpecF2CanonicalFieldList:
+    """v0.49.31 — Mission H4 §3 F2 canonical 22-H4-field list closure.
+
+    The 12th `feedback_no_inventing_specs` audit-discipline cycle
+    (2026-05-20) caught that 5 fields canonically listed in §3 F2 were
+    NOT emitted by v0.49.14..v0.49.30. This class asserts each of the 5
+    appears in the snapshot payload at HEAD, preventing future regression.
+    """
+
+    def test_process_memory_percent_emitted(self, snapshotter: ResourceSnapshotter) -> None:
+        payload = _capture_emit(snapshotter)
+        assert "process.memory_percent" in payload, (
+            "Mission H4 §3 F2 + §0 item 4: snapshot MUST carry process.memory_percent"
+        )
+
+    def test_process_cpu_times_user_s_emitted(self, snapshotter: ResourceSnapshotter) -> None:
+        payload = _capture_emit(snapshotter)
+        assert "process.cpu_times_user_s" in payload
+
+    def test_process_cpu_times_system_s_emitted(self, snapshotter: ResourceSnapshotter) -> None:
+        payload = _capture_emit(snapshotter)
+        assert "process.cpu_times_system_s" in payload
+
+    def test_asyncio_current_running_task_name_emitted(
+        self, snapshotter: ResourceSnapshotter
+    ) -> None:
+        payload = _capture_emit(snapshotter)
+        assert "asyncio.current_running_task_name" in payload
+
+    def test_asyncio_default_executor_state_is_a_dict_with_three_keys(
+        self, snapshotter: ResourceSnapshotter
+    ) -> None:
+        payload = _capture_emit(snapshotter)
+        state = payload.get("asyncio.default_executor_state")
+        assert isinstance(state, dict), (
+            f"asyncio.default_executor_state MUST be a dict; got {type(state).__name__}"
+        )
+        assert set(state) == {"pool_size", "queue_depth", "max_workers"}
+
+    def test_to_thread_active_workers_alias_emitted(
+        self, snapshotter: ResourceSnapshotter
+    ) -> None:
+        """F2 lists `to_thread.active_workers`; emit value must equal `pool_size`."""
+        payload = _capture_emit(snapshotter)
+        assert "to_thread.active_workers" in payload
+        assert payload["to_thread.active_workers"] == payload["to_thread.pool_size"]
+
+    def test_v0_49_31_ssot_count_matches_spec_target(self) -> None:
+        """SSoT has exactly 34 entries post-v0.49.31.
+
+        Breakdown:
+        * 10 pre-mission fields (7 process.* + 3 asyncio.*)
+        * 18 H4 v0.49.14..v0.49.30 fields (to_thread × 5 incl. queue_depth +
+          lock_dict × 3 + onnx × 2 + gc × 2 + tracemalloc × 3 + exception_cohort × 3)
+        * 6 v0.49.31 closure fields per spec §3 F2 + §0 item 4:
+          process.memory_percent + process.cpu_times_user_s +
+          process.cpu_times_system_s + asyncio.current_running_task_name +
+          asyncio.default_executor_state + to_thread.active_workers
+
+        Total: 10 + 18 + 6 = 34.
+        """
+        from sovyx.observability._resource_registry import _HEALTH_SNAPSHOT_FIELDS
+
+        assert len(_HEALTH_SNAPSHOT_FIELDS) == 34

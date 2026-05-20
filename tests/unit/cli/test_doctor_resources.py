@@ -384,9 +384,14 @@ class TestLocalPayloadCollector:
         }
 
     def test_local_payload_breaker_state_covers_every_axis(self) -> None:
+        from sovyx.observability._resource_cohort_governor import (
+            reset_default_resource_cohort_governor,
+        )
+
+        reset_default_resource_cohort_governor()
         payload = doctor_module._collect_resource_payload_local()
         breaker = payload["breaker_state"]
         # Every CohortAxis member must be present (5 cohorts).
         assert len(breaker) == 5
-        # All cohorts default to clear (False) on a freshly-reset registry.
+        # On a freshly-reset governor singleton every axis defaults clear.
         assert all(value is False for value in breaker.values())

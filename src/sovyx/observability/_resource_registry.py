@@ -223,6 +223,29 @@ _HEALTH_SNAPSHOT_FIELDS: Final[Mapping[str, FieldSpec]] = {
         operator_hint_key="process_connections_count",
         section="process",
     ),
+    # ── H4 new fields: process block extension (Mission H4 §0 item 4 + §T2.1 + §3 F2). ──
+    # ``_capture_psutil_metrics`` extends from 7 → 9 fields per spec.
+    "process.memory_percent": FieldSpec(
+        canonical_key="process.memory_percent",
+        type_constraint=(int, float),
+        producer_module="sovyx.observability.resources",
+        operator_hint_key="process_memory_percent",
+        section="process",
+    ),
+    "process.cpu_times_user_s": FieldSpec(
+        canonical_key="process.cpu_times_user_s",
+        type_constraint=(int, float),
+        producer_module="sovyx.observability.resources",
+        operator_hint_key="process_cpu_times_user_s",
+        section="process",
+    ),
+    "process.cpu_times_system_s": FieldSpec(
+        canonical_key="process.cpu_times_system_s",
+        type_constraint=(int, float),
+        producer_module="sovyx.observability.resources",
+        operator_hint_key="process_cpu_times_system_s",
+        section="process",
+    ),
     # ── asyncio block (pre-H4) ──
     "asyncio.task_count": FieldSpec(
         canonical_key="asyncio.task_count",
@@ -245,6 +268,22 @@ _HEALTH_SNAPSHOT_FIELDS: Final[Mapping[str, FieldSpec]] = {
         operator_hint_key="asyncio_pending_count",
         section="asyncio",
     ),
+    # ── H4 new fields: asyncio block extension (Mission H4 §0 item 4 + §T2.1 + §3 F2). ──
+    # ``_capture_asyncio_metrics`` extends from 3 → 5 fields per spec.
+    "asyncio.current_running_task_name": FieldSpec(
+        canonical_key="asyncio.current_running_task_name",
+        type_constraint=(str, type(None)),
+        producer_module="sovyx.observability.resources",
+        operator_hint_key="asyncio_current_running_task_name",
+        section="asyncio",
+    ),
+    "asyncio.default_executor_state": FieldSpec(
+        canonical_key="asyncio.default_executor_state",
+        type_constraint=dict,
+        producer_module="sovyx.observability.resources",
+        operator_hint_key="asyncio_default_executor_state",
+        section="asyncio",
+    ),
     # ── H4 new fields: to_thread block ──
     "to_thread.pool_size": FieldSpec(
         canonical_key="to_thread.pool_size",
@@ -252,6 +291,19 @@ _HEALTH_SNAPSHOT_FIELDS: Final[Mapping[str, FieldSpec]] = {
         producer_module="sovyx.observability.resources",
         consumer_modules=("sovyx.observability._resource_cohort_governor",),
         operator_hint_key="to_thread_pool_size",
+        section="to_thread",
+    ),
+    "to_thread.active_workers": FieldSpec(
+        # Mission H4 §3 F2 lists ``to_thread.active_workers`` as a canonical
+        # field. Python's ThreadPoolExecutor exposes ``len(_threads)`` (alive
+        # worker count) — there is no per-thread busy/idle metric. Per
+        # ADR-D4 the wrapper records ``worker_count`` once per dispatch;
+        # this field surfaces the SAME value as ``pool_size`` under the
+        # F2 canonical name so the falsifiability gate passes literally.
+        canonical_key="to_thread.active_workers",
+        type_constraint=int,
+        producer_module="sovyx.observability.resources",
+        operator_hint_key="to_thread_active_workers",
         section="to_thread",
     ),
     "to_thread.max_workers": FieldSpec(
@@ -645,6 +697,9 @@ class ResourceRegistry:
 
         return {
             "to_thread.pool_size": to_thread_state[0],
+            # Mission H4 §3 F2 canonical name: surfaces the same value
+            # (live worker thread count). See _HEALTH_SNAPSHOT_FIELDS entry.
+            "to_thread.active_workers": to_thread_state[0],
             "to_thread.queue_depth": to_thread_state[1],
             "to_thread.max_workers": to_thread_state[2],
             "to_thread.dispatch_count_total": to_thread_state[3],

@@ -86,6 +86,32 @@ FIELD_REMEDIATIONS: Final[Mapping[str, str]] = {
         "+ bridge channels). Skipped on the `final=True` shutdown "
         "snapshot."
     ),
+    "process.memory_percent": (
+        "Process RSS as percentage of system physical memory "
+        "(psutil-derived). Single-mind GA baseline: 3-15% on 8 GiB hosts "
+        "(250-800 MiB loaded). Sustained > 25% on a quiescent operator "
+        "session suggests a leak; cross-reference `process.rss_bytes` "
+        "growth + `lock_dict.total_cardinality` + `onnx.session_count` "
+        "for cohort attribution. Enable "
+        "`observability.features.tracemalloc=True` for allocator-level "
+        "forensics on the next RSS_GROWTH cohort breach."
+    ),
+    "process.cpu_times_user_s": (
+        "Cumulative user-mode CPU seconds (psutil-derived, monotonic per "
+        "process). Healthy operator session: ~0.1-2 s/min depending on "
+        "voice activity. Compute Δ user / Δ wallclock between snapshots "
+        "for instantaneous CPU-bound classification; sustained ratio > "
+        "0.8 indicates a CPU-bound subsystem — cross-reference "
+        "`to_thread.dispatch_count_per_label` for the noisy worker."
+    ),
+    "process.cpu_times_system_s": (
+        "Cumulative kernel-mode CPU seconds (psutil-derived, monotonic). "
+        "Healthy single-mind GA: << user time (kernel-bound work is "
+        "rare). High system-time growth without matching user-time "
+        "growth suggests heavy syscall pressure (FD churn, network IO, "
+        "or `psutil.open_files()` enumeration on Windows — see "
+        "anti-pattern #30)."
+    ),
     # ── asyncio block ──
     "asyncio.task_count": (
         "Total `asyncio.all_tasks()` count at snapshot time. Healthy: "
@@ -104,6 +130,25 @@ FIELD_REMEDIATIONS: Final[Mapping[str, str]] = {
         "Most tasks live here (awaiting I/O); sustained growth without "
         "matching completion is a leak."
     ),
+    "asyncio.current_running_task_name": (
+        "Name of `asyncio.current_task()` at snapshot time (or None "
+        "outside a running loop). Useful for correlating snapshot ticks "
+        "to specific coroutines during forensic replay — when a cohort "
+        "fires BUDGET_EXCEEDED on tick T, the current task name surfaces "
+        "which subsystem was active. Anonymous tasks default to "
+        "`Task-N` (asyncio's auto-name); production code SHOULD pass "
+        "`name=...` to `loop.create_task(...)` for forensic clarity."
+    ),
+    "asyncio.default_executor_state": (
+        "Dict snapshot of the loop's default ThreadPoolExecutor: "
+        "`{pool_size, queue_depth, max_workers}`. Mirrors the per-call "
+        "dispatch metrics under `to_thread.*` but at the executor-state "
+        "level — operators see the pool size INDEPENDENTLY of dispatch "
+        "history (which may be stale if no work was submitted recently). "
+        "Healthy single-mind GA: pool_size ≤ ~12, queue_depth 0-2. "
+        "Large queue_depth means inference latency outpaces worker "
+        "availability."
+    ),
     # ── to_thread block ──
     "to_thread.pool_size": (
         "Number of live worker threads in the loop default "
@@ -111,6 +156,13 @@ FIELD_REMEDIATIONS: Final[Mapping[str, str]] = {
         "`to_thread.max_workers`; high values during failover suggest "
         "ONNX inference contention. Inspect "
         "`to_thread.dispatch_count_per_label` for the noisy label."
+    ),
+    "to_thread.active_workers": (
+        "Alias of `to_thread.pool_size` per Mission H4 §3 F2 canonical "
+        "field name (Python's ThreadPoolExecutor exposes only "
+        "`len(_threads)` — total alive workers — without a separate "
+        "busy/idle metric). Treat this and `pool_size` as the same "
+        "value; remediation guidance is the same."
     ),
     "to_thread.queue_depth": (
         "Pending submissions waiting for a worker thread (internal "

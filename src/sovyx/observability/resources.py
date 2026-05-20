@@ -87,6 +87,10 @@ def _capture_psutil_metrics(*, skip_expensive: bool = False) -> dict[str, object
             "process.num_handles_or_fds": None,
             "process.open_files_count": None,
             "process.connections_count": None,
+            # Mission H4 §0 item 4 + §T2.1 + §3 F2 extension fields.
+            "process.memory_percent": None,
+            "process.cpu_times_user_s": None,
+            "process.cpu_times_system_s": None,
         }
 
     proc = psutil.Process()
@@ -145,6 +149,24 @@ def _capture_psutil_metrics(*, skip_expensive: bool = False) -> dict[str, object
         except Exception:  # noqa: BLE001
             connections_count = None
 
+    # Mission H4 §0 item 4 + §T2.1 + §3 F2 — extension fields.
+    # ``memory_percent`` is psutil-derived (rss / total physical memory).
+    # ``cpu_times`` returns user + system seconds as floats; both fields
+    # are monotonic per-process counters useful for derivative ratios
+    # (e.g. CPU-bound classification via Δ user / Δ wallclock).
+    try:
+        memory_percent: float | None = float(proc.memory_percent())
+    except Exception:  # noqa: BLE001 — psutil edge cases
+        memory_percent = None
+
+    try:
+        cpu_times = proc.cpu_times()
+        cpu_times_user_s: float | None = float(cpu_times.user)
+        cpu_times_system_s: float | None = float(cpu_times.system)
+    except Exception:  # noqa: BLE001
+        cpu_times_user_s = None
+        cpu_times_system_s = None
+
     return {
         "process.rss_bytes": rss_bytes,
         "process.vms_bytes": vms_bytes,
@@ -153,6 +175,9 @@ def _capture_psutil_metrics(*, skip_expensive: bool = False) -> dict[str, object
         "process.num_handles_or_fds": handles_or_fds,
         "process.open_files_count": open_files_count,
         "process.connections_count": connections_count,
+        "process.memory_percent": memory_percent,
+        "process.cpu_times_user_s": cpu_times_user_s,
+        "process.cpu_times_system_s": cpu_times_system_s,
     }
 
 
@@ -181,12 +206,24 @@ def _capture_resource_registry_metrics() -> dict[str, object]:
 
 
 def _capture_asyncio_metrics() -> dict[str, object]:
-    """Return current event-loop task counts.
+    """Return current event-loop task counts + extension fields.
+
+    Mission H4 §0 item 4 + §T2.1 + §3 F2 — extends the 3-field pre-H4
+    block by 2 H4 fields:
+
+    * ``asyncio.current_running_task_name`` — name of the currently-running
+      task (or ``None`` outside a loop). Useful for correlating snapshot
+      ticks to specific coroutines during forensic replay.
+    * ``asyncio.default_executor_state`` — dict snapshot of the loop's
+      default :class:`ThreadPoolExecutor` (pool_size + queue_depth +
+      max_workers). Mirrors the per-call dispatch metrics under
+      :data:`to_thread.*` but at the executor-state level so operators
+      can see the pool independently of dispatch history.
 
     ``asyncio.all_tasks()`` requires a running loop; if called outside
-    one, fall back to zeros rather than raising — the snapshotter loop
-    itself is async, so this branch only triggers in test fixtures
-    that import the helper directly.
+    one, fall back to zeros + ``None`` task name rather than raising —
+    the snapshotter loop itself is async, so this branch only triggers
+    in test fixtures that import the helper directly.
     """
     try:
         tasks = asyncio.all_tasks()
@@ -195,13 +232,51 @@ def _capture_asyncio_metrics() -> dict[str, object]:
             "asyncio.task_count": 0,
             "asyncio.running_count": 0,
             "asyncio.pending_count": 0,
+            "asyncio.current_running_task_name": None,
+            "asyncio.default_executor_state": {
+                "pool_size": 0,
+                "queue_depth": 0,
+                "max_workers": 0,
+            },
         }
     running = sum(1 for t in tasks if not t.done())
     pending = sum(1 for t in tasks if not t.done() and not _is_currently_running(t))
+
+    current_task_name: str | None
+    try:
+        current = asyncio.current_task()
+        current_task_name = current.get_name() if current is not None else None
+    except RuntimeError:
+        current_task_name = None
+
+    # Default executor state — same shape as the dispatch wrapper records.
+    # We re-introspect here (not via ResourceRegistry) because the snapshot
+    # represents the executor at observe-time, independent of the most-recent
+    # dispatch (which may be stale if no work was submitted recently).
+    executor_state: dict[str, int] = {"pool_size": 0, "queue_depth": 0, "max_workers": 0}
+    try:
+        loop = asyncio.get_running_loop()
+        # ``_default_executor`` is documented CPython internal stable since 3.8;
+        # mypy doesn't model it because it's an implementation detail. We rely
+        # on it for observability only; failures degrade to zeros, not crashes.
+        executor = getattr(loop, "_default_executor", None)
+        if executor is not None:
+            with contextlib.suppress(AttributeError, RuntimeError):
+                executor_state["pool_size"] = len(executor._threads)  # noqa: SLF001
+            with contextlib.suppress(AttributeError, RuntimeError):
+                executor_state["queue_depth"] = executor._work_queue.qsize()  # noqa: SLF001
+            with contextlib.suppress(AttributeError, RuntimeError):
+                executor_state["max_workers"] = executor._max_workers  # noqa: SLF001
+    except RuntimeError:
+        # No running loop — degraded already returned above; defensive.
+        pass
+
     return {
         "asyncio.task_count": len(tasks),
         "asyncio.running_count": running,
         "asyncio.pending_count": pending,
+        "asyncio.current_running_task_name": current_task_name,
+        "asyncio.default_executor_state": executor_state,
     }
 
 
