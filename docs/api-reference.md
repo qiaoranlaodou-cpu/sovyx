@@ -543,6 +543,7 @@ Mission H4 Phase 1.C surface; backed by `ResourceRegistry.snapshot_fields()`.
   "observed_at_unix": 1716143280.42,
   "cohorts": {
     "to_thread.pool_size": 4,
+    "to_thread.active_workers": 4,
     "to_thread.dispatch_count_total": 142,
     "to_thread.dispatch_count_per_label": {
       "voice.vad.silero": 80,
@@ -563,10 +564,22 @@ Mission H4 Phase 1.C surface; backed by `ResourceRegistry.snapshot_fields()`.
     "gc.collections_by_gen": [215, 7, 2],
     "tracemalloc.is_tracing": false
   },
-  "canonical_field_count": 28,
+  "canonical_field_count": 33,
   "legacy_alias_count": 1
 }
 ```
+
+The `cohorts` block surfaces the H4 per-cohort counters (registry-
+sourced). Pre-mission `process.*` + `asyncio.*` fields are NOT included
+in `cohorts` by Phase 1.C design — operators read those via the
+structured `self.health.snapshot` log line, the `sovyx doctor resources`
+CLI (which queries `engine.resources.snapshot` RPC), or the live
+registry directly. Adding them to this endpoint would be a Phase 1.C
+scope expansion (documented as out-of-scope in mission §23.3).
+
+`to_thread.active_workers` is the F2-canonical alias of `to_thread.pool_size` —
+Python's ThreadPoolExecutor exposes only `len(_threads)`, so both fields
+surface the same value per Mission H4 §3 F2 + §22.2.
 
 The envelope is forward-additive (`extra="allow"` per anti-pattern #40):
 Phase 1.E adds `cohort_governor.budget_state` /

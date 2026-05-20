@@ -8,16 +8,25 @@ operator-facing tools that consume that data.
 
 Each `self.health.snapshot` record (emitted every
 `observability.sampling.perf_hotpath_interval_seconds`, default 60 s)
-now carries 28 canonical fields across these cohorts:
+now carries 34 canonical fields across these cohorts (post-v0.49.31
+F2-list closure; the 22 H4 new fields are the spec §3 F2 canonical
+acceptance set):
 
-- **process** — `process.rss_bytes`, `process.vms_bytes`,
-  `process.cpu_percent`, `process.num_threads`,
+- **process** (10 fields, 3 added by v0.49.31) — `process.rss_bytes`,
+  `process.vms_bytes`, `process.cpu_percent`, `process.num_threads`,
   `process.num_handles_or_fds`, `process.open_files_count`,
-  `process.connections_count`.
-- **asyncio** — `asyncio.task_count`, `asyncio.running_count`,
-  `asyncio.pending_count`.
-- **to_thread** — `to_thread.pool_size`, `to_thread.queue_depth`,
-  `to_thread.max_workers`, `to_thread.dispatch_count_total`,
+  `process.connections_count`, `process.memory_percent`,
+  `process.cpu_times_user_s`, `process.cpu_times_system_s`.
+- **asyncio** (5 fields, 2 added by v0.49.31) — `asyncio.task_count`,
+  `asyncio.running_count`, `asyncio.pending_count`,
+  `asyncio.current_running_task_name`,
+  `asyncio.default_executor_state` (dict with `pool_size` +
+  `queue_depth` + `max_workers`).
+- **to_thread** (6 fields, 1 added by v0.49.31 as F2 canonical alias) —
+  `to_thread.pool_size`, `to_thread.active_workers` (alias of
+  `pool_size` — Python's ThreadPoolExecutor exposes only
+  `len(_threads)`), `to_thread.queue_depth`, `to_thread.max_workers`,
+  `to_thread.dispatch_count_total`,
   `to_thread.dispatch_count_per_label`.
 - **lock_dict** — `lock_dict.total_cardinality`,
   `lock_dict.per_owner`, `lock_dict.instance_count`.

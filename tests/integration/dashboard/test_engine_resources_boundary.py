@@ -103,3 +103,26 @@ class TestEngineResourcesBoundaryRoundTrip:
         extra = cohorts.__pydantic_extra__ or {}
         assert "cohort_governor.budget_state" in extra
         assert "cohort_governor.circuit_breaker_engaged" in extra
+
+    def test_to_thread_active_workers_is_first_class_field(self) -> None:
+        """Mission H4 §23.2 v0.49.32 — F2 canonical alias declared explicitly.
+
+        Pre-v0.49.32 ``to_thread.active_workers`` would have flowed
+        through ``extra="allow"`` as opaque extra. v0.49.32 declares it
+        as a typed field aliased on the dotted-key SSoT name; this test
+        asserts the field appears as a first-class attribute (not under
+        ``__pydantic_extra__``) and equals ``pool_size`` per F2 alias
+        semantics (Python's ThreadPoolExecutor exposes only
+        ``len(_threads)``).
+        """
+        s1 = _FakeSession()
+        register_onnx_session(label="brain.embedding", session=s1)
+        fields = get_default_resource_registry().snapshot_fields()
+        cohorts = ResourceCohortMetrics.model_validate(fields)
+        # Attribute is first-class (not opaque extra).
+        assert hasattr(cohorts, "to_thread_active_workers")
+        # Per F2 alias semantics: equals pool_size.
+        assert cohorts.to_thread_active_workers == cohorts.to_thread_pool_size
+        # And NOT in __pydantic_extra__.
+        extra = cohorts.__pydantic_extra__ or {}
+        assert "to_thread.active_workers" not in extra

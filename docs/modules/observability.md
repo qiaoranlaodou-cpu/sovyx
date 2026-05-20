@@ -101,17 +101,23 @@ budget governor that closes the v0.43.1 forensic-audit §H4 gap (silent
 
 ### `self.health.snapshot` field taxonomy
 
-Every snapshot record carries 28 canonical fields organized into 8
-cohort sections:
+Every snapshot record carries 34 canonical fields organized into 8
+cohort sections (post-v0.49.31 the F2 canonical 22-H4-field list per
+Mission H4 §3 F2 is fully shipped):
 
-- **process** — `process.rss_bytes`, `process.vms_bytes`,
+- **process** (10 fields) — `process.rss_bytes`, `process.vms_bytes`,
   `process.cpu_percent`, `process.num_threads`,
   `process.num_handles_or_fds`, `process.open_files_count`,
-  `process.connections_count`.
-- **asyncio** — `asyncio.task_count`, `asyncio.running_count`,
-  `asyncio.pending_count`.
-- **to_thread** — `to_thread.pool_size`, `to_thread.queue_depth`,
-  `to_thread.max_workers`, `to_thread.dispatch_count_total`,
+  `process.connections_count`, `process.memory_percent`,
+  `process.cpu_times_user_s`, `process.cpu_times_system_s`.
+- **asyncio** (5 fields) — `asyncio.task_count`,
+  `asyncio.running_count`, `asyncio.pending_count`,
+  `asyncio.current_running_task_name`,
+  `asyncio.default_executor_state` (dict).
+- **to_thread** (6 fields) — `to_thread.pool_size`,
+  `to_thread.active_workers` (alias of `pool_size` per F2 canonical
+  naming), `to_thread.queue_depth`, `to_thread.max_workers`,
+  `to_thread.dispatch_count_total`,
   `to_thread.dispatch_count_per_label`.
 - **lock_dict** — `lock_dict.total_cardinality`,
   `lock_dict.per_owner`, `lock_dict.instance_count`.
