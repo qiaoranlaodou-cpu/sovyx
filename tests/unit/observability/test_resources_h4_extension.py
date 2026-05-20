@@ -52,9 +52,17 @@ _H4_NEW_FIELDS: frozenset[str] = frozenset(
         "tracemalloc.is_tracing",
         "tracemalloc.current_kb",
         "tracemalloc.peak_kb",
-        "exception_cohort.retained_bytes_estimate",
-        "exception_cohort.distinct_group_id_count",
+        # MISSION-A.1.P2 (F-002+F-003): cumulative-vs-window split.
+        # The pre-fix ``retained_bytes_estimate`` and ``distinct_group_id_count``
+        # remain LENIENT-emitted by the snapshotter for dashboards keyed
+        # on the old labels (sunset v0.55.0, ADR-D14, anti-pattern #49).
+        "exception_cohort.cumulative_retained_bytes_since_start",
+        "exception_cohort.cumulative_distinct_group_id_count",
+        "exception_cohort.window_retained_bytes",
+        "exception_cohort.window_distinct_group_id_count",
         "exception_cohort.last_observation_monotonic",
+        "exception_cohort.retained_bytes_estimate",  # LENIENT legacy shim
+        "exception_cohort.distinct_group_id_count",  # LENIENT legacy shim
         # v0.49.31 — Spec §0 item 4 + §T2.1 + §3 F2 extension fields.
         "process.memory_percent",
         "process.cpu_times_user_s",
@@ -214,9 +222,9 @@ class TestSpecF2CanonicalFieldList:
         assert payload["to_thread.active_workers"] == payload["to_thread.pool_size"]
 
     def test_v0_49_31_ssot_count_matches_spec_target(self) -> None:
-        """SSoT has exactly 34 entries post-v0.49.31.
+        """SSoT count tracks the canonical field set.
 
-        Breakdown:
+        Pre-MISSION-A.1 breakdown (34):
         * 10 pre-mission fields (7 process.* + 3 asyncio.*)
         * 18 H4 v0.49.14..v0.49.30 fields (to_thread × 5 incl. queue_depth +
           lock_dict × 3 + onnx × 2 + gc × 2 + tracemalloc × 3 + exception_cohort × 3)
@@ -225,8 +233,19 @@ class TestSpecF2CanonicalFieldList:
           process.cpu_times_system_s + asyncio.current_running_task_name +
           asyncio.default_executor_state + to_thread.active_workers
 
-        Total: 10 + 18 + 6 = 34.
+        MISSION-A.1.P2 delta (F-002+F-003): the pre-fix
+        ``exception_cohort.retained_bytes_estimate`` and
+        ``exception_cohort.distinct_group_id_count`` SSoT entries split
+        into FOUR explicit fields — ``cumulative_*`` (lifetime
+        accumulators) + ``window_*`` (rolling-window values). The two
+        legacy keys remain LENIENT-emitted by the snapshotter as legacy
+        shims (sunset v0.55.0, ADR-D14) but are NOT separate SSoT entries
+        — they appear as ``legacy_alias=`` attributes on the cumulative
+        FieldSpecs (precedent: ``system.rss_bytes`` is the legacy alias
+        of ``process.rss_bytes`` without its own SSoT entry).
+
+        Net delta: 34 + 2 (4 new − 2 old) = 36.
         """
         from sovyx.observability._resource_registry import _HEALTH_SNAPSHOT_FIELDS
 
-        assert len(_HEALTH_SNAPSHOT_FIELDS) == 34
+        assert len(_HEALTH_SNAPSHOT_FIELDS) == 36

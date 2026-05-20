@@ -98,14 +98,33 @@ class ResourceCohortMetrics(BaseModel):
     tracemalloc_current_kb: int = Field(0, alias="tracemalloc.current_kb")
     tracemalloc_peak_kb: int = Field(0, alias="tracemalloc.peak_kb")
     # exception_cohort
+    # MISSION-A.1 F-002+F-003 (anti-pattern #49): cumulative-vs-window split.
+    # Cumulative fields are monotonic since process start; window fields
+    # decay as observations age out of the deque (``exception_cohort_window_s``).
+    # The legacy ``retained_bytes_estimate`` / ``distinct_group_id_count``
+    # aliases stay through one LENIENT minor cycle for external dashboards;
+    # STRICT-flip drops them at v0.55.0 (ADR-D14).
+    exception_cohort_cumulative_retained_bytes_since_start: int = Field(
+        0, alias="exception_cohort.cumulative_retained_bytes_since_start"
+    )
+    exception_cohort_cumulative_distinct_group_id_count: int = Field(
+        0, alias="exception_cohort.cumulative_distinct_group_id_count"
+    )
+    exception_cohort_window_retained_bytes: int = Field(
+        0, alias="exception_cohort.window_retained_bytes"
+    )
+    exception_cohort_window_distinct_group_id_count: int = Field(
+        0, alias="exception_cohort.window_distinct_group_id_count"
+    )
+    exception_cohort_last_observation_monotonic: float = Field(
+        0.0, alias="exception_cohort.last_observation_monotonic"
+    )
+    # Legacy aliases (LENIENT dual-emit; sunset v0.55.0).
     exception_cohort_retained_bytes_estimate: int = Field(
         0, alias="exception_cohort.retained_bytes_estimate"
     )
     exception_cohort_distinct_group_id_count: int = Field(
         0, alias="exception_cohort.distinct_group_id_count"
-    )
-    exception_cohort_last_observation_monotonic: float = Field(
-        0.0, alias="exception_cohort.last_observation_monotonic"
     )
 
 

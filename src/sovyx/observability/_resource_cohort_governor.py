@@ -511,14 +511,26 @@ class ResourceCohortGovernor:
         snapshot: Mapping[str, object],
         budget: CohortBudget,
     ) -> CohortEvaluation:
-        retained = snapshot.get("exception_cohort.retained_bytes_estimate")
+        # MISSION-A.1 F-002+F-003 (anti-pattern #49): governor reads the
+        # WINDOWED retention so a single storm decays naturally as
+        # observations age out of the deque. The pre-fix consumer read
+        # ``retained_bytes_estimate`` — a monotonic ``+=`` accumulator —
+        # so the cohort budget became permanently breached after one
+        # storm with no recovery path absent process restart. LENIENT
+        # fallback reads the legacy cumulative key while the dual-emit
+        # window is in force; STRICT v0.55.0 drops the fallback.
+        retained = snapshot.get("exception_cohort.window_retained_bytes")
+        if not isinstance(retained, int):
+            retained = snapshot.get(
+                "exception_cohort.retained_bytes_estimate",
+            )  # a1-allowlist: legacy alias during LENIENT
         if not isinstance(retained, int):
             return CohortEvaluation(
                 axis=budget.axis,
                 verdict=CohortVerdict.INSUFFICIENT_DATA,
                 observed=0,
                 budget=budget.threshold,
-                note="exception_cohort.retained_bytes_estimate missing",
+                note="exception_cohort.window_retained_bytes missing",
             )
         if retained > budget.threshold:
             return CohortEvaluation(
@@ -526,7 +538,9 @@ class ResourceCohortGovernor:
                 verdict=CohortVerdict.BUDGET_EXCEEDED,
                 observed=retained,
                 budget=budget.threshold,
-                note=(f"ExceptionGroup retention {retained // (1024 * 1024)} MiB exceeds cap"),
+                note=(
+                    f"ExceptionGroup window retention {retained // (1024 * 1024)} MiB exceeds cap"
+                ),
             )
         return CohortEvaluation(
             axis=budget.axis,

@@ -197,8 +197,11 @@ def test_exception_cohort_dedup_and_accumulation(
         expected_bytes += retained
         distinct_groups.add(group_id)
     fields = reg.snapshot_fields()
-    assert fields["exception_cohort.retained_bytes_estimate"] == expected_bytes
-    assert fields["exception_cohort.distinct_group_id_count"] == len(distinct_groups)
+    # MISSION-A.1.P2 (F-002+F-003): cumulative fields are the canonical
+    # lifetime accumulators; legacy keys are LENIENT shims emitted by the
+    # snapshotter, not by snapshot_fields() itself.
+    assert fields["exception_cohort.cumulative_retained_bytes_since_start"] == expected_bytes
+    assert fields["exception_cohort.cumulative_distinct_group_id_count"] == len(distinct_groups)
 
 
 # ── Property 7: lock_dict.total_cardinality == sum(per_owner) ──
@@ -262,7 +265,7 @@ def test_reset_produces_fresh_registry(num_onnx: int, num_dispatches: int) -> No
     assert fields["onnx.session_count"] == 0
     assert fields["to_thread.dispatch_count_total"] == 0
     assert fields["lock_dict.instance_count"] == 0
-    assert fields["exception_cohort.retained_bytes_estimate"] == 0
+    assert fields["exception_cohort.cumulative_retained_bytes_since_start"] == 0
 
 
 # ── Property 9 (bonus): overflow coalescing for to_thread labels ──

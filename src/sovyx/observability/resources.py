@@ -181,7 +181,10 @@ def _capture_psutil_metrics(*, skip_expensive: bool = False) -> dict[str, object
     }
 
 
-def _capture_resource_registry_metrics() -> dict[str, object]:
+def _capture_resource_registry_metrics(
+    *,
+    exception_cohort_window_s: float | None = None,
+) -> dict[str, object]:
     """Return per-cohort registry metrics consumed by snapshot emission.
 
     Delegates to :meth:`ResourceRegistry.snapshot_fields()`. Imports the
@@ -192,6 +195,10 @@ def _capture_resource_registry_metrics() -> dict[str, object]:
     Failures fall back to an empty dict — observability is best-effort,
     not load-bearing.
 
+    ``exception_cohort_window_s`` forwards through to the registry's
+    rolling-window computation for ``exception_cohort.window_*`` fields
+    (MISSION-A.1 F-002+F-003).
+
     Mission H4 §T2.1 — Phase 1.B wire-up.
     """
     try:
@@ -199,7 +206,9 @@ def _capture_resource_registry_metrics() -> dict[str, object]:
             get_default_resource_registry,
         )
 
-        return get_default_resource_registry().snapshot_fields()
+        return get_default_resource_registry().snapshot_fields(
+            exception_cohort_window_s=exception_cohort_window_s,
+        )
     except Exception:  # noqa: BLE001 — registry must never break the snapshot path
         logger.debug("self.health.resource_registry_capture_failed", exc_info=True)
         return {}
@@ -408,7 +417,13 @@ class ResourceSnapshotter:
         """
         psutil_metrics = _capture_psutil_metrics(skip_expensive=final)
         asyncio_metrics = _capture_asyncio_metrics()
-        registry_metrics = _capture_resource_registry_metrics()
+        registry_metrics = _capture_resource_registry_metrics(
+            # MISSION-A.1 F-002+F-003: window_s drives the rolling
+            # exception_cohort.window_* fields the governor reads. The
+            # cohort governor reads the same window from the same config
+            # node; keeping them on the same source preserves causality.
+            exception_cohort_window_s=self._config.tuning.exception_cohort_window_s,
+        )
         queues = _capture_queue_metrics(self._providers)
 
         uptime_s: float | None = None
@@ -424,12 +439,32 @@ class ResourceSnapshotter:
         if isinstance(rss, int):
             psutil_with_legacy["system.rss_bytes"] = rss  # h4-allowlist: legacy alias
 
+        # ADR-D14 LENIENT dual-emit (MISSION-A.1 F-002+F-003, anti-pattern #49):
+        # the cumulative-vs-window split renamed ``retained_bytes_estimate``
+        # and ``distinct_group_id_count`` to ``cumulative_*`` canonical
+        # names. Emit the pre-fix keys alongside the new ones for one
+        # minor cycle so operator dashboards keyed on the legacy labels
+        # keep working. STRICT-flip at v0.55.0 drops these two keys.
+        registry_with_legacy: dict[str, object] = dict(registry_metrics)
+        cumulative_retained = registry_with_legacy.get(
+            "exception_cohort.cumulative_retained_bytes_since_start",
+        )
+        if isinstance(cumulative_retained, int):
+            # a1-allowlist: legacy alias, sunset v0.55.0
+            registry_with_legacy["exception_cohort.retained_bytes_estimate"] = cumulative_retained
+        cumulative_distinct = registry_with_legacy.get(
+            "exception_cohort.cumulative_distinct_group_id_count",
+        )
+        if isinstance(cumulative_distinct, int):
+            # a1-allowlist: legacy alias, sunset v0.55.0
+            registry_with_legacy["exception_cohort.distinct_group_id_count"] = cumulative_distinct
+
         payload: dict[str, object] = {
             "self.health.snapshot_final": final,
             "self.health.uptime_s": uptime_s,
             **psutil_with_legacy,
             **asyncio_metrics,
-            **registry_metrics,
+            **registry_with_legacy,
             "self.health.queue_count": len(queues),
             "self.health.queues": [
                 {

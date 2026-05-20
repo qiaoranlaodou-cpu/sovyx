@@ -67,6 +67,13 @@ class TestHealthSnapshotFieldsSSoT:
         assert spec.legacy_alias == "system.rss_bytes"
 
     def test_h4_new_fields_present(self) -> None:
+        # MISSION-A.1.P2 (F-002+F-003): the legacy
+        # ``exception_cohort.retained_bytes_estimate`` and
+        # ``distinct_group_id_count`` are no longer SSoT canonical keys —
+        # they're declared as ``legacy_alias`` of the new ``cumulative_*``
+        # fields (precedent: ``system.rss_bytes`` is the legacy alias of
+        # ``process.rss_bytes``). The snapshotter LENIENT-emits both pairs
+        # until v0.55.0 STRICT-flip.
         expected_h4 = {
             "to_thread.pool_size",
             "to_thread.queue_depth",
@@ -83,8 +90,10 @@ class TestHealthSnapshotFieldsSSoT:
             "tracemalloc.is_tracing",
             "tracemalloc.current_kb",
             "tracemalloc.peak_kb",
-            "exception_cohort.retained_bytes_estimate",
-            "exception_cohort.distinct_group_id_count",
+            "exception_cohort.cumulative_retained_bytes_since_start",
+            "exception_cohort.cumulative_distinct_group_id_count",
+            "exception_cohort.window_retained_bytes",
+            "exception_cohort.window_distinct_group_id_count",
             "exception_cohort.last_observation_monotonic",
         }
         assert expected_h4.issubset(_HEALTH_SNAPSHOT_FIELDS.keys())
@@ -339,9 +348,14 @@ class TestExceptionCohort:
         reg.record_exception_cohort(
             group_id="g2", sub_exception_count=1, retained_bytes_estimate=512
         )
+        # MISSION-A.1.P2: snapshot_fields() emits the cumulative canonical
+        # fields; the legacy ``retained_bytes_estimate`` /
+        # ``distinct_group_id_count`` keys are LENIENT shims added by the
+        # snapshotter (`resources.py::_emit_snapshot`), matching the
+        # ``system.rss_bytes`` precedent.
         fields = reg.snapshot_fields()
-        assert fields["exception_cohort.retained_bytes_estimate"] == 1536
-        assert fields["exception_cohort.distinct_group_id_count"] == 2
+        assert fields["exception_cohort.cumulative_retained_bytes_since_start"] == 1536
+        assert fields["exception_cohort.cumulative_distinct_group_id_count"] == 2
 
     def test_distinct_group_ids_dedup(self) -> None:
         reg = ResourceRegistry()
@@ -353,8 +367,8 @@ class TestExceptionCohort:
             )
         fields = reg.snapshot_fields()
         # group_id set has one entry; retained_bytes accumulates regardless.
-        assert fields["exception_cohort.distinct_group_id_count"] == 1
-        assert fields["exception_cohort.retained_bytes_estimate"] == 500
+        assert fields["exception_cohort.cumulative_distinct_group_id_count"] == 1
+        assert fields["exception_cohort.cumulative_retained_bytes_since_start"] == 500
 
 
 # ── snapshot_fields shape parity ──
@@ -438,5 +452,5 @@ class TestModuleHelpers:
             retained_bytes_estimate=2048,
         )
         fields = get_default_resource_registry().snapshot_fields()
-        assert fields["exception_cohort.retained_bytes_estimate"] == 2048
-        assert fields["exception_cohort.distinct_group_id_count"] == 1
+        assert fields["exception_cohort.cumulative_retained_bytes_since_start"] == 2048
+        assert fields["exception_cohort.cumulative_distinct_group_id_count"] == 1

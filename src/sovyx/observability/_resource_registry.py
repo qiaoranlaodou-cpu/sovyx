@@ -411,19 +411,48 @@ _HEALTH_SNAPSHOT_FIELDS: Final[Mapping[str, FieldSpec]] = {
         section="tracemalloc",
     ),
     # ── H4 new fields: exception_cohort block ──
-    "exception_cohort.retained_bytes_estimate": FieldSpec(
-        canonical_key="exception_cohort.retained_bytes_estimate",
+    #
+    # MISSION-A.1 F-002+F-003 (anti-pattern #49): each of these split
+    # into a CUMULATIVE (lifetime, since process start; never decays)
+    # and a WINDOW (rolling, sized by ``tuning.exception_cohort_window_s``;
+    # decays as observations age out of the deque) variant. The pre-fix
+    # ``retained_bytes_estimate`` / ``distinct_group_id_count`` names
+    # implied current-window semantics but the implementation was
+    # monotonic ``+=``; the governor compared a lifetime sum against a
+    # real-time cap and the cohort verdict became permanently breached
+    # after a single storm. The legacy keys remain LENIENT-emitted with
+    # ``legacy_alias`` pointing to the new cumulative canonical names so
+    # operator dashboards keyed on the old labels keep functioning; the
+    # STRICT-flip drops the legacy keys at v0.55.0 (V-A1-2). ADR-D14.
+    "exception_cohort.cumulative_retained_bytes_since_start": FieldSpec(
+        canonical_key="exception_cohort.cumulative_retained_bytes_since_start",
+        type_constraint=int,
+        producer_module="sovyx.observability.resources",
+        legacy_alias="exception_cohort.retained_bytes_estimate",
+        operator_hint_key="exception_cohort_cumulative_retained_bytes_since_start",
+        section="exception_cohort",
+    ),
+    "exception_cohort.cumulative_distinct_group_id_count": FieldSpec(
+        canonical_key="exception_cohort.cumulative_distinct_group_id_count",
+        type_constraint=int,
+        producer_module="sovyx.observability.resources",
+        legacy_alias="exception_cohort.distinct_group_id_count",
+        operator_hint_key="exception_cohort_cumulative_distinct_group_id_count",
+        section="exception_cohort",
+    ),
+    "exception_cohort.window_retained_bytes": FieldSpec(
+        canonical_key="exception_cohort.window_retained_bytes",
         type_constraint=int,
         producer_module="sovyx.observability.resources",
         consumer_modules=("sovyx.observability._resource_cohort_governor",),
-        operator_hint_key="exception_cohort_retained_bytes_estimate",
+        operator_hint_key="exception_cohort_window_retained_bytes",
         section="exception_cohort",
     ),
-    "exception_cohort.distinct_group_id_count": FieldSpec(
-        canonical_key="exception_cohort.distinct_group_id_count",
+    "exception_cohort.window_distinct_group_id_count": FieldSpec(
+        canonical_key="exception_cohort.window_distinct_group_id_count",
         type_constraint=int,
         producer_module="sovyx.observability.resources",
-        operator_hint_key="exception_cohort_distinct_group_id_count",
+        operator_hint_key="exception_cohort_window_distinct_group_id_count",
         section="exception_cohort",
     ),
     "exception_cohort.last_observation_monotonic": FieldSpec(
@@ -462,11 +491,24 @@ _MAX_TRACKED_LABELS: Final[int] = 128
 
 @dataclass(slots=True)
 class _ExceptionCohortCounter:
-    """Mutable retained-bytes estimate for recent ExceptionGroups."""
+    """Mutable retained-bytes estimate for recent ExceptionGroups.
+
+    Stores BOTH lifetime accumulators (``retained_bytes_estimate`` is
+    monotonic ``+=`` since process start; ``distinct_group_ids`` is the
+    unbounded set of every group_id ever observed) AND a bounded
+    ``observations`` deque of ``(monotonic_ts, group_id, retained_bytes)``
+    tuples used to derive WINDOWED values at snapshot time. The
+    cumulative-vs-window distinction is the post-MISSION-A.1 fix for
+    F-002 + F-003 — pre-fix only the lifetime accumulators existed, and
+    field names ``retained_bytes_estimate`` / ``distinct_group_id_count``
+    misleadingly implied current-window semantics. Anti-pattern #49.
+    """
 
     retained_bytes_estimate: int = 0
     distinct_group_ids: set[str] = field(default_factory=set)
-    observations: deque[tuple[float, int]] = field(
+    # Observations now carry the group_id so the window-distinct count
+    # can be computed without consulting the (unbounded) distinct_group_ids set.
+    observations: deque[tuple[float, str, int]] = field(
         default_factory=lambda: deque(maxlen=128),
     )
 
@@ -630,15 +672,33 @@ class ResourceRegistry:
             if group_id not in self._exception_cohort.distinct_group_ids:
                 self._exception_cohort.distinct_group_ids.add(group_id)
             self._exception_cohort.retained_bytes_estimate += retained_bytes_estimate
-            self._exception_cohort.observations.append((now, retained_bytes_estimate))
+            # MISSION-A.1 F-002+F-003: triple now carries group_id so window
+            # observers can compute distinct-in-window counts WITHOUT the
+            # unbounded ``distinct_group_ids`` set.
+            self._exception_cohort.observations.append(
+                (now, group_id, retained_bytes_estimate),
+            )
 
     # ── Reader ──
 
-    def snapshot_fields(self) -> dict[str, object]:
+    def snapshot_fields(
+        self,
+        *,
+        exception_cohort_window_s: float | None = None,
+    ) -> dict[str, object]:
         """Return the per-cohort snapshot block consumed by ResourceSnapshotter.
 
         Every key MUST appear in :data:`_HEALTH_SNAPSHOT_FIELDS`.
         Quality Gate 15 enforces.
+
+        ``exception_cohort_window_s`` is the rolling window (seconds) used
+        to compute ``exception_cohort.window_retained_bytes`` and
+        ``window_distinct_group_id_count``. The snapshotter passes
+        ``config.tuning.exception_cohort_window_s``; tests may pass an
+        explicit value. When ``None`` the window-bytes / window-count
+        fields fall back to the cumulative values (a defensive default
+        that keeps the registry leaf-callable without config access,
+        though every production call site MUST supply window_s).
         """
         with self._lock:
             # Reap dead lock-dict weakrefs.
@@ -672,13 +732,34 @@ class ResourceRegistry:
                 dict(self._to_thread.dispatch_count_per_label),
             )
 
-            exc_cohort_state = (
-                self._exception_cohort.retained_bytes_estimate,
-                len(self._exception_cohort.distinct_group_ids),
+            # MISSION-A.1 F-002+F-003: cumulative reads identical to pre-fix.
+            cumulative_retained_bytes = self._exception_cohort.retained_bytes_estimate
+            cumulative_distinct_group_id_count = len(self._exception_cohort.distinct_group_ids)
+            last_observation_monotonic = (
                 self._exception_cohort.observations[-1][0]
                 if self._exception_cohort.observations
-                else 0.0,
+                else 0.0
             )
+            # Window reads — derive from the bounded observations deque.
+            # When no window_s is supplied (test fixture / leaf usage) the
+            # window fields default to the cumulative values; production
+            # ResourceSnapshotter ALWAYS supplies window_s from config.
+            if exception_cohort_window_s is None:
+                window_retained_bytes = cumulative_retained_bytes
+                window_distinct_group_id_count = cumulative_distinct_group_id_count
+            else:
+                window_threshold = time.monotonic() - exception_cohort_window_s
+                window_observations = [
+                    (ts, gid, retained)
+                    for (ts, gid, retained) in self._exception_cohort.observations
+                    if ts >= window_threshold
+                ]
+                window_retained_bytes = sum(
+                    retained for (_ts, _gid, retained) in window_observations
+                )
+                window_distinct_group_id_count = len(
+                    {gid for (_ts, gid, _retained) in window_observations}
+                )
 
         # Cheap stdlib reads (outside the lock).
         gc_collections = list(gc.get_count())  # (gen0, gen1, gen2) → list for JSON
@@ -714,9 +795,18 @@ class ResourceRegistry:
             "tracemalloc.is_tracing": tm_is_tracing,
             "tracemalloc.current_kb": tm_current_kb,
             "tracemalloc.peak_kb": tm_peak_kb,
-            "exception_cohort.retained_bytes_estimate": exc_cohort_state[0],
-            "exception_cohort.distinct_group_id_count": exc_cohort_state[1],
-            "exception_cohort.last_observation_monotonic": exc_cohort_state[2],
+            # MISSION-A.1 F-002+F-003: dual-emit. ``window_*`` are canonical
+            # (consumed by the governor); ``cumulative_*`` exposes the
+            # lifetime accumulator; legacy ``retained_bytes_estimate`` /
+            # ``distinct_group_id_count`` keys are LENIENT shims aliased
+            # to the cumulative values (sunset v0.55.0 — ADR-D14).
+            "exception_cohort.cumulative_retained_bytes_since_start": (cumulative_retained_bytes),
+            "exception_cohort.cumulative_distinct_group_id_count": (
+                cumulative_distinct_group_id_count
+            ),
+            "exception_cohort.window_retained_bytes": window_retained_bytes,
+            "exception_cohort.window_distinct_group_id_count": window_distinct_group_id_count,
+            "exception_cohort.last_observation_monotonic": last_observation_monotonic,
         }
 
 

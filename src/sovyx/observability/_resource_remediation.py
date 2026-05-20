@@ -254,18 +254,38 @@ FIELD_REMEDIATIONS: Final[Mapping[str, str]] = {
         "reclaimed."
     ),
     # ── exception_cohort block ──
-    "exception_cohort.retained_bytes_estimate": (
-        "Estimated bytes retained by `ExceptionGroup` traceback chains "
-        "since last reset. Phase 1.B + 1.D coupling: large values "
-        "(> 16 MiB) trigger the EXCEPTION_COHORT cohort. Typically "
+    # MISSION-A.1 F-002+F-003 (anti-pattern #49): cumulative-vs-window split.
+    "exception_cohort.cumulative_retained_bytes_since_start": (
+        "MONOTONIC ACCUMULATOR — bytes retained by `ExceptionGroup` "
+        "traceback chains summed across every observation since process "
+        "start. Never decays; never resets. Useful for forensic 'total "
+        "exception cost since boot'. Do NOT use for real-time cohort "
+        "budget: use `exception_cohort.window_retained_bytes` instead."
+    ),
+    "exception_cohort.cumulative_distinct_group_id_count": (
+        "MONOTONIC ACCUMULATOR — count of distinct ExceptionGroup "
+        "synthetic IDs ever observed. Grows unbounded across process "
+        "lifetime; loses 'recent diversity' meaning over time. Use "
+        "`exception_cohort.window_distinct_group_id_count` for "
+        "operationally-meaningful diversity within the current window."
+    ),
+    "exception_cohort.window_retained_bytes": (
+        "Sum of `ExceptionGroup` retained-bytes estimates observed "
+        "within the last `tuning.exception_cohort_window_s` seconds "
+        "(default 300 s). Decays naturally as observations age out of "
+        "the deque (maxlen 128). The cohort governor reads THIS field "
+        "for the EXCEPTION_COHORT budget verdict — large values "
+        "(> 16 MiB by default) trigger BUDGET_EXCEEDED. Typically "
         "follows a 500-storm (Mission C2 class) — fix the producer "
         "boundary, not the cohort governor."
     ),
-    "exception_cohort.distinct_group_id_count": (
-        "Count of distinct ExceptionGroup synthetic IDs observed. High "
-        "values without high `retained_bytes_estimate` suggest a "
-        "diverse error landscape (different bugs); high in both "
-        "suggests a single bug producing many small ExceptionGroups."
+    "exception_cohort.window_distinct_group_id_count": (
+        "Count of distinct ExceptionGroup synthetic IDs observed within "
+        "the last `tuning.exception_cohort_window_s` seconds. Decays as "
+        "observations age out of the deque. High values + high "
+        "`window_retained_bytes` = single bug producing many small "
+        "ExceptionGroups; high count + low bytes = diverse-but-cheap "
+        "exception landscape."
     ),
     "exception_cohort.last_observation_monotonic": (
         "monotonic-clock timestamp of the last "
