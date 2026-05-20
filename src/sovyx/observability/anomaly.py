@@ -328,7 +328,7 @@ class AnomalyDetector:
         with self._lock:
             self._rss_history.append((now, rss_bytes))
             window_start = now - self._memory_window_s
-            historical = [(ts, val) for ts, val in self._rss_history if ts <= window_start]
+            historical = [(ts, val) for ts, val in self._rss_history if ts >= window_start]
             if not historical:
                 return
             # Use the oldest in-window snapshot as the comparison baseline
