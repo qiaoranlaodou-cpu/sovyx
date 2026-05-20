@@ -260,7 +260,8 @@ jobs:
     runs-on: sovyx-4core
     needs: metrics-cardinality-gate
     timeout-minutes: 10
-    # CLAUDE.md anti-pattern #31 root-cause fix (2026-05-03):
+    # CLAUDE.md anti-pattern #31 root-cause fix (2026-05-03,
+    # extended 2026-05-20):
     # On tag pushes, both the standalone ``CI`` workflow (push to
     # main) and ``Publish to PyPI / CI Gate`` (workflow_call from
     # publish.yml on the matching tag push) fire near-simultaneously
@@ -269,14 +270,23 @@ jobs:
     # CPU-steal / context-switching from the parallel run, which
     # produces the bimodal async p99 distribution that even
     # median-of-5 cannot survive (3 of 5 runs noisy → median is the
-    # 540 µs noisy sample → 3.19× ratio fails the 2.0× budget).
-    # Bumping ``_DEFAULT_REPEATS`` further would just gamble on the
-    # percentile-noise budget; the enterprise fix is to eliminate
-    # the parallelism with a global concurrency group so the second
-    # workflow's perf gate waits for the first to finish before
-    # starting. ``cancel-in-progress: false`` because BOTH runs are
-    # required gates — the second one runs against an idle host
+    # 540 µs noisy sample → 3.19× ratio fails the 2.0× budget). The
+    # ``perf-regression-gate-global`` concurrency group eliminates
+    # the parallel-runs-on-same-host failure mode by serialising the
+    # two workflow_call instances; ``cancel-in-progress: false`` so
+    # BOTH runs still execute — the second runs against an idle host
     # after the first releases it.
+    #
+    # At v0.49.34 the gate flaked AGAIN despite the concurrency
+    # group: third-party tenants on the GitHub-managed Larger Runner
+    # host caused the same bimodal pattern. The paired second-layer
+    # fix lives in ``scripts/check_perf_regression.py``
+    # (``_DEFAULT_REPEATS`` 5 → 7 + ``statistics.median`` →
+    # ``_trimmed_mean``, dropping the slowest AND fastest run before
+    # averaging the inner five). Trimmed-mean-of-7 survives up to
+    # two noisy runs without firing — the discrete next layer of
+    # noise headroom obtainable without recalibrating the 2.0× /
+    # 3.0× ratio budgets.
     concurrency:
       group: perf-regression-gate-global
       cancel-in-progress: false
