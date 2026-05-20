@@ -1120,6 +1120,12 @@
         "openDoctor": "Open resource doctor",
         "adjustLruDocs": "Adjust LRULockDict maxsize",
         "ack": "Acknowledge breach"
+      },
+      "toast": {
+        "copySuccess": "Copied to clipboard: {{command}}",
+        "copyFailed": "Could not copy to clipboard.",
+        "ackSuccess": "Breach acknowledged.",
+        "ackFailed": "Acknowledge failed ({{status}})."
       }
     }
   }

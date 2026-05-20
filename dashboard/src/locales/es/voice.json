@@ -1120,6 +1120,12 @@
         "openDoctor": "Abrir resource doctor",
         "adjustLruDocs": "Ajustar maxsize del LRULockDict",
         "ack": "Reconocer breach"
+      },
+      "toast": {
+        "copySuccess": "Copiado al portapapeles: {{command}}",
+        "copyFailed": "No se pudo copiar al portapapeles.",
+        "ackSuccess": "Breach reconocido.",
+        "ackFailed": "Falló el reconocimiento ({{status}})."
       }
     }
   }

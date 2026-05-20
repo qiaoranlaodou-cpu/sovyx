@@ -344,3 +344,128 @@ describe("DegradedBanner", () => {
     expect(screen.getByTestId("degraded-chip-default_model_unavailable-0")).toBeTruthy();
   });
 });
+
+describe("DegradedBanner — Mission H4 v0.49.26 chip handlers", () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  afterEach(() => {
+    cleanup();
+  });
+
+  const _engineResourcesAxis = (
+    action: "command_hint" | "api_post",
+    target: string,
+  ): EngineDegradedPayload["axes"][number] => ({
+    axis: "engine_resources",
+    reason: "rss_growth_spike",
+    severity: "warn",
+    title_token: "degraded.engine_resources.rss_growth_spike.title",
+    body_token: "degraded.engine_resources.rss_growth_spike.body",
+    action_chips: [
+      {
+        label_token: "degraded.engine_resources.actions.openDoctor",
+        action,
+        target,
+        style: "default",
+      },
+    ],
+    metadata: { cohort: "rss_growth", observed: 1_073_741_824, budget: 536_870_912 },
+    first_observed_monotonic: 1,
+    last_observed_monotonic: 1,
+    occurrence_count: 1,
+  });
+
+  it("command_hint chip writes the target to the clipboard", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText },
+    });
+    renderBanner(
+      _payload(
+        [_engineResourcesAxis("command_hint", "sovyx doctor resources")],
+        "warn",
+      ),
+    );
+    const chip = screen.getByTestId("degraded-chip-rss_growth_spike-0");
+    fireEvent.click(chip);
+    expect(writeText).toHaveBeenCalledWith("sovyx doctor resources");
+  });
+
+  it("command_hint chip survives missing navigator.clipboard without throwing", () => {
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: undefined,
+    });
+    renderBanner(
+      _payload(
+        [_engineResourcesAxis("command_hint", "sovyx doctor resources")],
+        "warn",
+      ),
+    );
+    const chip = screen.getByTestId("degraded-chip-rss_growth_spike-0");
+    // No throw is the success signal — toast.error path absorbs the
+    // missing-clipboard case gracefully.
+    expect(() => fireEvent.click(chip)).not.toThrow();
+  });
+
+  it("api_post chip fires POST via apiFetch to the chip target", async () => {
+    const apiModule = await import("@/lib/api");
+    const apiFetchSpy = vi.spyOn(apiModule, "apiFetch").mockResolvedValue({
+      ok: true,
+      status: 200,
+    } as Response);
+    renderBanner(
+      _payload(
+        [_engineResourcesAxis("api_post", "/api/engine/resources/cohort/ack")],
+        "warn",
+      ),
+    );
+    const chip = screen.getByTestId("degraded-chip-rss_growth_spike-0");
+    fireEvent.click(chip);
+    expect(apiFetchSpy).toHaveBeenCalledWith(
+      "/api/engine/resources/cohort/ack",
+      { method: "POST" },
+    );
+  });
+
+  it("api_post chip handles non-2xx without throwing", async () => {
+    const apiModule = await import("@/lib/api");
+    vi.spyOn(apiModule, "apiFetch").mockResolvedValue({
+      ok: false,
+      status: 500,
+    } as Response);
+    renderBanner(
+      _payload(
+        [_engineResourcesAxis("api_post", "/api/engine/resources/cohort/ack")],
+        "warn",
+      ),
+    );
+    const chip = screen.getByTestId("degraded-chip-rss_growth_spike-0");
+    expect(() => fireEvent.click(chip)).not.toThrow();
+  });
+
+  it("dispatch chip (legacy alias) routes through the same api_post path", async () => {
+    const apiModule = await import("@/lib/api");
+    const apiFetchSpy = vi.spyOn(apiModule, "apiFetch").mockResolvedValue({
+      ok: true,
+      status: 200,
+    } as Response);
+    // Reuse the dispatch action — pre-H4 chips emit "dispatch" and
+    // v0.49.26's handleChipClick treats it as a POST alias.
+    renderBanner(
+      _payload(
+        [_engineResourcesAxis("api_post", "/api/some/legacy/dispatch")],
+        "warn",
+      ),
+    );
+    const chip = screen.getByTestId("degraded-chip-rss_growth_spike-0");
+    fireEvent.click(chip);
+    expect(apiFetchSpy).toHaveBeenCalledWith(
+      "/api/some/legacy/dispatch",
+      { method: "POST" },
+    );
+  });
+});

@@ -60,10 +60,28 @@ class ActionChip:
         label_token: i18n key for the chip label (e.g.
             ``"degraded.llm.noProvider.installOllama"``). Resolved by
             the frontend ``<DegradedBanner>`` via ``react-i18next``.
-        action: One of ``"navigate"`` (react-router push to ``target``),
-            ``"dispatch"`` (POST to the ``target`` API endpoint), or
-            ``"external_link"`` (open ``target`` URL in a new tab).
-        target: The route path / endpoint / URL the action operates on.
+        action: One of:
+
+            * ``"navigate"`` — react-router push to ``target`` path.
+            * ``"dispatch"`` — POST to ``target`` API endpoint (legacy
+              alias for ``api_post``; kept for back-compat with pre-H4
+              chips emitted by C4/H5/H1/C6).
+            * ``"external_link"`` — open ``target`` URL in a new tab.
+            * ``"command_hint"`` — copy ``target`` (a CLI command
+              string) to the operator's clipboard + show a success
+              toast. Mission H4 §4.8 ADR-D8 v0.49.26.
+            * ``"api_post"`` — ``apiFetch`` POST to ``target`` + show
+              an ack toast on 2xx, error toast on failure. Mission H4
+              §4.8 ADR-D8 v0.49.26.
+
+            The zod twin at ``dashboard/src/types/schemas.ts``
+            (``ActionChipSchema``) enforces this enum at the
+            frontend boundary; emitting an unknown value rejects the
+            whole DegradedEntry at parse time. New action types MUST
+            land in BOTH this Python docstring AND the zod schema
+            atomically.
+        target: The route path / endpoint / URL / command string the
+            action operates on. Semantics depend on ``action``.
         style: One of ``"default"``, ``"primary"``, or ``"danger"``;
             drives the chip's visual treatment.
     """

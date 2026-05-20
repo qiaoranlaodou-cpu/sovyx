@@ -173,6 +173,12 @@ describe("Locale completeness — voice namespace", () => {
       "threadSnapshot.loading",
       "threadSnapshot.notFound",
       "threadSnapshot.error",
+      // Mission H4 v0.49.26 — toast keys for command_hint + api_post
+      // chip handlers extended into DegradedBanner.
+      "degraded.engine_resources.toast.copySuccess",
+      "degraded.engine_resources.toast.copyFailed",
+      "degraded.engine_resources.toast.ackSuccess",
+      "degraded.engine_resources.toast.ackFailed",
     ];
     for (const key of requiredKeys) {
       expect(en.has(key), `EN missing ${key}`).toBe(true);

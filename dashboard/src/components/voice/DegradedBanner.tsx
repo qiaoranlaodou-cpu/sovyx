@@ -35,6 +35,7 @@
 import { memo, useCallback } from "react";
 import { useTranslation } from "react-i18next";
 import { useNavigate } from "react-router";
+import { toast } from "sonner";
 import {
   AlertTriangleIcon,
   AlertCircleIcon,
@@ -42,6 +43,7 @@ import {
 } from "lucide-react";
 
 import type { EngineDegradedPayload } from "@/hooks/use-engine-degraded-poller";
+import { apiFetch } from "@/lib/api";
 
 export type DegradedAxis = EngineDegradedPayload["axes"][number];
 export type DegradedActionChip = DegradedAxis["action_chips"][number];
@@ -122,13 +124,62 @@ export const DegradedBanner = memo(function DegradedBanner({
         window.open(chip.target, "_blank", "noopener,noreferrer");
         return;
       }
-      // "dispatch" action — Phase 3 wires the POST through. Phase 1.B
-      // logs a debug breadcrumb so test fixtures can detect the click
-      // without exercising the network.
+      if (chip.action === "command_hint") {
+        // Mission H4 §4.8 ADR-D8 + v0.49.26 — copy CLI command to
+        // clipboard so the operator can paste it into their terminal.
+        // Fails gracefully when navigator.clipboard is unavailable
+        // (insecure context, older browsers).
+        const clipboard = navigator.clipboard;
+        if (clipboard && typeof clipboard.writeText === "function") {
+          clipboard
+            .writeText(chip.target)
+            .then(() => {
+              toast.success(
+                t("degraded.engine_resources.toast.copySuccess", {
+                  command: chip.target,
+                }),
+              );
+            })
+            .catch(() => {
+              toast.error(t("degraded.engine_resources.toast.copyFailed"));
+            });
+        } else {
+          toast.error(t("degraded.engine_resources.toast.copyFailed"));
+        }
+        return;
+      }
+      if (chip.action === "api_post" || chip.action === "dispatch") {
+        // Mission H4 §4.8 ADR-D8 + v0.49.26 — POST to target endpoint
+        // and surface the ack outcome via toast. ``dispatch`` is the
+        // pre-H4 alias kept for back-compat (see ActionChipSchema
+        // docstring at types/schemas.ts).
+        apiFetch(chip.target, { method: "POST" })
+          .then((resp) => {
+            if (resp.ok) {
+              toast.success(t("degraded.engine_resources.toast.ackSuccess"));
+            } else {
+              toast.error(
+                t("degraded.engine_resources.toast.ackFailed", {
+                  status: resp.status,
+                }),
+              );
+            }
+          })
+          .catch(() => {
+            toast.error(
+              t("degraded.engine_resources.toast.ackFailed", {
+                status: "network",
+              }),
+            );
+          });
+        return;
+      }
+      // Unknown action — log a debug breadcrumb so test fixtures and
+      // local dev can detect the gap without exercising the network.
       // eslint-disable-next-line no-console
-      console.debug("degraded_chip_dispatch_pending_phase3", chip.target);
+      console.debug("degraded_chip_unknown_action", chip.action, chip.target);
     },
-    [navigate],
+    [navigate, t],
   );
 
   // Hide chrome entirely when no axis is degraded — the consumer mounts

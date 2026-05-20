@@ -1894,7 +1894,25 @@ const VoiceStatusDegradedSchema = z
 export const ActionChipSchema = z
   .object({
     label_token: z.string(),
-    action: z.enum(["navigate", "dispatch", "external_link"]),
+    /**
+     * Action types — extended Mission H4 §4.8 ADR-D8 v0.49.26:
+     *
+     * - ``navigate`` — react-router push to ``target`` path.
+     * - ``dispatch`` — POST to ``target`` API endpoint (legacy alias
+     *   for ``api_post``; kept for back-compat with pre-H4 chips).
+     * - ``external_link`` — open ``target`` URL in new tab.
+     * - ``command_hint`` — copy ``target`` (a CLI command string) to
+     *   clipboard + show success toast (Mission H4 v0.49.26).
+     * - ``api_post`` — apiFetch POST to ``target`` + show ack toast
+     *   on 2xx, error toast on failure (Mission H4 v0.49.26).
+     */
+    action: z.enum([
+      "navigate",
+      "dispatch",
+      "external_link",
+      "command_hint",
+      "api_post",
+    ]),
     target: z.string(),
     style: z.enum(["default", "primary", "danger"]).optional().default("default"),
   })
