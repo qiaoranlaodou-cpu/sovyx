@@ -566,6 +566,13 @@ def emit_axis_entries(evaluations: list[CohortEvaluation]) -> int:
                 "engine.resources.note": evaluation.note,
             },
         )
+        # Mission H4 §8 T4.1 (e) + §4.6 ADR-D6 v0.49.29 — circuit-breaker
+        # state advancement HAPPENS FIRST so the severity computation in
+        # _record_to_composite_store sees the current breach in the
+        # temporal window count. Without this ordering, the 2nd breach
+        # within 5 min still resolves to "warning" because the prior
+        # breach is the only one in the history at compute time.
+        governor.record_breach(evaluation.axis)
         _record_to_composite_store(evaluation)
         _increment_cohort_budget_counter(evaluation)
         # Mission H4 §8 T4.1 (c-d) — snapshot persistence on RSS / thread
@@ -574,8 +581,6 @@ def emit_axis_entries(evaluations: list[CohortEvaluation]) -> int:
             _persist_heap_snapshot(evaluation)
         elif evaluation.axis == CohortAxis.THREAD_COUNT:
             _persist_thread_snapshot(evaluation)
-        # Mission H4 §8 T4.1 (e) — circuit-breaker state advancement.
-        governor.record_breach(evaluation.axis)
     return emitted
 
 
@@ -1060,6 +1065,84 @@ def _chips_for_reason(
     )
 
 
+def _compute_engine_resources_severity(
+    cohort_axis: CohortAxis,
+    *,
+    governor: ResourceCohortGovernor | None = None,
+) -> str:
+    """Mission H4 §4.6 ADR-D6 + v0.49.29 — combined severity escalation.
+
+    Computes the severity to assign to a freshly-emitted DegradedEntry
+    on the ``engine_resources`` axis. Combines TWO escalation layers
+    per ADR-D6:
+
+    1. **Cross-cohort:** counts how many DISTINCT cohort axes are
+       currently recorded in the C4 store under the ``engine_resources``
+       axis. ``1 cohort = "warning"``, ``2 = "error"``,
+       ``3+ = "critical"``. The current cohort is included in the count
+       even if the store doesn't yet carry it (the helper is invoked
+       BEFORE the new entry is recorded).
+    2. **Temporal:** counts how many BUDGET_EXCEEDED events for the
+       SAME cohort have landed in the governor's breach history within
+       the last 5 min / 1 h. ``1st = "warning"``, ``2nd within 5 min =
+       "error"``, ``3rd within 1 h = "critical"``.
+
+    Returns the MAXIMUM of the two layer verdicts so an operator sees
+    the most-alarming signal. Severity ordering:
+    ``warning < error < critical``.
+
+    Best-effort: store / governor unavailability falls back to
+    ``"warning"`` — same as pre-v0.49.29 hardcoded value.
+    """
+    if governor is None:
+        governor = get_default_resource_cohort_governor()
+    # Layer 1: cross-cohort count from the C4 store.
+    cross_count = 1  # current cohort always counts
+    try:
+        from sovyx.engine._degraded_store import (  # noqa: PLC0415 — lazy
+            get_default_degraded_store,
+        )
+
+        store = get_default_degraded_store()
+        entries = store.snapshot()
+        distinct_cohorts: set[str] = {cohort_axis.value}
+        for entry in entries:
+            if entry.axis != "engine_resources":
+                continue
+            cohort_meta = entry.metadata.get("cohort") if entry.metadata else None
+            if isinstance(cohort_meta, str):
+                distinct_cohorts.add(cohort_meta)
+        cross_count = len(distinct_cohorts)
+    except Exception:  # noqa: BLE001 — severity computation must not break
+        logger.debug(
+            "engine.resources.severity_cross_cohort_lookup_failed",
+            cohort=cohort_axis.value,
+            exc_info=True,
+        )
+    # Layer 2: temporal breach count for THIS cohort.
+    breaches_5min = 0
+    breaches_1h = 0
+    try:
+        now = time.monotonic()
+        with governor._lock:  # noqa: SLF001 — internal coordination
+            history = governor._breach_history.get(cohort_axis)  # noqa: SLF001
+            if history is not None:
+                breaches_5min = sum(1 for ts in history if ts >= now - 300)
+                breaches_1h = sum(1 for ts in history if ts >= now - 3600)
+    except Exception:  # noqa: BLE001
+        logger.debug(
+            "engine.resources.severity_temporal_lookup_failed",
+            cohort=cohort_axis.value,
+            exc_info=True,
+        )
+    # Determine severity per ADR-D6 ordering.
+    if cross_count >= 3 or breaches_1h >= 3:
+        return "critical"
+    if cross_count >= 2 or breaches_5min >= 2:
+        return "error"
+    return "warning"
+
+
 def _record_to_composite_store(evaluation: CohortEvaluation) -> None:
     """Best-effort record into C4 :class:`EngineDegradedStore`.
 
@@ -1091,12 +1174,14 @@ def _record_to_composite_store(evaluation: CohortEvaluation) -> None:
             "budget": evaluation.budget,
             "note": evaluation.note,
         }
-        # Severity per ADR-D6: 1 cohort = warn. The composite endpoint
-        # escalates to error/critical when N axes co-occur.
+        # Mission H4 §4.6 ADR-D6 + v0.49.29 — severity escalation
+        # combining cross-cohort axis count + per-cohort temporal
+        # breach count. See ``_compute_engine_resources_severity``.
+        severity = _compute_engine_resources_severity(evaluation.axis)
         entry = DegradedEntry(
             axis="engine_resources",
             reason=reason,
-            severity="warning",
+            severity=severity,
             title_token=f"degraded.engine_resources.{reason_suffix}.title",
             body_token=f"degraded.engine_resources.{reason_suffix}.body",
             action_chips=_chips_for_reason(reason, metadata),
@@ -1151,4 +1236,6 @@ __all__ = [
     # Mission H4 §0 line 30 + v0.49.24 — spec-literal reason names.
     "_REASON_FOR_AXIS",
     "_REASON_HEAP_SNAPSHOT_TRIGGERED",
+    # Mission H4 §4.6 ADR-D6 + v0.49.29 — combined severity escalation.
+    "_compute_engine_resources_severity",
 ]

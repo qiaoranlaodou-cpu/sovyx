@@ -6,11 +6,17 @@ import asyncio
 
 import pytest
 
+from sovyx.observability._resource_cohort_governor import (
+    get_default_resource_cohort_governor,
+    reset_default_resource_cohort_governor,
+)
 from sovyx.observability._resource_registry import (
+    CohortAxis,
     get_default_resource_registry,
     reset_default_resource_registry,
 )
 from sovyx.observability._thread_dispatch import (
+    CohortBreakerEngagedError,
     _introspect_default_executor,
     dispatch_to_thread,
 )
@@ -19,8 +25,10 @@ from sovyx.observability._thread_dispatch import (
 @pytest.fixture(autouse=True)
 def _reset_singleton() -> None:
     reset_default_resource_registry()
+    reset_default_resource_cohort_governor()
     yield
     reset_default_resource_registry()
+    reset_default_resource_cohort_governor()
 
 
 # ── Functional behaviour (1:1 with asyncio.to_thread) ──
@@ -128,3 +136,74 @@ class TestDefaultExecutorIntrospection:
         assert (worker_count, queue_depth, max_workers) == (0, 0, 0)
         # Restore None so other tests aren't disturbed.
         loop._default_executor = None  # type: ignore[attr-defined]
+
+
+class TestF7CircuitBreakerEnforcement:
+    """Mission H4 §3 F7 + v0.49.29 — dispatch_to_thread consults cohort
+    breakers and refuses work when any is engaged.
+    """
+
+    @pytest.mark.asyncio()
+    async def test_dispatch_succeeds_when_no_breaker_engaged(self) -> None:
+        """Baseline: governor singleton has no engaged breakers → dispatch proceeds."""
+
+        def add(a: int, b: int) -> int:
+            return a + b
+
+        result = await dispatch_to_thread("test.add", add, 2, 3)
+        assert result == 5
+
+    @pytest.mark.asyncio()
+    async def test_dispatch_refused_when_thread_count_breaker_engaged(self) -> None:
+        """F7: 3 breaches engage breaker → dispatch raises CohortBreakerEngagedError."""
+        governor = get_default_resource_cohort_governor()
+        # Engage the THREAD_COUNT breaker (3 breaches within window).
+        for _ in range(3):
+            governor.record_breach(CohortAxis.THREAD_COUNT)
+        assert governor.is_breaker_engaged(CohortAxis.THREAD_COUNT) is True
+
+        def add(a: int, b: int) -> int:
+            return a + b
+
+        with pytest.raises(CohortBreakerEngagedError) as exc_info:
+            await dispatch_to_thread("test.add", add, 2, 3)
+        assert exc_info.value.axis == CohortAxis.THREAD_COUNT
+        assert exc_info.value.label == "test.add"
+        # Error message carries the ack hint.
+        assert "/api/engine/resources/cohort/ack" in str(exc_info.value)
+
+    @pytest.mark.asyncio()
+    async def test_dispatch_proceeds_after_ack_clears_breaker(self) -> None:
+        """F7: operator-acked breaker → subsequent dispatch proceeds."""
+        governor = get_default_resource_cohort_governor()
+        for _ in range(3):
+            governor.record_breach(CohortAxis.RSS_GROWTH)
+        assert governor.is_breaker_engaged(CohortAxis.RSS_GROWTH) is True
+        # Operator acks via clear_breaker.
+        governor.clear_breaker(CohortAxis.RSS_GROWTH)
+        assert governor.is_breaker_engaged(CohortAxis.RSS_GROWTH) is False
+
+        def double(x: int) -> int:
+            return x * 2
+
+        result = await dispatch_to_thread("test.double", double, 7)
+        assert result == 14
+
+    @pytest.mark.asyncio()
+    async def test_dispatch_refused_when_any_axis_breaker_engaged(self) -> None:
+        """F7: ANY engaged breaker (not just THREAD_COUNT) refuses dispatch.
+
+        Conservative interpretation — when the governor observes ANY
+        cohort under sustained distress (3+ breaches), additional
+        thread spawning pauses until the operator acks.
+        """
+        governor = get_default_resource_cohort_governor()
+        for _ in range(3):
+            governor.record_breach(CohortAxis.ONNX_SESSION)
+
+        def noop() -> int:
+            return 42
+
+        with pytest.raises(CohortBreakerEngagedError) as exc_info:
+            await dispatch_to_thread("test.noop", noop)
+        assert exc_info.value.axis == CohortAxis.ONNX_SESSION

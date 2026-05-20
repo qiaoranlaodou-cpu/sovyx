@@ -371,3 +371,161 @@ class TestAdrD8ChipMapping:
         # entry; the fallback exists so the banner does not crash).
         assert len(chips) == 1
         assert chips[0].target == "/engine/resources"
+
+
+class TestAdrD6SeverityEscalation:
+    """Mission H4 §4.6 ADR-D6 + v0.49.29 — combined severity escalation.
+
+    Verifies that ``_record_to_composite_store`` produces DegradedEntries
+    whose severity escalates per ADR-D6:
+
+    * Cross-cohort: 1 cohort = warn, 2 = error, 3+ = critical.
+    * Temporal: 1st = warn, 2nd within 5 min = error, 3rd within 1 h = critical.
+    * Combined: max of the two layers.
+    """
+
+    def test_single_cohort_first_breach_is_warning(self) -> None:
+        """Baseline: 1 cohort, 1st breach in window → severity="warning"."""
+        from sovyx.observability._resource_cohort_governor import (
+            CohortEvaluation,
+            _record_to_composite_store,
+        )
+
+        evaluation = CohortEvaluation(
+            axis=CohortAxis.RSS_GROWTH,
+            verdict=CohortVerdict.BUDGET_EXCEEDED,
+            observed=1024,
+            budget=512,
+        )
+        _record_to_composite_store(evaluation)
+        entries = get_default_degraded_store().snapshot()
+        assert len(entries) == 1
+        assert entries[0].severity == "warning"
+
+    def test_two_distinct_cohorts_escalates_to_error(self) -> None:
+        """Cross-cohort: 2 different cohort axes in engine_resources → "error"."""
+        from sovyx.observability._resource_cohort_governor import (
+            CohortEvaluation,
+            _record_to_composite_store,
+        )
+
+        # First cohort (RSS_GROWTH).
+        _record_to_composite_store(
+            CohortEvaluation(
+                axis=CohortAxis.RSS_GROWTH,
+                verdict=CohortVerdict.BUDGET_EXCEEDED,
+                observed=1024,
+                budget=512,
+            ),
+        )
+        # Second cohort (THREAD_COUNT) — co-occurrence → escalate.
+        _record_to_composite_store(
+            CohortEvaluation(
+                axis=CohortAxis.THREAD_COUNT,
+                verdict=CohortVerdict.BUDGET_EXCEEDED,
+                observed=64,
+                budget=32,
+            ),
+        )
+        entries = get_default_degraded_store().snapshot()
+        # Both entries in store; the LATEST one was computed with 2
+        # distinct cohorts → severity = error.
+        engine_entries = [e for e in entries if e.axis == "engine_resources"]
+        assert len(engine_entries) == 2
+        # The thread_count entry (recorded second) sees both cohorts
+        # in the store → severity = error per cross-cohort layer.
+        thread_entry = next(e for e in engine_entries if "thread_count" in e.reason)
+        assert thread_entry.severity == "error"
+
+    def test_three_distinct_cohorts_escalates_to_critical(self) -> None:
+        """Cross-cohort: 3 different cohort axes → "critical"."""
+        from sovyx.observability._resource_cohort_governor import (
+            CohortEvaluation,
+            _record_to_composite_store,
+        )
+
+        for axis in [
+            CohortAxis.RSS_GROWTH,
+            CohortAxis.THREAD_COUNT,
+            CohortAxis.LOCK_DICT_CARDINALITY,
+        ]:
+            _record_to_composite_store(
+                CohortEvaluation(
+                    axis=axis,
+                    verdict=CohortVerdict.BUDGET_EXCEEDED,
+                    observed=1024,
+                    budget=512,
+                ),
+            )
+        entries = get_default_degraded_store().snapshot()
+        engine_entries = [e for e in entries if e.axis == "engine_resources"]
+        # The 3rd entry (lock_dict) sees 3 distinct cohorts → critical.
+        lock_entry = next(e for e in engine_entries if "lock_dict" in e.reason)
+        assert lock_entry.severity == "critical"
+
+    def test_temporal_second_breach_within_5min_escalates_to_error(self) -> None:
+        """Temporal: same cohort, 2nd breach in <5 min → "error"."""
+        from sovyx.observability._resource_cohort_governor import (
+            _compute_engine_resources_severity,
+            get_default_resource_cohort_governor,
+        )
+
+        governor = get_default_resource_cohort_governor()
+        # Simulate one prior breach for RSS_GROWTH.
+        governor.record_breach(CohortAxis.RSS_GROWTH)
+        # Now record a second; severity should be "error".
+        governor.record_breach(CohortAxis.RSS_GROWTH)
+        severity = _compute_engine_resources_severity(CohortAxis.RSS_GROWTH)
+        assert severity == "error"
+
+    def test_temporal_third_breach_within_1h_escalates_to_critical(self) -> None:
+        """Temporal: same cohort, 3rd breach in <1 h → "critical"."""
+        from sovyx.observability._resource_cohort_governor import (
+            _compute_engine_resources_severity,
+            get_default_resource_cohort_governor,
+        )
+
+        governor = get_default_resource_cohort_governor()
+        for _ in range(3):
+            governor.record_breach(CohortAxis.RSS_GROWTH)
+        severity = _compute_engine_resources_severity(CohortAxis.RSS_GROWTH)
+        assert severity == "critical"
+
+    def test_severity_combined_takes_max(self) -> None:
+        """Cross=warning + temporal=error → final = "error" (max)."""
+        from sovyx.observability._resource_cohort_governor import (
+            _compute_engine_resources_severity,
+            get_default_resource_cohort_governor,
+        )
+
+        governor = get_default_resource_cohort_governor()
+        # Only 1 cohort recorded → cross=warning.
+        # 2 temporal breaches → temporal=error.
+        governor.record_breach(CohortAxis.RSS_GROWTH)
+        governor.record_breach(CohortAxis.RSS_GROWTH)
+        severity = _compute_engine_resources_severity(CohortAxis.RSS_GROWTH)
+        # Layer max → "error" (from temporal layer).
+        assert severity == "error"
+
+    def test_emit_axis_entries_records_breach_before_severity(self) -> None:
+        """Mission H4 v0.49.29 — emit_axis_entries reorders so the
+        breach is recorded BEFORE _record_to_composite_store. This way
+        the severity computation sees the current breach in the
+        temporal window.
+        """
+        governor = ResourceCohortGovernor()
+        # Force a BUDGET_EXCEEDED via repeated evaluate_snapshot calls.
+        governor.evaluate_snapshot({"process.rss_bytes": 100_000_000})
+        results = governor.evaluate_snapshot({"process.rss_bytes": 2_000_000_000})
+        # ALSO trip the THREAD_COUNT cohort via evaluate.
+        governor.evaluate_snapshot({"process.num_threads": 20})
+        thread_results = governor.evaluate_snapshot({"process.num_threads": 200})
+        emit_axis_entries(results + thread_results)
+        entries = get_default_degraded_store().snapshot()
+        engine_entries = [e for e in entries if e.axis == "engine_resources"]
+        # 2 cohorts breached → at least one entry should have severity
+        # "error" (cross-cohort layer).
+        severities = {e.severity for e in engine_entries}
+        assert "error" in severities, (
+            f"expected at least one error-severity entry; got {severities}"
+        )

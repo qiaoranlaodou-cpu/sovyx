@@ -45,7 +45,10 @@ import functools
 from concurrent.futures import ThreadPoolExecutor
 from typing import TYPE_CHECKING, ParamSpec, TypeVar
 
-from sovyx.observability._resource_registry import record_to_thread_dispatch
+from sovyx.observability._resource_registry import (
+    CohortAxis,
+    record_to_thread_dispatch,
+)
 from sovyx.observability.logging import get_logger
 
 if TYPE_CHECKING:
@@ -55,6 +58,68 @@ logger = get_logger(__name__)
 
 _P = ParamSpec("_P")
 _R = TypeVar("_R")
+
+
+class CohortBreakerEngagedError(RuntimeError):
+    """Mission H4 §3 F7 — dispatch refused because a circuit-breaker is engaged.
+
+    Raised by :func:`dispatch_to_thread` when ``ResourceCohortGovernor.is_breaker_engaged(axis)``
+    returns True for any :class:`CohortAxis`. The breaker engages after 3
+    BUDGET_EXCEEDED events for the same cohort within the rolling
+    ``cohort_breaker_window_s`` window (default 3600 s).
+
+    Operators clear the breaker via
+    ``POST /api/engine/resources/cohort/ack`` with the offending cohort
+    in the request body — see :class:`CohortAckRequest` in
+    ``dashboard/routes/engine_resources.py``.
+
+    The error carries the engaged axis + the dispatch label so the
+    structured log line at the catch site identifies BOTH the cohort
+    that tripped the breaker AND the work that was refused.
+    """
+
+    def __init__(self, *, axis: CohortAxis, label: str) -> None:
+        self.axis = axis
+        self.label = label
+        super().__init__(
+            f"dispatch_to_thread(label={label!r}) refused: "
+            f"{axis.value} circuit-breaker engaged. Ack via "
+            f'POST /api/engine/resources/cohort/ack {{"cohort": "{axis.value}"}}'
+        )
+
+
+def _check_cohort_breakers(label: str) -> None:
+    """Mission H4 §3 F7 — best-effort circuit-breaker consultation.
+
+    Reads the lazy-singleton ResourceCohortGovernor and raises
+    :class:`CohortBreakerEngagedError` if ANY CohortAxis breaker is
+    engaged. The check is conservative — when ANY breaker engages
+    (3+ breaches in 1 h), the daemon is in observed distress and
+    additional thread spawning should pause until the operator
+    explicitly acks.
+
+    Observability isolation: governor unavailability (early boot,
+    feature flag OFF) does NOT block dispatch — only an explicit
+    engaged-breaker verdict raises. All other failures absorb at
+    debug level.
+    """
+    try:
+        from sovyx.observability._resource_cohort_governor import (  # noqa: PLC0415 — lazy
+            get_default_resource_cohort_governor,
+        )
+
+        governor = get_default_resource_cohort_governor()
+        for axis in CohortAxis:
+            if governor.is_breaker_engaged(axis):
+                raise CohortBreakerEngagedError(axis=axis, label=label)
+    except CohortBreakerEngagedError:
+        raise
+    except Exception:  # noqa: BLE001 — observability isolation
+        logger.debug(
+            "h4.thread_dispatch.breaker_check_failed",
+            label=label,
+            exc_info=True,
+        )
 
 
 def _introspect_default_executor(
@@ -130,6 +195,13 @@ async def dispatch_to_thread(
         :func:`asyncio.to_thread` does. Operators who set a custom
         default executor at bootstrap time keep that override intact.
     """
+    # Mission H4 §3 F7 — circuit-breaker enforcement. Refuses the
+    # dispatch when any cohort breaker is engaged (3 BUDGET_EXCEEDED
+    # in the rolling window) until the operator acks. Best-effort
+    # governor lookup — failures (early boot, feature flag OFF) do
+    # not block dispatch; only explicit engagement raises.
+    _check_cohort_breakers(label)
+
     loop = asyncio.get_running_loop()
     worker_count, queue_depth, max_workers = _introspect_default_executor(loop)
     record_to_thread_dispatch(
@@ -142,4 +214,7 @@ async def dispatch_to_thread(
     return await loop.run_in_executor(None, bound)
 
 
-__all__ = ["dispatch_to_thread"]
+__all__ = [
+    "CohortBreakerEngagedError",
+    "dispatch_to_thread",
+]
