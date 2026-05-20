@@ -465,6 +465,108 @@ def register_cli_handlers(
         )
         return {"mind_id": mind_id, "unregistered": unregistered}
 
+    async def _engine_resources_snapshot() -> dict[str, Any]:
+        """Mission H4 §0 item 14 + §T3.2 — live resource-cohort snapshot.
+
+        Returns the same payload ``sovyx doctor resources`` renders in
+        the CLI: in-process :class:`ResourceRegistry` fields + cohort-
+        governor breaker state + last-N heap/thread snapshot manifest.
+        Read-only; safe to call at any cadence.
+        """
+        from sovyx.observability._resource_cohort_governor import (  # noqa: PLC0415
+            _diagnostics_dir,
+            get_default_resource_cohort_governor,
+        )
+        from sovyx.observability._resource_registry import (  # noqa: PLC0415
+            CohortAxis,
+            get_default_resource_registry,
+        )
+
+        fields = get_default_resource_registry().snapshot_fields()
+        governor = get_default_resource_cohort_governor()
+        breaker_state: dict[str, bool] = {}
+        for axis in CohortAxis:
+            try:
+                breaker_state[str(axis)] = governor.is_breaker_engaged(axis)
+            except Exception:  # noqa: BLE001 — governor MUST never break the RPC
+                breaker_state[str(axis)] = False
+
+        heap_manifest: list[dict[str, Any]] = []
+        thread_manifest: list[dict[str, Any]] = []
+        try:
+            diag_dir = _diagnostics_dir()
+            if diag_dir.exists():
+                for path in sorted(
+                    diag_dir.glob("heap-snapshot-*.json"),
+                    key=lambda p: p.stat().st_mtime,
+                    reverse=True,
+                )[:10]:
+                    stat = path.stat()
+                    heap_manifest.append(
+                        {
+                            "name": path.name,
+                            "size_bytes": stat.st_size,
+                            "mtime": stat.st_mtime,
+                        },
+                    )
+                for path in sorted(
+                    diag_dir.glob("thread-snapshot-*.txt"),
+                    key=lambda p: p.stat().st_mtime,
+                    reverse=True,
+                )[:10]:
+                    stat = path.stat()
+                    thread_manifest.append(
+                        {
+                            "name": path.name,
+                            "size_bytes": stat.st_size,
+                            "mtime": stat.st_mtime,
+                        },
+                    )
+        except OSError:
+            pass
+
+        return {
+            "fields": dict(fields),
+            "breaker_state": breaker_state,
+            "heap_snapshot_manifest": heap_manifest,
+            "thread_snapshot_manifest": thread_manifest,
+        }
+
+    async def _engine_resources_tracemalloc_snapshot() -> dict[str, Any]:
+        """Mission H4 §T3.2 — operator-on-demand tracemalloc heap snapshot.
+
+        Triggers the cohort-governor's ``request_heap_snapshot`` path
+        with ``cohort="cli_on_demand"``. Honors the existing
+        ``observability.features.tracemalloc`` opt-in: returns
+        ``{"skipped": True, "reason": "tracemalloc_not_enabled"}`` when
+        tracemalloc is OFF rather than raising — the CLI surfaces the
+        skip with an actionable hint pointing at the feature flag.
+        """
+        from sovyx.observability._resource_cohort_governor import (  # noqa: PLC0415
+            get_default_resource_cohort_governor,
+        )
+
+        governor = get_default_resource_cohort_governor()
+        path = governor.request_heap_snapshot(
+            cohort="cli_on_demand",
+            extra_metadata={"source": "cli_doctor_resources"},
+        )
+        if path is None:
+            return {
+                "skipped": True,
+                "reason": "tracemalloc_not_enabled_or_persist_failed",
+                "hint": (
+                    "Set SOVYX_OBSERVABILITY__FEATURES__TRACEMALLOC=true "
+                    "and restart the daemon to enable allocator-level "
+                    "heap snapshots. (Adds ~25-30% memory overhead.)"
+                ),
+            }
+        return {
+            "skipped": False,
+            "path": str(path),
+            "name": path.name,
+        }
+
     rpc.register_method("chat", _chat)
     rpc.register_method("mind.list", _mind_list)
     rpc.register_method("mind.forget", _mind_forget)
@@ -472,4 +574,9 @@ def register_cli_handlers(
     rpc.register_method("config.get", _config_get)
     rpc.register_method("wake_word.register_mind", _wake_word_register_mind)
     rpc.register_method("wake_word.unregister_mind", _wake_word_unregister_mind)
-    logger.debug("cli_rpc_handlers_registered", count=7)
+    rpc.register_method("engine.resources.snapshot", _engine_resources_snapshot)
+    rpc.register_method(
+        "engine.resources.tracemalloc_snapshot",
+        _engine_resources_tracemalloc_snapshot,
+    )
+    logger.debug("cli_rpc_handlers_registered", count=9)

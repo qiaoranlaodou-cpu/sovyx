@@ -2741,73 +2741,114 @@ def _render_platform_diagnostics_table(payload: dict[str, object]) -> None:
                         )
 
 
-@doctor_app.command("resources")
-def doctor_resources(
-    output_json: bool = typer.Option(
-        False,
-        "--json",
-        help="Emit the resource snapshot as a JSON object on stdout.",
-    ),
-    cohort: str | None = typer.Option(
-        None,
-        "--cohort",
-        help="Filter the table to one cohort section "
-        "(process / asyncio / to_thread / lock_dict / onnx / gc / "
-        "tracemalloc / exception_cohort).",
-    ),
-    explain_field: str | None = typer.Option(
-        None,
-        "--explain",
-        help="Render the operator-actionable hint for one snapshot "
-        "field (e.g. `--explain to_thread.pool_size`). Pairs with "
-        "`engine.resources.cohort_budget_exceeded` WARN diagnosis to "
-        "drive remediation without grepping source.",
-    ),
-) -> None:
-    """Mission H4 §T3.2 — render the engine resource-cohort snapshot.
+def _collect_resource_payload_local() -> dict[str, Any]:
+    """In-process fallback for ``doctor resources`` — same shape as the RPC.
 
-    Operator-facing surface for the Phase 1.A + 1.B in-process
-    :class:`ResourceRegistry`. Renders the same fields that fire on
-    every ``self.health.snapshot`` log record, but as a one-shot
-    structured table — operators no longer need to grep raw JSON Lines
-    to inspect ONNX session counts, LRULockDict cardinality, or
-    asyncio.to_thread dispatch totals.
-
-    Use ``--cohort to_thread`` to scope to one section; use ``--json``
-    for piped consumption (Grafana exporters, CI checks).
-
-    Returns 0 unconditionally — diagnostic-only; the Phase 1.D
-    ResourceCohortGovernor will introduce non-zero exit semantics
-    when a cohort breaches budget.
+    Used when no daemon is reachable: returns the CLI process's own
+    (empty) registry/governor state plus the on-disk heap/thread
+    snapshot manifest (filesystem-accessible regardless of daemon).
+    The shape mirrors ``engine.resources.snapshot`` RPC so the
+    rendering code is shared.
     """
+    from sovyx.observability._resource_cohort_governor import (
+        _diagnostics_dir,
+        get_default_resource_cohort_governor,
+    )
     from sovyx.observability._resource_registry import (
-        _HEALTH_SNAPSHOT_FIELDS,
+        CohortAxis,
         get_default_resource_registry,
     )
-    from sovyx.observability._resource_remediation import remediation_for
-
-    # --explain takes precedence: render just the hint + exit.
-    if explain_field is not None:
-        hint = remediation_for(explain_field)
-        if output_json:
-            print(json.dumps({"field": explain_field, "hint": hint}, indent=2))
-        else:
-            console = Console()
-            spec = _HEALTH_SNAPSHOT_FIELDS.get(explain_field)
-            section = spec.section if spec else "unknown"
-            console.print(f"[bold]{explain_field}[/bold]  [dim]({section})[/dim]")
-            console.print(hint)
-        return
 
     fields = get_default_resource_registry().snapshot_fields()
+    governor = get_default_resource_cohort_governor()
+    breaker_state: dict[str, bool] = {}
+    for axis in CohortAxis:
+        try:
+            breaker_state[str(axis)] = governor.is_breaker_engaged(axis)
+        except Exception:  # noqa: BLE001 — render path MUST never crash
+            breaker_state[str(axis)] = False
+    heap_manifest: list[dict[str, Any]] = []
+    thread_manifest: list[dict[str, Any]] = []
+    try:
+        diag_dir = _diagnostics_dir()
+        if diag_dir.exists():
+            for path in sorted(
+                diag_dir.glob("heap-snapshot-*.json"),
+                key=lambda p: p.stat().st_mtime,
+                reverse=True,
+            )[:10]:
+                stat = path.stat()
+                heap_manifest.append(
+                    {
+                        "name": path.name,
+                        "size_bytes": stat.st_size,
+                        "mtime": stat.st_mtime,
+                    },
+                )
+            for path in sorted(
+                diag_dir.glob("thread-snapshot-*.txt"),
+                key=lambda p: p.stat().st_mtime,
+                reverse=True,
+            )[:10]:
+                stat = path.stat()
+                thread_manifest.append(
+                    {
+                        "name": path.name,
+                        "size_bytes": stat.st_size,
+                        "mtime": stat.st_mtime,
+                    },
+                )
+    except OSError:
+        pass
+    return {
+        "fields": dict(fields),
+        "breaker_state": breaker_state,
+        "heap_snapshot_manifest": heap_manifest,
+        "thread_snapshot_manifest": thread_manifest,
+    }
 
-    if output_json:
-        # Stable shape for piped consumers: dotted-key dict mirroring
-        # the structured-log envelope.
-        print(json.dumps(fields, indent=2, default=str))
-        return
 
-    console = Console()
+def _fetch_resource_payload() -> tuple[dict[str, Any], str]:
+    """Resolve the resource payload via daemon RPC when available.
+
+    Returns ``(payload, source)`` where ``source`` is ``"daemon"`` if
+    the live daemon answered the ``engine.resources.snapshot`` call,
+    else ``"local"`` (fallback to the CLI process's in-process
+    registry). Operators reading the JSON output can branch on
+    ``source`` to know whether they're seeing live state.
+    """
+    client = DaemonClient()
+    if client.is_daemon_running():
+        try:
+            result = asyncio.run(client.call("engine.resources.snapshot"))
+            if isinstance(result, dict):
+                return result, "daemon"
+        except Exception:  # noqa: BLE001 — degrade to local on any RPC failure
+            pass
+    return _collect_resource_payload_local(), "local"
+
+
+def _render_resource_payload(
+    payload: dict[str, Any],
+    *,
+    cohort: str | None,
+    source: str,
+    console: Console,
+) -> None:
+    """Render the resource payload as a Rich table per spec §0 item 14."""
+    from sovyx.observability._resource_registry import _HEALTH_SNAPSHOT_FIELDS
+
+    fields = payload.get("fields") or {}
+    breaker_state = payload.get("breaker_state") or {}
+    heap_manifest = payload.get("heap_snapshot_manifest") or []
+    thread_manifest = payload.get("thread_snapshot_manifest") or []
+
+    if source == "local":
+        console.print(
+            "[yellow]Daemon not reachable — rendering CLI in-process "
+            "snapshot (empty for non-daemon processes).[/yellow]",
+        )
+
     sections: dict[str, list[tuple[str, object]]] = {}
     for key, value in fields.items():
         spec = _HEALTH_SNAPSHOT_FIELDS.get(key)
@@ -2834,6 +2875,210 @@ def doctor_resources(
         for key, value in sorted(entries):
             table.add_row(key, str(value))
         console.print(table)
+
+    # Cohort-governor breaker state — spec §0 item 14.
+    if breaker_state and cohort is None:
+        engaged_table = Table(
+            title="Cohort circuit-breaker state",
+            show_lines=False,
+            show_header=True,
+        )
+        engaged_table.add_column("axis", min_width=30)
+        engaged_table.add_column("breaker_engaged")
+        for axis in sorted(breaker_state):
+            engaged = breaker_state[axis]
+            marker = "[red]ENGAGED[/red]" if engaged else "[green]clear[/green]"
+            engaged_table.add_row(axis, marker)
+        console.print(engaged_table)
+
+    # Heap / thread snapshot manifest — spec §0 item 14.
+    if cohort is None:
+        manifest_table = Table(
+            title="Diagnostic snapshots (~/.sovyx/diagnostics/)",
+            show_lines=False,
+            show_header=True,
+        )
+        manifest_table.add_column("file", min_width=40)
+        manifest_table.add_column("size_kb")
+        if not heap_manifest and not thread_manifest:
+            manifest_table.add_row("[dim](no snapshot files yet)[/dim]", "")
+        else:
+            for entry in heap_manifest:
+                size_kb = int(entry.get("size_bytes", 0)) // 1024
+                manifest_table.add_row(str(entry.get("name", "")), str(size_kb))
+            for entry in thread_manifest:
+                size_kb = int(entry.get("size_bytes", 0)) // 1024
+                manifest_table.add_row(str(entry.get("name", "")), str(size_kb))
+        console.print(manifest_table)
+
+
+@doctor_app.command("resources")
+def doctor_resources(
+    output_json: bool = typer.Option(
+        False,
+        "--json",
+        help="Emit the resource snapshot as a JSON object on stdout.",
+    ),
+    cohort: str | None = typer.Option(
+        None,
+        "--cohort",
+        help="Filter the table to one cohort section "
+        "(process / asyncio / to_thread / lock_dict / onnx / gc / "
+        "tracemalloc / exception_cohort).",
+    ),
+    explain_field: str | None = typer.Option(
+        None,
+        "--explain",
+        help="Render the operator-actionable hint for one snapshot "
+        "field (e.g. `--explain to_thread.pool_size`). Pairs with "
+        "`engine.resources.cohort_budget_exceeded` WARN diagnosis to "
+        "drive remediation without grepping source.",
+    ),
+    watch: bool = typer.Option(
+        False,
+        "--watch",
+        help="Refresh the snapshot every 5 seconds until Ctrl-C. "
+        "Useful with V-H4-7 operator validation: confirms the table "
+        "updates as the daemon emits new self.health.snapshot lines.",
+    ),
+    tracemalloc_snapshot: bool = typer.Option(
+        False,
+        "--tracemalloc-snapshot",
+        help="RPC-trigger a tracemalloc heap snapshot on the running "
+        "daemon (cohort=cli_on_demand). Requires "
+        "SOVYX_OBSERVABILITY__FEATURES__TRACEMALLOC=true on the daemon "
+        "side; otherwise the call returns a skipped status with a hint.",
+    ),
+) -> None:
+    """Mission H4 §T3.2 + §0 item 14 — render the engine resource-cohort snapshot.
+
+    Operator-facing surface for the Phase 1.A + 1.B in-process
+    :class:`ResourceRegistry` AND the Phase 1.D cohort-governor state
+    + heap/thread snapshot manifest. The CLI prefers a daemon RPC
+    (``engine.resources.snapshot``) when reachable so operators see
+    LIVE daemon state; degrades to the CLI process's in-process
+    registry when no daemon is running (mostly-empty fields — clearly
+    flagged in the output).
+
+    Flags:
+    * ``--json`` — emit the full payload as JSON (no rendering).
+    * ``--cohort <name>`` — scope the table to a single section.
+    * ``--explain <field>`` — render only the per-field operator hint.
+    * ``--watch`` — loop the render every 5 s (Ctrl-C exits clean).
+    * ``--tracemalloc-snapshot`` — trigger an on-demand heap snapshot
+      on the running daemon (requires tracemalloc opt-in flag set).
+
+    Returns 0 unconditionally — diagnostic-only; the Phase 1.D
+    ResourceCohortGovernor surfaces budget-exceeded conditions via the
+    composite degraded banner, not the doctor exit code.
+    """
+    from sovyx.observability._resource_registry import (
+        _HEALTH_SNAPSHOT_FIELDS,
+    )
+    from sovyx.observability._resource_remediation import remediation_for
+
+    console = Console()
+
+    # --tracemalloc-snapshot takes precedence: RPC + render + exit.
+    if tracemalloc_snapshot:
+        client = DaemonClient()
+        if not client.is_daemon_running():
+            msg = (
+                "Daemon not reachable; cannot trigger tracemalloc "
+                "snapshot. Start the daemon (`sovyx start`) first."
+            )
+            if output_json:
+                print(
+                    json.dumps(
+                        {
+                            "skipped": True,
+                            "reason": "daemon_not_running",
+                            "hint": msg,
+                        },
+                        indent=2,
+                    ),
+                )
+            else:
+                console.print(f"[yellow]{msg}[/yellow]")
+            return
+        try:
+            result = asyncio.run(
+                client.call("engine.resources.tracemalloc_snapshot"),
+            )
+        except Exception as exc:  # noqa: BLE001 — CLI boundary; pragma: no cover
+            if output_json:
+                print(
+                    json.dumps(
+                        {
+                            "skipped": True,
+                            "reason": "rpc_failed",
+                            "error": str(exc),
+                        },
+                        indent=2,
+                    ),
+                )
+            else:
+                console.print(f"[red]RPC failed:[/red] {exc}")
+            return
+        if output_json:
+            print(json.dumps(result, indent=2, default=str))
+            return
+        if isinstance(result, dict) and result.get("skipped"):
+            console.print(
+                f"[yellow]Heap snapshot skipped:[/yellow] {result.get('reason', 'unknown')}",
+            )
+            hint = result.get("hint")
+            if hint:
+                console.print(str(hint))
+        else:
+            name = result.get("name") if isinstance(result, dict) else None
+            path = result.get("path") if isinstance(result, dict) else None
+            console.print(
+                f"[green]Heap snapshot written:[/green] {name or path or '(unknown)'}",
+            )
+        return
+
+    # --explain takes precedence over snapshot rendering.
+    if explain_field is not None:
+        hint = remediation_for(explain_field)
+        if output_json:
+            print(json.dumps({"field": explain_field, "hint": hint}, indent=2))
+        else:
+            spec = _HEALTH_SNAPSHOT_FIELDS.get(explain_field)
+            section = spec.section if spec else "unknown"
+            console.print(f"[bold]{explain_field}[/bold]  [dim]({section})[/dim]")
+            console.print(hint)
+        return
+
+    if watch:
+        # 5-second polling loop with clean Ctrl-C handling.
+        try:
+            while True:
+                payload, source = _fetch_resource_payload()
+                if output_json:
+                    print(json.dumps({"source": source, **payload}, indent=2, default=str))
+                else:
+                    console.clear()
+                    console.print(
+                        f"[dim]sovyx doctor resources --watch  (source: {source})[/dim]",
+                    )
+                    _render_resource_payload(
+                        payload,
+                        cohort=cohort,
+                        source=source,
+                        console=console,
+                    )
+                time.sleep(5.0)
+        except KeyboardInterrupt:
+            if not output_json:
+                console.print("[dim]Watch interrupted.[/dim]")
+        return
+
+    payload, source = _fetch_resource_payload()
+    if output_json:
+        print(json.dumps({"source": source, **payload}, indent=2, default=str))
+        return
+    _render_resource_payload(payload, cohort=cohort, source=source, console=console)
 
 
 __all__ = ["doctor_app"]
