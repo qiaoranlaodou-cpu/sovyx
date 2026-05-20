@@ -71,11 +71,20 @@ class ResourceCohortMetrics(BaseModel):
 
     model_config = ConfigDict(extra="allow", populate_by_name=True)
 
+    # asyncio (H4 v0.49.31 extension fields land here via extra="allow";
+    # MISSION-A.1.P3 F-005 types ``asyncio.all_task_names`` as first-class)
+    # MISSION-A.1.P3 F-005 (anti-pattern #50, ADR-D15):
+    # ``asyncio.all_task_names`` replaces the pre-fix
+    # ``current_running_task_name`` observation-paradox field. The legacy
+    # key remains in extras during the LENIENT cycle (sunset v0.55.0).
+    asyncio_all_task_names: list[str] = Field(default_factory=list, alias="asyncio.all_task_names")
+
     # to_thread
     to_thread_pool_size: int = Field(0, alias="to_thread.pool_size")
-    # Mission H4 §3 F2 + §22 v0.49.32 — canonical alias of pool_size per
-    # spec literal naming (Python ThreadPoolExecutor exposes only
-    # ``len(_threads)`` so both fields surface the same source counter).
+    # MISSION-A.1.P3 F-006 (anti-pattern #48, ADR-D15):
+    # ``to_thread.active_workers`` is a LENIENT shim aliased to pool_size
+    # (sunset v0.55.0). The pre-fix pydantic field stays typed so the
+    # boundary doesn't degrade ``extra="allow"`` during the LENIENT cycle.
     to_thread_active_workers: int = Field(0, alias="to_thread.active_workers")
     to_thread_queue_depth: int = Field(0, alias="to_thread.queue_depth")
     to_thread_max_workers: int = Field(0, alias="to_thread.max_workers")

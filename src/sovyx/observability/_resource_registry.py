@@ -270,11 +270,22 @@ _HEALTH_SNAPSHOT_FIELDS: Final[Mapping[str, FieldSpec]] = {
     ),
     # ── H4 new fields: asyncio block extension (Mission H4 §0 item 4 + §T2.1 + §3 F2). ──
     # ``_capture_asyncio_metrics`` extends from 3 → 5 fields per spec.
-    "asyncio.current_running_task_name": FieldSpec(
-        canonical_key="asyncio.current_running_task_name",
-        type_constraint=(str, type(None)),
+    #
+    # MISSION-A.1.P3 F-005 (anti-pattern #50, ADR-D15):
+    # pre-fix ``asyncio.current_running_task_name`` always returned the
+    # SNAPSHOTTER task name (observation paradox — from inside the
+    # snapshotter coroutine, ``asyncio.current_task()`` IS the
+    # snapshotter). The field's promised value ("correlate snapshot to
+    # the running coroutine") was never delivered. ``asyncio.all_task_names``
+    # replaces it with a list of every not-done task's name (capped at 64).
+    # The legacy key remains LENIENT-emitted by the snapshotter (alongside
+    # the new field) for one minor cycle; sunset v0.55.0.
+    "asyncio.all_task_names": FieldSpec(
+        canonical_key="asyncio.all_task_names",
+        type_constraint=list,
         producer_module="sovyx.observability.resources",
-        operator_hint_key="asyncio_current_running_task_name",
+        legacy_alias="asyncio.current_running_task_name",
+        operator_hint_key="asyncio_all_task_names",
         section="asyncio",
     ),
     "asyncio.default_executor_state": FieldSpec(
@@ -285,25 +296,23 @@ _HEALTH_SNAPSHOT_FIELDS: Final[Mapping[str, FieldSpec]] = {
         section="asyncio",
     ),
     # ── H4 new fields: to_thread block ──
+    #
+    # MISSION-A.1.P3 F-006 (anti-pattern #48, ADR-D15 supersedes ADR-D4):
+    # pre-fix ``to_thread.active_workers`` was a literal alias of
+    # ``pool_size`` (both read ``last_worker_count`` recorded at last
+    # dispatch). The Mission H4 §3 F2 spec listed ``active_workers`` as
+    # canonical; Python's ThreadPoolExecutor has no per-worker busy/idle
+    # metric, so the field was emitted as a duplicate to "pass the
+    # falsifiability gate literally". A regression test even enforced the
+    # alias as a contract (deleted by this commit). The field is now a
+    # LENIENT shim aliased to ``pool_size``; sunset v0.55.0.
     "to_thread.pool_size": FieldSpec(
         canonical_key="to_thread.pool_size",
         type_constraint=int,
         producer_module="sovyx.observability.resources",
         consumer_modules=("sovyx.observability._resource_cohort_governor",),
+        legacy_alias="to_thread.active_workers",
         operator_hint_key="to_thread_pool_size",
-        section="to_thread",
-    ),
-    "to_thread.active_workers": FieldSpec(
-        # Mission H4 §3 F2 lists ``to_thread.active_workers`` as a canonical
-        # field. Python's ThreadPoolExecutor exposes ``len(_threads)`` (alive
-        # worker count) — there is no per-thread busy/idle metric. Per
-        # ADR-D4 the wrapper records ``worker_count`` once per dispatch;
-        # this field surfaces the SAME value as ``pool_size`` under the
-        # F2 canonical name so the falsifiability gate passes literally.
-        canonical_key="to_thread.active_workers",
-        type_constraint=int,
-        producer_module="sovyx.observability.resources",
-        operator_hint_key="to_thread_active_workers",
         section="to_thread",
     ),
     "to_thread.max_workers": FieldSpec(
@@ -778,9 +787,10 @@ class ResourceRegistry:
 
         return {
             "to_thread.pool_size": to_thread_state[0],
-            # Mission H4 §3 F2 canonical name: surfaces the same value
-            # (live worker thread count). See _HEALTH_SNAPSHOT_FIELDS entry.
-            "to_thread.active_workers": to_thread_state[0],
+            # MISSION-A.1.P3 F-006 (ADR-D15): ``to_thread.active_workers``
+            # is no longer emitted by snapshot_fields(); the snapshotter
+            # LENIENT-emits it via the legacy-alias path for one minor
+            # cycle (sunset v0.55.0).
             "to_thread.queue_depth": to_thread_state[1],
             "to_thread.max_workers": to_thread_state[2],
             "to_thread.dispatch_count_total": to_thread_state[3],

@@ -241,7 +241,12 @@ def _capture_asyncio_metrics() -> dict[str, object]:
             "asyncio.task_count": 0,
             "asyncio.running_count": 0,
             "asyncio.pending_count": 0,
+            # MISSION-A.1.P3 F-005 (anti-pattern #50): legacy LENIENT shim.
+            # The pre-fix field always returned the snapshotter task name
+            # (observation paradox); ``asyncio.all_task_names`` is the
+            # operator-correct replacement. Sunset v0.55.0.
             "asyncio.current_running_task_name": None,
+            "asyncio.all_task_names": [],
             "asyncio.default_executor_state": {
                 "pool_size": 0,
                 "queue_depth": 0,
@@ -251,12 +256,20 @@ def _capture_asyncio_metrics() -> dict[str, object]:
     running = sum(1 for t in tasks if not t.done())
     pending = sum(1 for t in tasks if not t.done() and not _is_currently_running(t))
 
+    # MISSION-A.1.P3 F-005: ``current_running_task_name`` is the LENIENT
+    # observation-paradox shim — from inside the snapshotter coroutine,
+    # ``asyncio.current_task()`` returns the SNAPSHOTTER task itself, so
+    # the field is always the snapshotter's own name. Sunset v0.55.0.
+    # ``all_task_names`` (NEW) surfaces every not-done task's name (cap N=64
+    # to bound payload size; loop-instance names take precedence over the
+    # snapshotter's). Operators inspecting concurrency see real workload.
     current_task_name: str | None
     try:
         current = asyncio.current_task()
         current_task_name = current.get_name() if current is not None else None
     except RuntimeError:
         current_task_name = None
+    all_task_names: list[str] = [t.get_name() for t in tasks if not t.done()][:64]
 
     # Default executor state — same shape as the dispatch wrapper records.
     # We re-introspect here (not via ResourceRegistry) because the snapshot
@@ -284,7 +297,9 @@ def _capture_asyncio_metrics() -> dict[str, object]:
         "asyncio.task_count": len(tasks),
         "asyncio.running_count": running,
         "asyncio.pending_count": pending,
+        # a1-allowlist: legacy shim, sunset v0.55.0
         "asyncio.current_running_task_name": current_task_name,
+        "asyncio.all_task_names": all_task_names,
         "asyncio.default_executor_state": executor_state,
     }
 
@@ -458,6 +473,17 @@ class ResourceSnapshotter:
         if isinstance(cumulative_distinct, int):
             # a1-allowlist: legacy alias, sunset v0.55.0
             registry_with_legacy["exception_cohort.distinct_group_id_count"] = cumulative_distinct
+
+        # ADR-D15 LENIENT dual-emit (MISSION-A.1.P3 F-006, anti-pattern #48):
+        # ``to_thread.active_workers`` was a literal alias of ``pool_size``
+        # ("passes the falsifiability gate literally"). Snapshot_fields()
+        # no longer emits the key; emit it here from pool_size for one
+        # minor cycle (sunset v0.55.0). Operator dashboards keyed on
+        # ``active_workers`` can migrate to ``pool_size``.
+        pool_size_value = registry_with_legacy.get("to_thread.pool_size")
+        if isinstance(pool_size_value, int):
+            # a1-allowlist: legacy alias, sunset v0.55.0
+            registry_with_legacy["to_thread.active_workers"] = pool_size_value
 
         payload: dict[str, object] = {
             "self.health.snapshot_final": final,

@@ -95,8 +95,29 @@ class TestHealthSnapshotFieldsSSoT:
             "exception_cohort.window_retained_bytes",
             "exception_cohort.window_distinct_group_id_count",
             "exception_cohort.last_observation_monotonic",
+            # MISSION-A.1.P3 (F-005, ADR-D15, anti-pattern #50):
+            # ``asyncio.all_task_names`` replaces the observation-paradox
+            # field ``asyncio.current_running_task_name`` (always returned
+            # the snapshotter task name).
+            "asyncio.all_task_names",
         }
         assert expected_h4.issubset(_HEALTH_SNAPSHOT_FIELDS.keys())
+        # MISSION-A.1.P3 (F-006, ADR-D15, anti-pattern #48):
+        # ``to_thread.active_workers`` was a literal alias of pool_size
+        # ("passes the falsifiability gate literally"). Removed from
+        # canonical SSoT; declared as ``legacy_alias=`` on
+        # ``to_thread.pool_size``. LENIENT-emitted by the snapshotter
+        # only; sunset v0.55.0.
+        assert "to_thread.active_workers" not in _HEALTH_SNAPSHOT_FIELDS
+        assert (
+            _HEALTH_SNAPSHOT_FIELDS["to_thread.pool_size"].legacy_alias
+            == "to_thread.active_workers"
+        )
+        assert "asyncio.current_running_task_name" not in _HEALTH_SNAPSHOT_FIELDS
+        assert (
+            _HEALTH_SNAPSHOT_FIELDS["asyncio.all_task_names"].legacy_alias
+            == "asyncio.current_running_task_name"
+        )
 
     def test_anomaly_consumer_includes_process_rss_bytes(self) -> None:
         spec = _HEALTH_SNAPSHOT_FIELDS["process.rss_bytes"]

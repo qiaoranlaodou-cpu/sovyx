@@ -130,14 +130,18 @@ FIELD_REMEDIATIONS: Final[Mapping[str, str]] = {
         "Most tasks live here (awaiting I/O); sustained growth without "
         "matching completion is a leak."
     ),
-    "asyncio.current_running_task_name": (
-        "Name of `asyncio.current_task()` at snapshot time (or None "
-        "outside a running loop). Useful for correlating snapshot ticks "
-        "to specific coroutines during forensic replay — when a cohort "
-        "fires BUDGET_EXCEEDED on tick T, the current task name surfaces "
-        "which subsystem was active. Anonymous tasks default to "
-        "`Task-N` (asyncio's auto-name); production code SHOULD pass "
-        "`name=...` to `loop.create_task(...)` for forensic clarity."
+    "asyncio.all_task_names": (
+        "List of names of every not-done asyncio task at snapshot time, "
+        "capped at 64. Replaces the pre-MISSION-A.1 "
+        "``asyncio.current_running_task_name`` field which always "
+        "returned the SNAPSHOTTER task name (observation paradox — from "
+        "inside the snapshotter coroutine, ``asyncio.current_task()`` "
+        "IS the snapshotter). Operators inspecting concurrency see the "
+        "actual workload; anonymous tasks default to ``Task-N`` "
+        "(asyncio's auto-name) — production code SHOULD pass "
+        "``name=...`` to ``loop.create_task(...)`` for forensic clarity. "
+        "Anti-pattern #50 + ADR-D15. Sunset for the legacy "
+        "``current_running_task_name`` shim: v0.55.0."
     ),
     "asyncio.default_executor_state": (
         "Dict snapshot of the loop's default ThreadPoolExecutor: "
@@ -156,13 +160,6 @@ FIELD_REMEDIATIONS: Final[Mapping[str, str]] = {
         "`to_thread.max_workers`; high values during failover suggest "
         "ONNX inference contention. Inspect "
         "`to_thread.dispatch_count_per_label` for the noisy label."
-    ),
-    "to_thread.active_workers": (
-        "Alias of `to_thread.pool_size` per Mission H4 §3 F2 canonical "
-        "field name (Python's ThreadPoolExecutor exposes only "
-        "`len(_threads)` — total alive workers — without a separate "
-        "busy/idle metric). Treat this and `pool_size` as the same "
-        "value; remediation guidance is the same."
     ),
     "to_thread.queue_depth": (
         "Pending submissions waiting for a worker thread (internal "

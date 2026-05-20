@@ -104,25 +104,27 @@ class TestEngineResourcesBoundaryRoundTrip:
         assert "cohort_governor.budget_state" in extra
         assert "cohort_governor.circuit_breaker_engaged" in extra
 
-    def test_to_thread_active_workers_is_first_class_field(self) -> None:
-        """Mission H4 §23.2 v0.49.32 — F2 canonical alias declared explicitly.
+    def test_to_thread_active_workers_lenient_shim_on_boundary(self) -> None:
+        """MISSION-A.1.P3 F-006 (ADR-D15): LENIENT shim survives pydantic boundary.
 
-        Pre-v0.49.32 ``to_thread.active_workers`` would have flowed
-        through ``extra="allow"`` as opaque extra. v0.49.32 declares it
-        as a typed field aliased on the dotted-key SSoT name; this test
-        asserts the field appears as a first-class attribute (not under
-        ``__pydantic_extra__``) and equals ``pool_size`` per F2 alias
-        semantics (Python's ThreadPoolExecutor exposes only
-        ``len(_threads)``).
+        Pre-A.1.P3 this test enforced ``active_workers == pool_size`` as
+        a CONTRACT (the alias-trap pattern catalogued in anti-pattern
+        #48). The equality assertion is removed. The field stays typed
+        in the pydantic model so the LENIENT shim travels through the
+        boundary cleanly during the v0.55.0 sunset window, but the test
+        only verifies that the boundary accepts the legacy key — not
+        that the value matches any specific source.
         """
         s1 = _FakeSession()
         register_onnx_session(label="brain.embedding", session=s1)
         fields = get_default_resource_registry().snapshot_fields()
+        # The snapshotter (NOT snapshot_fields()) adds the LENIENT shim,
+        # so to exercise the boundary end-to-end we synthesize the shim
+        # here matching the snapshotter contract.
+        pool_size = fields.get("to_thread.pool_size")
+        if isinstance(pool_size, int):
+            fields["to_thread.active_workers"] = pool_size
         cohorts = ResourceCohortMetrics.model_validate(fields)
-        # Attribute is first-class (not opaque extra).
+        # Field stays typed during LENIENT.
         assert hasattr(cohorts, "to_thread_active_workers")
-        # Per F2 alias semantics: equals pool_size.
-        assert cohorts.to_thread_active_workers == cohorts.to_thread_pool_size
-        # And NOT in __pydantic_extra__.
-        extra = cohorts.__pydantic_extra__ or {}
-        assert "to_thread.active_workers" not in extra
+        assert "to_thread.active_workers" not in (cohorts.__pydantic_extra__ or {})

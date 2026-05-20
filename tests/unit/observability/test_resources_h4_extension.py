@@ -37,7 +37,6 @@ _H4_NEW_FIELDS: frozenset[str] = frozenset(
         # Spec §3 F2 canonical 22-field list (v0.49.31 closure adds the
         # final 5 fields that v0.49.14..v0.49.30 had silently missed).
         "to_thread.pool_size",
-        "to_thread.active_workers",  # v0.49.31 — F2 canonical alias of pool_size
         "to_thread.queue_depth",
         "to_thread.max_workers",
         "to_thread.dispatch_count_total",
@@ -53,9 +52,9 @@ _H4_NEW_FIELDS: frozenset[str] = frozenset(
         "tracemalloc.current_kb",
         "tracemalloc.peak_kb",
         # MISSION-A.1.P2 (F-002+F-003): cumulative-vs-window split.
-        # The pre-fix ``retained_bytes_estimate`` and ``distinct_group_id_count``
-        # remain LENIENT-emitted by the snapshotter for dashboards keyed
-        # on the old labels (sunset v0.55.0, ADR-D14, anti-pattern #49).
+        # Legacy keys remain LENIENT-emitted by the snapshotter for
+        # dashboards keyed on the old labels (sunset v0.55.0, ADR-D14,
+        # anti-pattern #49).
         "exception_cohort.cumulative_retained_bytes_since_start",
         "exception_cohort.cumulative_distinct_group_id_count",
         "exception_cohort.window_retained_bytes",
@@ -63,11 +62,17 @@ _H4_NEW_FIELDS: frozenset[str] = frozenset(
         "exception_cohort.last_observation_monotonic",
         "exception_cohort.retained_bytes_estimate",  # LENIENT legacy shim
         "exception_cohort.distinct_group_id_count",  # LENIENT legacy shim
+        # MISSION-A.1.P3 (F-005+F-006, ADR-D15, anti-patterns #48 + #50):
+        # ``to_thread.active_workers`` and ``asyncio.current_running_task_name``
+        # were semantic lies — both removed from SSoT canonical entries.
+        # The legacy keys remain LENIENT-emitted by the snapshotter as
+        # shims (sunset v0.55.0). ``asyncio.all_task_names`` replaces
+        # current_running_task_name with an operator-correct list.
+        "asyncio.all_task_names",
         # v0.49.31 — Spec §0 item 4 + §T2.1 + §3 F2 extension fields.
         "process.memory_percent",
         "process.cpu_times_user_s",
         "process.cpu_times_system_s",
-        "asyncio.current_running_task_name",
         "asyncio.default_executor_state",
     },
 )
@@ -213,13 +218,28 @@ class TestSpecF2CanonicalFieldList:
         )
         assert set(state) == {"pool_size", "queue_depth", "max_workers"}
 
-    def test_to_thread_active_workers_alias_emitted(
+    def test_to_thread_active_workers_lenient_shim_emitted(
         self, snapshotter: ResourceSnapshotter
     ) -> None:
-        """F2 lists `to_thread.active_workers`; emit value must equal `pool_size`."""
+        """MISSION-A.1.P3 F-006 (ADR-D15): legacy LENIENT shim is emitted.
+
+        Pre-A.1.P3 the alias-trap test asserted
+        ``payload["active_workers"] == payload["pool_size"]`` as a
+        contract — encoding the semantic lie ("active workers really
+        equals pool size") into the test suite. A future fix that
+        distinguishes "active" from "pool" would have FAILED THE TEST
+        rather than fixing the lie (anti-pattern #48 — falsifiability
+        gates verify literal-string parity, not semantic correctness).
+        This commit drops the equality assertion. The legacy key
+        remains LENIENT-emitted by the snapshotter for one minor cycle
+        for backward compat (sunset v0.55.0); the testing surface no
+        longer encodes the alias as truth.
+        """
         payload = _capture_emit(snapshotter)
-        assert "to_thread.active_workers" in payload
-        assert payload["to_thread.active_workers"] == payload["to_thread.pool_size"]
+        assert "to_thread.active_workers" in payload, (
+            "LENIENT shim MUST emit the legacy key during the dual-emit "
+            "window; sunset v0.55.0 will remove this assertion."
+        )
 
     def test_v0_49_31_ssot_count_matches_spec_target(self) -> None:
         """SSoT count tracks the canonical field set.
@@ -245,7 +265,19 @@ class TestSpecF2CanonicalFieldList:
         of ``process.rss_bytes`` without its own SSoT entry).
 
         Net delta: 34 + 2 (4 new − 2 old) = 36.
+
+        MISSION-A.1.P3 delta (F-005+F-006): two semantic-lie fields
+        removed from SSoT canonical entries — ``to_thread.active_workers``
+        (literal alias of pool_size) and ``asyncio.current_running_task_name``
+        (observation paradox — always returned the snapshotter task name).
+        Replacement: ``asyncio.all_task_names`` (operator-correct list of
+        not-done task names, capped at 64). Legacy keys remain
+        LENIENT-emitted by the snapshotter and declared as
+        ``legacy_alias=`` on ``to_thread.pool_size`` and
+        ``asyncio.all_task_names`` respectively (ADR-D15).
+
+        Net delta: 36 + 1 (1 new − 2 old) = 35.
         """
         from sovyx.observability._resource_registry import _HEALTH_SNAPSHOT_FIELDS
 
-        assert len(_HEALTH_SNAPSHOT_FIELDS) == 36
+        assert len(_HEALTH_SNAPSHOT_FIELDS) == 35
