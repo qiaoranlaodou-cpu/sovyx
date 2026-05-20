@@ -75,7 +75,7 @@ async def run_startup_cascade(
         await _safe_run("startup.hardware", _emit_hardware)
         await _safe_run("startup.audio.devices", _emit_audio_devices)
         await _safe_run("startup.audio.apo_scan", _emit_apo_scan)
-        await _safe_run("startup.network", _emit_network, config)
+        await _safe_run("startup.network", _emit_network)
         await _safe_run("startup.filesystem", _emit_filesystem, config)
         await _safe_run("startup.models", _emit_models, registry)
         await _safe_run(
@@ -255,8 +255,24 @@ async def _emit_apo_scan() -> None:
         logger.info("startup.audio.apo_scan", **_self_diag_payload)
 
 
-async def _emit_network(config: EngineConfig) -> None:
-    """Emit hostname + interface listing + dashboard bind probe."""
+async def _emit_network() -> None:
+    """Emit hostname + interface listing for the startup saga.
+
+    The dashboard bind host/port intentionally stay OUT of this event —
+    they belong to the service-state surface, not the network-observation
+    surface. The ``dashboard_started`` event (``dashboard/server.py``)
+    carries the live bind address with the correct values; operators
+    correlate via ``service_instance_id`` + the startup ``saga_id``.
+
+    History: pre-v0.49.35 this helper read ``config.dashboard.host`` /
+    ``config.dashboard.port`` (FORENSIC §L3) but ``EngineConfig`` has no
+    top-level ``dashboard`` attribute — the API bind lives at
+    ``config.api.host`` / ``config.api.port`` — so the two emitted
+    ``network.dashboard_*`` fields were always ``None`` and were never
+    consumed downstream. v0.49.35 deletes the dead fields outright per
+    the FORENSIC §L3 fix proposal (3) "remove redundant surface"; the
+    ``dashboard_started`` event remains the single source of truth.
+    """
     hostname = socket.gethostname()
     try:
         fqdn = socket.getfqdn()
@@ -284,10 +300,6 @@ async def _emit_network(config: EngineConfig) -> None:
                 }
             )
 
-    dashboard_cfg = getattr(config, "dashboard", None)
-    dashboard_host = getattr(dashboard_cfg, "host", None) if dashboard_cfg else None
-    dashboard_port = getattr(dashboard_cfg, "port", None) if dashboard_cfg else None
-
     logger.info(
         "startup.network",
         **{
@@ -295,8 +307,6 @@ async def _emit_network(config: EngineConfig) -> None:
             "network.fqdn": fqdn,
             "network.interface_count": len(interfaces),
             "network.interfaces": interfaces,
-            "network.dashboard_host": dashboard_host,
-            "network.dashboard_port": dashboard_port,
         },
     )
 

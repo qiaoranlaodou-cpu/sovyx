@@ -295,7 +295,7 @@ class TestCascadeFailureIsolation:
         cfg = _make_engine_config(tmp_path)
         registry = ServiceRegistry()
 
-        async def _boom(_cfg: object) -> None:
+        async def _boom() -> None:
             msg = "network unreachable"
             raise ConnectionError(msg)
 
