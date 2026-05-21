@@ -36,9 +36,15 @@ _H4_NEW_FIELDS: frozenset[str] = frozenset(
     {
         # Spec §3 F2 canonical 22-field list (v0.49.31 closure adds the
         # final 5 fields that v0.49.14..v0.49.30 had silently missed).
-        "to_thread.pool_size",
-        "to_thread.queue_depth",
-        "to_thread.max_workers",
+        # MISSION-A.1.P3.b (F-007, ADR-D16): canonicals renamed to
+        # ``_at_last_dispatch``; legacy keys LENIENT-emitted by the
+        # snapshotter (sunset v0.55.0).
+        "to_thread.pool_size_at_last_dispatch",
+        "to_thread.queue_depth_at_last_dispatch",
+        "to_thread.max_workers_at_last_dispatch",
+        "to_thread.pool_size",  # LENIENT legacy shim, sunset v0.55.0
+        "to_thread.queue_depth",  # LENIENT legacy shim, sunset v0.55.0
+        "to_thread.max_workers",  # LENIENT legacy shim, sunset v0.55.0
         "to_thread.dispatch_count_total",
         "to_thread.dispatch_count_per_label",
         "lock_dict.total_cardinality",
@@ -277,6 +283,17 @@ class TestSpecF2CanonicalFieldList:
         ``asyncio.all_task_names`` respectively (ADR-D15).
 
         Net delta: 36 + 1 (1 new − 2 old) = 35.
+
+        MISSION-A.1.P3.b delta (F-007+F-014): five canonical renames.
+        F-007 renames the three twin-named stale ``to_thread.*`` fields
+        to ``_at_last_dispatch`` (anti-pattern #51). F-014 renames the
+        two ``asyncio.{running,pending}_count`` fields to
+        ``not_done_count`` / ``awaiting_count`` (anti-pattern #51 same
+        class). All 5 legacy keys LENIENT-emitted by the snapshotter
+        and declared as ``legacy_alias=`` on the new canonicals
+        (ADR-D16).
+
+        Net delta: 35 + 0 (5 new − 5 demoted to shim) = 35.
         """
         from sovyx.observability._resource_registry import _HEALTH_SNAPSHOT_FIELDS
 

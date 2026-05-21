@@ -254,18 +254,28 @@ _HEALTH_SNAPSHOT_FIELDS: Final[Mapping[str, FieldSpec]] = {
         operator_hint_key="asyncio_task_count",
         section="asyncio",
     ),
-    "asyncio.running_count": FieldSpec(
-        canonical_key="asyncio.running_count",
+    # MISSION-A.1.P3.b F-014 (anti-pattern #51, ADR-D16):
+    # ``asyncio.running_count`` counted "not done" — including tasks blocked
+    # on ``await asyncio.sleep`` or any await; NOT a measure of tasks actively
+    # executing on the loop step. ``pending_count`` was ``running_count - 1``
+    # (excluded the snapshotter task via ``_is_currently_running``). The field
+    # names promised executor-step semantics; the math delivered "not done"
+    # semantics. Renames make the math explicit. Legacy keys remain
+    # LENIENT-emitted by the snapshotter (sunset v0.55.0).
+    "asyncio.not_done_count": FieldSpec(
+        canonical_key="asyncio.not_done_count",
         type_constraint=int,
         producer_module="sovyx.observability.resources",
-        operator_hint_key="asyncio_running_count",
+        legacy_alias="asyncio.running_count",
+        operator_hint_key="asyncio_not_done_count",
         section="asyncio",
     ),
-    "asyncio.pending_count": FieldSpec(
-        canonical_key="asyncio.pending_count",
+    "asyncio.awaiting_count": FieldSpec(
+        canonical_key="asyncio.awaiting_count",
         type_constraint=int,
         producer_module="sovyx.observability.resources",
-        operator_hint_key="asyncio_pending_count",
+        legacy_alias="asyncio.pending_count",
+        operator_hint_key="asyncio_awaiting_count",
         section="asyncio",
     ),
     # ── H4 new fields: asyncio block extension (Mission H4 §0 item 4 + §T2.1 + §3 F2). ──
@@ -298,35 +308,48 @@ _HEALTH_SNAPSHOT_FIELDS: Final[Mapping[str, FieldSpec]] = {
     # ── H4 new fields: to_thread block ──
     #
     # MISSION-A.1.P3 F-006 (anti-pattern #48, ADR-D15 supersedes ADR-D4):
-    # pre-fix ``to_thread.active_workers`` was a literal alias of
-    # ``pool_size`` (both read ``last_worker_count`` recorded at last
-    # dispatch). The Mission H4 §3 F2 spec listed ``active_workers`` as
-    # canonical; Python's ThreadPoolExecutor has no per-worker busy/idle
-    # metric, so the field was emitted as a duplicate to "pass the
-    # falsifiability gate literally". A regression test even enforced the
-    # alias as a contract (deleted by this commit). The field is now a
-    # LENIENT shim aliased to ``pool_size``; sunset v0.55.0.
-    "to_thread.pool_size": FieldSpec(
-        canonical_key="to_thread.pool_size",
+    # ``to_thread.active_workers`` was a literal alias of pool_size — see
+    # ADR-D15 commit `2ebc1c13`. The legacy key is LENIENT-emitted by the
+    # snapshotter; sunset v0.55.0.
+    #
+    # MISSION-A.1.P3.b F-007 (anti-pattern #51, ADR-D16): the three
+    # ``to_thread.{pool_size, max_workers, queue_depth}`` fields are
+    # STALE — recorded at last dispatch (``_to_thread.last_*``) rather
+    # than read live at snapshot time. They twin-named the LIVE
+    # ``asyncio.default_executor_state.{pool_size, queue_depth,
+    # max_workers}`` fields without disclosing the freshness divergence.
+    # Renamed to ``_at_last_dispatch`` to make staleness explicit.
+    # Legacy keys (``pool_size``, ``max_workers``, ``queue_depth``)
+    # remain LENIENT-emitted by the snapshotter (sunset v0.55.0).
+    #
+    # ``to_thread.active_workers`` (F-006 retirement) remains an SSoT-
+    # orphan shim emitted by the snapshotter — its lineage was
+    # active_workers → pool_size (P3 declaration) → pool_size_at_last_dispatch
+    # (P3.b rename). The SSoT only tracks one legacy_alias hop per
+    # canonical; the multi-hop chain is documented in ADR-D16.
+    "to_thread.pool_size_at_last_dispatch": FieldSpec(
+        canonical_key="to_thread.pool_size_at_last_dispatch",
         type_constraint=int,
         producer_module="sovyx.observability.resources",
         consumer_modules=("sovyx.observability._resource_cohort_governor",),
-        legacy_alias="to_thread.active_workers",
-        operator_hint_key="to_thread_pool_size",
+        legacy_alias="to_thread.pool_size",
+        operator_hint_key="to_thread_pool_size_at_last_dispatch",
         section="to_thread",
     ),
-    "to_thread.max_workers": FieldSpec(
-        canonical_key="to_thread.max_workers",
+    "to_thread.max_workers_at_last_dispatch": FieldSpec(
+        canonical_key="to_thread.max_workers_at_last_dispatch",
         type_constraint=int,
         producer_module="sovyx.observability.resources",
-        operator_hint_key="to_thread_max_workers",
+        legacy_alias="to_thread.max_workers",
+        operator_hint_key="to_thread_max_workers_at_last_dispatch",
         section="to_thread",
     ),
-    "to_thread.queue_depth": FieldSpec(
-        canonical_key="to_thread.queue_depth",
+    "to_thread.queue_depth_at_last_dispatch": FieldSpec(
+        canonical_key="to_thread.queue_depth_at_last_dispatch",
         type_constraint=int,
         producer_module="sovyx.observability.resources",
-        operator_hint_key="to_thread_queue_depth",
+        legacy_alias="to_thread.queue_depth",
+        operator_hint_key="to_thread_queue_depth_at_last_dispatch",
         section="to_thread",
     ),
     "to_thread.dispatch_count_total": FieldSpec(
@@ -786,13 +809,19 @@ class ResourceRegistry:
                 pass
 
         return {
-            "to_thread.pool_size": to_thread_state[0],
             # MISSION-A.1.P3 F-006 (ADR-D15): ``to_thread.active_workers``
             # is no longer emitted by snapshot_fields(); the snapshotter
             # LENIENT-emits it via the legacy-alias path for one minor
             # cycle (sunset v0.55.0).
-            "to_thread.queue_depth": to_thread_state[1],
-            "to_thread.max_workers": to_thread_state[2],
+            # MISSION-A.1.P3.b F-007 (ADR-D16): the three twin-named
+            # stale fields renamed to ``_at_last_dispatch`` to make
+            # staleness explicit vs the LIVE counterparts emitted by
+            # ``_capture_asyncio_metrics::asyncio.default_executor_state``.
+            # Legacy keys LENIENT-emitted by the snapshotter (sunset
+            # v0.55.0).
+            "to_thread.pool_size_at_last_dispatch": to_thread_state[0],
+            "to_thread.queue_depth_at_last_dispatch": to_thread_state[1],
+            "to_thread.max_workers_at_last_dispatch": to_thread_state[2],
             "to_thread.dispatch_count_total": to_thread_state[3],
             "to_thread.dispatch_count_per_label": to_thread_state[4],
             "lock_dict.total_cardinality": total_lock_dict_cardinality,

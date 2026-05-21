@@ -237,15 +237,22 @@ def _capture_asyncio_metrics() -> dict[str, object]:
     try:
         tasks = asyncio.all_tasks()
     except RuntimeError:
+        # MISSION-A.1.P3 F-005 (anti-pattern #50): ``current_running_task_name``
+        # is the legacy LENIENT shim — pre-fix it always returned the
+        # snapshotter task name (observation paradox); ``all_task_names``
+        # is the operator-correct replacement. Sunset v0.55.0.
+        # MISSION-A.1.P3.b F-014 (anti-pattern #51): ``running_count``
+        # and ``pending_count`` counted "not done", NOT "executing on
+        # loop step". Renamed to ``not_done_count`` /
+        # ``awaiting_count``; legacy keys LENIENT-emitted (sunset
+        # v0.55.0).
         return {
             "asyncio.task_count": 0,
-            "asyncio.running_count": 0,
-            "asyncio.pending_count": 0,
-            # MISSION-A.1.P3 F-005 (anti-pattern #50): legacy LENIENT shim.
-            # The pre-fix field always returned the snapshotter task name
-            # (observation paradox); ``asyncio.all_task_names`` is the
-            # operator-correct replacement. Sunset v0.55.0.
-            "asyncio.current_running_task_name": None,
+            "asyncio.not_done_count": 0,
+            "asyncio.awaiting_count": 0,
+            "asyncio.running_count": 0,  # a1-allowlist: legacy shim, sunset v0.55.0
+            "asyncio.pending_count": 0,  # a1-allowlist: legacy shim, sunset v0.55.0
+            "asyncio.current_running_task_name": None,  # a1-allowlist: legacy shim, sunset v0.55.0
             "asyncio.all_task_names": [],
             "asyncio.default_executor_state": {
                 "pool_size": 0,
@@ -295,7 +302,12 @@ def _capture_asyncio_metrics() -> dict[str, object]:
 
     return {
         "asyncio.task_count": len(tasks),
+        # MISSION-A.1.P3.b F-014 (anti-pattern #51, ADR-D16): new canonicals.
+        "asyncio.not_done_count": running,
+        "asyncio.awaiting_count": pending,
+        # a1-allowlist: legacy shim, sunset v0.55.0
         "asyncio.running_count": running,
+        # a1-allowlist: legacy shim, sunset v0.55.0
         "asyncio.pending_count": pending,
         # a1-allowlist: legacy shim, sunset v0.55.0
         "asyncio.current_running_task_name": current_task_name,
@@ -475,15 +487,38 @@ class ResourceSnapshotter:
             registry_with_legacy["exception_cohort.distinct_group_id_count"] = cumulative_distinct
 
         # ADR-D15 LENIENT dual-emit (MISSION-A.1.P3 F-006, anti-pattern #48):
-        # ``to_thread.active_workers`` was a literal alias of ``pool_size``
+        # ``to_thread.active_workers`` was a literal alias of pool_size
         # ("passes the falsifiability gate literally"). Snapshot_fields()
-        # no longer emits the key; emit it here from pool_size for one
-        # minor cycle (sunset v0.55.0). Operator dashboards keyed on
-        # ``active_workers`` can migrate to ``pool_size``.
-        pool_size_value = registry_with_legacy.get("to_thread.pool_size")
-        if isinstance(pool_size_value, int):
+        # no longer emits the key; emit it here from the new canonical
+        # ``pool_size_at_last_dispatch`` for one minor cycle (sunset
+        # v0.55.0).
+        #
+        # ADR-D16 LENIENT dual-emit (MISSION-A.1.P3.b F-007, anti-pattern #51):
+        # the three ``to_thread.{pool_size, max_workers, queue_depth}``
+        # fields renamed to ``_at_last_dispatch`` variants. Legacy keys
+        # LENIENT-emitted from the new canonicals for one minor cycle
+        # (sunset v0.55.0). External Grafana dashboards keyed on the
+        # pre-rename names keep working.
+        pool_size_at_last_dispatch = registry_with_legacy.get(
+            "to_thread.pool_size_at_last_dispatch",
+        )
+        if isinstance(pool_size_at_last_dispatch, int):
             # a1-allowlist: legacy alias, sunset v0.55.0
-            registry_with_legacy["to_thread.active_workers"] = pool_size_value
+            registry_with_legacy["to_thread.pool_size"] = pool_size_at_last_dispatch
+            # a1-allowlist: legacy alias (shim-of-shim — see ADR-D16), sunset v0.55.0
+            registry_with_legacy["to_thread.active_workers"] = pool_size_at_last_dispatch
+        max_workers_at_last_dispatch = registry_with_legacy.get(
+            "to_thread.max_workers_at_last_dispatch",
+        )
+        if isinstance(max_workers_at_last_dispatch, int):
+            # a1-allowlist: legacy alias, sunset v0.55.0
+            registry_with_legacy["to_thread.max_workers"] = max_workers_at_last_dispatch
+        queue_depth_at_last_dispatch = registry_with_legacy.get(
+            "to_thread.queue_depth_at_last_dispatch",
+        )
+        if isinstance(queue_depth_at_last_dispatch, int):
+            # a1-allowlist: legacy alias, sunset v0.55.0
+            registry_with_legacy["to_thread.queue_depth"] = queue_depth_at_last_dispatch
 
         payload: dict[str, object] = {
             "self.health.snapshot_final": final,

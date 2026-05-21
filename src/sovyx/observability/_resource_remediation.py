@@ -120,15 +120,23 @@ FIELD_REMEDIATIONS: Final[Mapping[str, str]] = {
         "suggests a task leak — inspect `asyncio.pending_count` to see "
         "which tasks are stuck awaiting."
     ),
-    "asyncio.running_count": (
-        "Tasks in non-done state (subset of `asyncio.task_count`). "
-        "Typically 1-3 truly-running + N awaiting tasks; large running "
-        "counts under non-CPU-bound load suggest a busy-loop."
+    "asyncio.not_done_count": (
+        "Count of asyncio tasks whose ``done()`` predicate is False at "
+        "snapshot time — i.e. tasks not yet completed. NOTE: this is NOT "
+        "the count of tasks actively executing on the loop step; asyncio "
+        "does not expose that metric. Tasks blocked on ``await `` (sleep, "
+        "I/O, lock) count as 'not done'. Renamed from the pre-MISSION-A.1 "
+        "``asyncio.running_count`` which had the same math but a name that "
+        "promised executor-step semantics (anti-pattern #51, ADR-D16). "
+        "Sunset for the legacy ``running_count`` shim: v0.55.0."
     ),
-    "asyncio.pending_count": (
-        "Tasks that are not done AND not the currently-running task. "
-        "Most tasks live here (awaiting I/O); sustained growth without "
-        "matching completion is a leak."
+    "asyncio.awaiting_count": (
+        "Count of asyncio tasks that are not done AND not the currently-"
+        "running task (snapshot task excluded). Most workload tasks live "
+        "here — sustained growth without matching completion suggests a "
+        "task leak. Renamed from the pre-MISSION-A.1 "
+        "``asyncio.pending_count`` (anti-pattern #51, ADR-D16). Sunset "
+        "for the legacy ``pending_count`` shim: v0.55.0."
     ),
     "asyncio.all_task_names": (
         "List of names of every not-done asyncio task at snapshot time, "
@@ -154,23 +162,42 @@ FIELD_REMEDIATIONS: Final[Mapping[str, str]] = {
         "availability."
     ),
     # ── to_thread block ──
-    "to_thread.pool_size": (
+    # MISSION-A.1.P3.b F-007 (anti-pattern #51, ADR-D16): the three
+    # ``pool_size`` / ``max_workers`` / ``queue_depth`` fields are
+    # STALE — recorded at last ``dispatch_to_thread()`` call rather
+    # than read live from the executor at snapshot time. Renamed to
+    # ``_at_last_dispatch`` to make staleness explicit; the LIVE
+    # twin-named fields live under
+    # ``asyncio.default_executor_state.{pool_size, queue_depth, max_workers}``.
+    # Legacy keys LENIENT-emitted by the snapshotter (sunset v0.55.0).
+    "to_thread.pool_size_at_last_dispatch": (
         "Number of live worker threads in the loop default "
-        "ThreadPoolExecutor. Grows on demand up to "
-        "`to_thread.max_workers`; high values during failover suggest "
-        "ONNX inference contention. Inspect "
-        "`to_thread.dispatch_count_per_label` for the noisy label."
+        "ThreadPoolExecutor, as recorded at the LAST ``dispatch_to_thread`` "
+        "call. NOT a live read — may be up to one snapshot interval "
+        "stale if no dispatch occurred recently. For the LIVE pool "
+        "size at snapshot time, inspect "
+        "``asyncio.default_executor_state.pool_size``. Renamed from "
+        "the pre-MISSION-A.1 ``to_thread.pool_size``; legacy key "
+        "LENIENT-emitted through v0.55.0."
     ),
-    "to_thread.queue_depth": (
-        "Pending submissions waiting for a worker thread (internal "
-        "ThreadPoolExecutor queue). Spikes mean inference latency is "
-        "outpacing worker availability."
+    "to_thread.queue_depth_at_last_dispatch": (
+        "Pending submissions in the ThreadPoolExecutor work queue at "
+        "the LAST ``dispatch_to_thread`` call. NOT live — see the LIVE "
+        "twin at ``asyncio.default_executor_state.queue_depth``. "
+        "Spikes mean inference latency was outpacing worker "
+        "availability at last dispatch. Renamed from "
+        "``to_thread.queue_depth``; legacy key LENIENT-emitted "
+        "through v0.55.0."
     ),
-    "to_thread.max_workers": (
-        "Configured ThreadPoolExecutor ceiling (default Python "
-        "`min(32, os.cpu_count() + 4)`). Operator override via "
-        "`SOVYX_OBSERVABILITY__TUNING__TO_THREAD_MAX_WORKERS` (deferred "
-        "to Phase 1.E)."
+    "to_thread.max_workers_at_last_dispatch": (
+        "Configured ThreadPoolExecutor ceiling as recorded at the "
+        "LAST ``dispatch_to_thread`` call. Default Python "
+        "``min(32, os.cpu_count() + 4)``. For the LIVE max see "
+        "``asyncio.default_executor_state.max_workers``. Operator "
+        "override via "
+        "``SOVYX_OBSERVABILITY__TUNING__TO_THREAD_MAX_WORKERS`` (deferred "
+        "to Phase 1.E). Renamed from ``to_thread.max_workers``; legacy "
+        "key LENIENT-emitted through v0.55.0."
     ),
     "to_thread.dispatch_count_total": (
         "Cumulative count of `dispatch_to_thread(...)` calls since "

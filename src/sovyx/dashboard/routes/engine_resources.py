@@ -78,13 +78,33 @@ class ResourceCohortMetrics(BaseModel):
     # ``current_running_task_name`` observation-paradox field. The legacy
     # key remains in extras during the LENIENT cycle (sunset v0.55.0).
     asyncio_all_task_names: list[str] = Field(default_factory=list, alias="asyncio.all_task_names")
+    # MISSION-A.1.P3.b F-014 (anti-pattern #51, ADR-D16):
+    # ``asyncio.{not_done_count, awaiting_count}`` rename the pre-fix
+    # ``running_count`` / ``pending_count`` so the math (which counts
+    # "not done", NOT "executing") matches the name. Legacy keys flow
+    # through ``extra="allow"`` during LENIENT (sunset v0.55.0).
+    asyncio_not_done_count: int = Field(0, alias="asyncio.not_done_count")
+    asyncio_awaiting_count: int = Field(0, alias="asyncio.awaiting_count")
 
     # to_thread
+    # MISSION-A.1.P3.b F-007 (anti-pattern #51, ADR-D16): the three
+    # twin-named stale fields renamed to ``_at_last_dispatch``. Legacy
+    # keys stay typed during LENIENT (sunset v0.55.0).
+    to_thread_pool_size_at_last_dispatch: int = Field(
+        0, alias="to_thread.pool_size_at_last_dispatch"
+    )
+    to_thread_queue_depth_at_last_dispatch: int = Field(
+        0, alias="to_thread.queue_depth_at_last_dispatch"
+    )
+    to_thread_max_workers_at_last_dispatch: int = Field(
+        0, alias="to_thread.max_workers_at_last_dispatch"
+    )
+    # Legacy aliases (LENIENT, sunset v0.55.0):
     to_thread_pool_size: int = Field(0, alias="to_thread.pool_size")
     # MISSION-A.1.P3 F-006 (anti-pattern #48, ADR-D15):
-    # ``to_thread.active_workers`` is a LENIENT shim aliased to pool_size
-    # (sunset v0.55.0). The pre-fix pydantic field stays typed so the
-    # boundary doesn't degrade ``extra="allow"`` during the LENIENT cycle.
+    # ``to_thread.active_workers`` LENIENT shim aliased to
+    # pool_size_at_last_dispatch (chain through pool_size — see ADR-D16
+    # for the multi-hop lineage). Sunset v0.55.0.
     to_thread_active_workers: int = Field(0, alias="to_thread.active_workers")
     to_thread_queue_depth: int = Field(0, alias="to_thread.queue_depth")
     to_thread_max_workers: int = Field(0, alias="to_thread.max_workers")

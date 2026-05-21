@@ -75,9 +75,11 @@ class TestHealthSnapshotFieldsSSoT:
         # ``process.rss_bytes``). The snapshotter LENIENT-emits both pairs
         # until v0.55.0 STRICT-flip.
         expected_h4 = {
-            "to_thread.pool_size",
-            "to_thread.queue_depth",
-            "to_thread.max_workers",
+            # MISSION-A.1.P3.b (F-007, ADR-D16, anti-pattern #51): three
+            # twin-named stale fields renamed to ``_at_last_dispatch``.
+            "to_thread.pool_size_at_last_dispatch",
+            "to_thread.queue_depth_at_last_dispatch",
+            "to_thread.max_workers_at_last_dispatch",
             "to_thread.dispatch_count_total",
             "to_thread.dispatch_count_per_label",
             "lock_dict.total_cardinality",
@@ -109,14 +111,47 @@ class TestHealthSnapshotFieldsSSoT:
         # ``to_thread.pool_size``. LENIENT-emitted by the snapshotter
         # only; sunset v0.55.0.
         assert "to_thread.active_workers" not in _HEALTH_SNAPSHOT_FIELDS
-        assert (
-            _HEALTH_SNAPSHOT_FIELDS["to_thread.pool_size"].legacy_alias
-            == "to_thread.active_workers"
-        )
         assert "asyncio.current_running_task_name" not in _HEALTH_SNAPSHOT_FIELDS
         assert (
             _HEALTH_SNAPSHOT_FIELDS["asyncio.all_task_names"].legacy_alias
             == "asyncio.current_running_task_name"
+        )
+        # MISSION-A.1.P3.b (F-007, ADR-D16, anti-pattern #51): twin-name
+        # stale fields renamed. The legacy ``to_thread.{pool_size,
+        # max_workers, queue_depth}`` keys are removed from canonical
+        # SSoT; declared as ``legacy_alias=`` on the
+        # ``_at_last_dispatch`` canonicals. Note: ``to_thread.active_workers``
+        # (F-006) is a shim-of-a-shim — active_workers → pool_size →
+        # pool_size_at_last_dispatch — the SSoT only tracks one hop per
+        # canonical; ADR-D16 documents the chain.
+        assert "to_thread.pool_size" not in _HEALTH_SNAPSHOT_FIELDS
+        assert "to_thread.queue_depth" not in _HEALTH_SNAPSHOT_FIELDS
+        assert "to_thread.max_workers" not in _HEALTH_SNAPSHOT_FIELDS
+        assert (
+            _HEALTH_SNAPSHOT_FIELDS["to_thread.pool_size_at_last_dispatch"].legacy_alias
+            == "to_thread.pool_size"
+        )
+        assert (
+            _HEALTH_SNAPSHOT_FIELDS["to_thread.queue_depth_at_last_dispatch"].legacy_alias
+            == "to_thread.queue_depth"
+        )
+        assert (
+            _HEALTH_SNAPSHOT_FIELDS["to_thread.max_workers_at_last_dispatch"].legacy_alias
+            == "to_thread.max_workers"
+        )
+        # MISSION-A.1.P3.b (F-014, ADR-D16, anti-pattern #51): math-vs-name
+        # rename. ``running_count`` and ``pending_count`` removed from
+        # canonical SSoT; declared as ``legacy_alias=`` on
+        # ``not_done_count`` / ``awaiting_count``.
+        assert "asyncio.running_count" not in _HEALTH_SNAPSHOT_FIELDS
+        assert "asyncio.pending_count" not in _HEALTH_SNAPSHOT_FIELDS
+        assert (
+            _HEALTH_SNAPSHOT_FIELDS["asyncio.not_done_count"].legacy_alias
+            == "asyncio.running_count"
+        )
+        assert (
+            _HEALTH_SNAPSHOT_FIELDS["asyncio.awaiting_count"].legacy_alias
+            == "asyncio.pending_count"
         )
 
     def test_anomaly_consumer_includes_process_rss_bytes(self) -> None:
@@ -317,12 +352,15 @@ class TestToThreadDispatch:
                 queue_depth=1,
                 max_workers=32,
             )
+        # MISSION-A.1.P3.b (F-007, ADR-D16): canonical keys renamed to
+        # ``_at_last_dispatch`` to make staleness explicit. Legacy keys
+        # are LENIENT-emitted by the snapshotter, NOT by snapshot_fields().
         fields = reg.snapshot_fields()
         assert fields["to_thread.dispatch_count_total"] == 5
         assert fields["to_thread.dispatch_count_per_label"] == {"voice.vad.infer": 5}
-        assert fields["to_thread.pool_size"] == 4
-        assert fields["to_thread.queue_depth"] == 1
-        assert fields["to_thread.max_workers"] == 32
+        assert fields["to_thread.pool_size_at_last_dispatch"] == 4
+        assert fields["to_thread.queue_depth_at_last_dispatch"] == 1
+        assert fields["to_thread.max_workers_at_last_dispatch"] == 32
 
     def test_per_label_split(self) -> None:
         reg = ResourceRegistry()
@@ -409,7 +447,9 @@ class TestSnapshotFieldsShape:
     def test_to_thread_block_present_by_default(self) -> None:
         reg = ResourceRegistry()
         fields = reg.snapshot_fields()
-        assert "to_thread.pool_size" in fields
+        # MISSION-A.1.P3.b (F-007, ADR-D16): canonical is now
+        # ``pool_size_at_last_dispatch``.
+        assert "to_thread.pool_size_at_last_dispatch" in fields
         assert "to_thread.dispatch_count_total" in fields
         assert fields["to_thread.dispatch_count_total"] == 0
 
