@@ -417,6 +417,18 @@ class TestExceptionCohort:
         assert fields["exception_cohort.cumulative_distinct_group_id_count"] == 2
 
     def test_distinct_group_ids_dedup(self) -> None:
+        """5 observations of SAME group_id within 1 s collapse to ONE.
+
+        Mission B B-P2-12 (B.1.P2 closure 2026-05-21). Pre-fix the
+        ``distinct_group_ids`` set deduplicated to cardinality 1 BUT
+        the bytes accumulator added 5×: cumulative bytes = 500. The
+        docstring claimed dedup; the code only deduped the set, not
+        bytes. The post-fix invariant: within the 1-second dedup
+        window (``_EXCEPTION_COHORT_DEDUP_WINDOW_S``), repeat
+        observations of the same group_id are chain-walk duplicates —
+        neither bytes nor distinct count nor observation deque entry
+        is added a second time.
+        """
         reg = ResourceRegistry()
         for _ in range(5):
             reg.record_exception_cohort(
@@ -425,9 +437,9 @@ class TestExceptionCohort:
                 retained_bytes_estimate=100,
             )
         fields = reg.snapshot_fields()
-        # group_id set has one entry; retained_bytes accumulates regardless.
+        # group_id set has one entry; bytes also count ONCE (B-P2-12).
         assert fields["exception_cohort.cumulative_distinct_group_id_count"] == 1
-        assert fields["exception_cohort.cumulative_retained_bytes_since_start"] == 500
+        assert fields["exception_cohort.cumulative_retained_bytes_since_start"] == 100
 
 
 # ── snapshot_fields shape parity ──

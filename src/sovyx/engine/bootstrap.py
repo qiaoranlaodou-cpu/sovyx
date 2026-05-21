@@ -438,6 +438,28 @@ async def bootstrap(
             from sovyx.observability.resources import ResourceSnapshotter
             from sovyx.observability.tasks import spawn
 
+            # Mission B B-P0-2 (B.1.P2 closure 2026-05-21) — prime the
+            # ResourceRegistry singleton with the operator-tunable
+            # ``exception_cohort_observations_maxlen`` BEFORE the
+            # snapshotter starts running. The registry is otherwise a
+            # lazy singleton — the snapshotter would trigger
+            # construction with the default 128 maxlen, ignoring any
+            # env override. This block mirrors the pattern used for the
+            # ResourceCohortGovernor below.
+            from sovyx.observability import _resource_registry as _registry_mod
+            from sovyx.observability._resource_registry import (
+                ResourceRegistry,
+                reset_default_resource_registry,
+            )
+
+            reset_default_resource_registry()
+            with _registry_mod._SINGLETON_LOCK:  # noqa: SLF001
+                _registry_mod._SINGLETON = ResourceRegistry(  # noqa: SLF001
+                    exception_cohort_observations_maxlen=(
+                        engine_config.observability.tuning.exception_cohort_observations_maxlen
+                    ),
+                )
+
             resource_snapshotter = ResourceSnapshotter(engine_config.observability)
             spawn(resource_snapshotter.run(), name="resource-snapshotter")
             registry.register_instance(ResourceSnapshotter, resource_snapshotter)

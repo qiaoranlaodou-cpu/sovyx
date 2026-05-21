@@ -185,6 +185,19 @@ def test_to_thread_per_label_tracks_call_count(label_repeats: int) -> None:
 def test_exception_cohort_dedup_and_accumulation(
     observations: list[tuple[str, int]],
 ) -> None:
+    """Mission B B-P2-12 (B.1.P2 closure 2026-05-21) property invariant.
+
+    Pre-fix property: ``cumulative_retained_bytes_since_start ==
+    sum(retained for _, retained in observations)``. The registry's
+    docstring claimed group_id dedup but only deduped the SET; bytes
+    over-counted on chain-walk duplicates. The post-fix property
+    accounts for the 1-second dedup window: repeat observations of the
+    same group_id within ``_EXCEPTION_COHORT_DEDUP_WINDOW_S`` collapse
+    to ONE bytes addition. Since this test calls ``record_exception_cohort``
+    in a tight loop (microseconds between calls), all duplicates fall
+    inside the 1-second window. The expected bytes therefore sum each
+    group_id ONCE (the first observation's retained value).
+    """
     reg = ResourceRegistry()
     expected_bytes = 0
     distinct_groups: set[str] = set()
@@ -194,12 +207,15 @@ def test_exception_cohort_dedup_and_accumulation(
             sub_exception_count=1,
             retained_bytes_estimate=retained,
         )
-        expected_bytes += retained
-        distinct_groups.add(group_id)
+        if group_id not in distinct_groups:
+            expected_bytes += retained
+            distinct_groups.add(group_id)
     fields = reg.snapshot_fields()
     # MISSION-A.1.P2 (F-002+F-003): cumulative fields are the canonical
     # lifetime accumulators; legacy keys are LENIENT shims emitted by the
     # snapshotter, not by snapshot_fields() itself.
+    # MISSION-B B-P2-12: cumulative_retained_bytes_since_start is now
+    # FIRST-OBSERVATION-WINS per group_id within the dedup window.
     assert fields["exception_cohort.cumulative_retained_bytes_since_start"] == expected_bytes
     assert fields["exception_cohort.cumulative_distinct_group_id_count"] == len(distinct_groups)
 

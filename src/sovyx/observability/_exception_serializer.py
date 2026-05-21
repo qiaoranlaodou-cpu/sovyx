@@ -192,9 +192,35 @@ class ExceptionTreeProcessor:
     A bug in the serializer must not be able to crash the caller's
     ``logger.exception(...)`` call — observability-of-observability
     rule §27.4.
+
+    Mission B B-P0-2 (B.1.P2 closure 2026-05-21) — when ``record_cohort``
+    is True, ALSO dispatches the extracted exception into
+    :func:`record_exception_cohort` via the dedicated helper at
+    :mod:`sovyx.observability._exception_cohort_record_helper`. This is
+    the production wire for F-022 (Mission A.3 spec §A.3.P3) — single
+    chokepoint capturing every ``logger.exception(...)`` site. The
+    flag is read from
+    :attr:`ObservabilityFeaturesConfig.exception_cohort_recording`
+    (default False at v0.49.37 per `feedback_staged_adoption`; flips
+    True at v0.49.38). Failures in the cohort path are absorbed
+    inside the helper — never crash the serializer path.
     """
 
-    __slots__ = ()
+    __slots__ = ("_record_cohort",)
+
+    def __init__(self, *, record_cohort: bool = False) -> None:
+        """Build a processor.
+
+        ``record_cohort`` gates the Mission B B-P0-2 wire to the
+        exception-cohort registry. Default False matches v0.49.36
+        behavior — the registry's deque stays empty, the cohort
+        governor verdict stays permanently HEALTHY, and there is no
+        change to log-throughput. Setting True activates the
+        producer for F-022 — every serialized exception's
+        ``record_from_exception`` is invoked, populating
+        ``exception_cohort.window_*`` snapshot fields.
+        """
+        self._record_cohort = record_cohort
 
     def __call__(
         self,
@@ -225,6 +251,25 @@ class ExceptionTreeProcessor:
                 f"{type(serializer_failure).__name__}: {serializer_failure}"
             )
             event_dict["exc.fallback"] = repr(exc)
+
+        # Mission B B-P0-2 / F-022 — production wire for
+        # ``record_exception_cohort``. Lazy import so the helper does
+        # not load when the flag is False (the hot path's most common
+        # state). The helper itself absorbs failures — see
+        # ``_exception_cohort_record_helper.record_from_exception``.
+        if self._record_cohort:
+            try:
+                from sovyx.observability._exception_cohort_record_helper import (  # noqa: PLC0415
+                    record_from_exception,
+                )
+
+                record_from_exception(exc)
+            except Exception:  # noqa: BLE001 — observability-of-observability
+                # Defensive: a bug in the cohort path MUST NOT block
+                # the serializer pipeline. The serializer fields above
+                # are already populated; the cohort observation is
+                # best-effort.
+                pass
         return event_dict
 
     @staticmethod

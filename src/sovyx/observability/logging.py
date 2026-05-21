@@ -366,7 +366,18 @@ def _setup_logging_locked(
     # through the same redaction + size-budget passes as any other
     # field. Always installed — preserving cause chains is a
     # forensics requirement, not a feature toggle.
-    shared_processors.append(ExceptionTreeProcessor())
+    #
+    # Mission B B-P0-2 (B.1.P2 closure 2026-05-21) — when
+    # ``observability.features.exception_cohort_recording`` is True,
+    # the processor ALSO dispatches into
+    # :func:`record_exception_cohort` (single chokepoint for F-022).
+    # Default False at v0.49.37 per `feedback_staged_adoption`;
+    # default-flip to True scheduled for v0.49.38.
+    _record_cohort_flag = bool(
+        obs_config is not None
+        and getattr(obs_config.features, "exception_cohort_recording", False)
+    )
+    shared_processors.append(ExceptionTreeProcessor(record_cohort=_record_cohort_flag))
     if obs_config is not None:
         if obs_config.features.pii_redaction:
             shared_processors.append(PIIRedactor(obs_config.pii))

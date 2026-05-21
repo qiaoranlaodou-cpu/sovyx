@@ -63,7 +63,7 @@ import threading
 import time
 import tracemalloc
 import weakref
-from collections import deque
+from collections import OrderedDict, deque
 from dataclasses import dataclass, field
 from enum import StrEnum, unique
 from typing import TYPE_CHECKING, Any, Final
@@ -541,28 +541,76 @@ class _ToThreadCounter:
 _MAX_TRACKED_LABELS: Final[int] = 128
 
 
+_DEFAULT_EXCEPTION_COHORT_OBSERVATIONS_MAXLEN: Final[int] = 128
+
+# Mission B B-P1-07 (B.1.P2 closure 2026-05-21) — `distinct_group_ids`
+# bounded via LRU. The bound is a multiple of the observations deque
+# maxlen because distinct group_ids are typically dwarfed by total
+# observations during a storm (same class re-raised many times). 4×
+# gives 512 distinct types at default maxlen=128, which covers the
+# realistic upper bound for a single daemon's exception-class diversity.
+_DISTINCT_GROUP_IDS_LRU_MULTIPLIER: Final[int] = 4
+
+# Mission B B-P2-12 (B.1.P2 closure 2026-05-21) — dedup window for
+# duplicate observations of the SAME group_id. With the helper's
+# 1-second monotonic-rounded group_id construction (see
+# `_exception_cohort_record_helper.py`), most chained-walk duplicates
+# arrive within the same 1.0s. Within this window the registry treats
+# repeat observations as the SAME exception being chained-walked
+# multiple times (do not double-count bytes); outside the window the
+# same exception_type firing N times is genuine recurrence (count
+# each).
+_EXCEPTION_COHORT_DEDUP_WINDOW_S: Final[float] = 1.0
+
+
 @dataclass(slots=True)
 class _ExceptionCohortCounter:
     """Mutable retained-bytes estimate for recent ExceptionGroups.
 
-    Stores BOTH lifetime accumulators (``retained_bytes_estimate`` is
-    monotonic ``+=`` since process start; ``distinct_group_ids`` is the
-    unbounded set of every group_id ever observed) AND a bounded
-    ``observations`` deque of ``(monotonic_ts, group_id, retained_bytes)``
-    tuples used to derive WINDOWED values at snapshot time. The
-    cumulative-vs-window distinction is the post-MISSION-A.1 fix for
-    F-002 + F-003 — pre-fix only the lifetime accumulators existed, and
-    field names ``retained_bytes_estimate`` / ``distinct_group_id_count``
+    Stores BOTH lifetime accumulators AND a bounded ``observations``
+    deque of ``(monotonic_ts, group_id, retained_bytes)`` tuples used
+    to derive WINDOWED values at snapshot time. The cumulative-vs-window
+    distinction is the post-MISSION-A.1 fix for F-002 + F-003 — pre-fix
+    only the lifetime accumulators existed, and field names
+    ``retained_bytes_estimate`` / ``distinct_group_id_count``
     misleadingly implied current-window semantics. Anti-pattern #49.
+
+    Mission B B-P0-2 + B-P1-07 (B.1.P2 closure 2026-05-21):
+
+    * ``distinct_group_ids`` is now an :class:`OrderedDict` (LRU by
+      last-seen monotonic) rather than the pre-fix unbounded ``set``.
+      Bounded at ``observations_maxlen * _DISTINCT_GROUP_IDS_LRU_MULTIPLIER``.
+      The ``cumulative_distinct_group_id_count`` snapshot field
+      reflects ``len()`` and is therefore bounded — operators reading
+      it understand it as "distinct group_ids in the most-recent
+      LRU-bound", NOT lifetime-distinct (which was operationally
+      unreachable anyway because the lifetime would OOM under storm).
+    * ``record_exception_cohort`` now dedup-checks the group_id
+      against ``_EXCEPTION_COHORT_DEDUP_WINDOW_S`` (1.0s). Within the
+      window, repeat observations of the same group_id are treated as
+      chain-walk duplicates (no bytes add, no observation append).
+      Outside the window, a same-class re-raise is genuine recurrence.
+    * Saturation telemetry — when the observations deque is full at
+      record time, a one-shot WARN ``exception_cohort.deque_saturation``
+      fires (debounced by the producer to ≤1/snapshot-tick) so
+      operators know the window-counts are under-reporting an
+      ongoing storm.
     """
 
+    observations_maxlen: int = _DEFAULT_EXCEPTION_COHORT_OBSERVATIONS_MAXLEN
     retained_bytes_estimate: int = 0
-    distinct_group_ids: set[str] = field(default_factory=set)
-    # Observations now carry the group_id so the window-distinct count
-    # can be computed without consulting the (unbounded) distinct_group_ids set.
-    observations: deque[tuple[float, str, int]] = field(
-        default_factory=lambda: deque(maxlen=128),
-    )
+    # Mission B B-P1-07: LRU-bounded by last_seen_monotonic. Mapping
+    # is group_id -> last_seen_monotonic (float). OrderedDict so we
+    # can move_to_end on touch + popitem(last=False) on eviction.
+    distinct_group_ids: OrderedDict[str, float] = field(default_factory=OrderedDict)
+    observations: deque[tuple[float, str, int]] = field(default_factory=deque)
+
+    def __post_init__(self) -> None:
+        # Build the deque with the operator-tunable maxlen; pydantic
+        # constructor knows nothing about the registry's tuning-knob
+        # protocol, so we set it here at construction time.
+        if self.observations.maxlen != self.observations_maxlen:
+            self.observations = deque(maxlen=self.observations_maxlen)
 
 
 # ── ResourceRegistry — the lifetime-spanning state holder ──
@@ -587,7 +635,22 @@ class ResourceRegistry:
     the next :meth:`snapshot_fields` call.
     """
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        exception_cohort_observations_maxlen: int = _DEFAULT_EXCEPTION_COHORT_OBSERVATIONS_MAXLEN,
+    ) -> None:
+        """Build a registry.
+
+        Mission B B-P0-2 (B.1.P2 closure 2026-05-21) —
+        ``exception_cohort_observations_maxlen`` is the operator-tunable
+        bound on the rolling observations deque. Bootstrap passes
+        :attr:`ObservabilityTuningConfig.exception_cohort_observations_maxlen`;
+        tests using bare ``ResourceRegistry()`` get 128 (the pre-fix
+        constant). Storm-level traffic that exceeds the deque maxlen
+        within the window emits ``exception_cohort.deque_saturation``
+        DEBUG so operators see the under-count risk.
+        """
         self._lock = threading.Lock()
         self._onnx_sessions: weakref.WeakValueDictionary[str, Any] = weakref.WeakValueDictionary()
         # Ordered label list parallel to the weakref values so callers
@@ -600,7 +663,9 @@ class ResourceRegistry:
         # Any | None]`` so call-site semantics are identical.
         self._lock_dicts: dict[str, Callable[[], Any | None]] = {}
         self._to_thread = _ToThreadCounter()
-        self._exception_cohort = _ExceptionCohortCounter()
+        self._exception_cohort = _ExceptionCohortCounter(
+            observations_maxlen=exception_cohort_observations_maxlen,
+        )
 
     # ── Mutators ──
 
@@ -714,20 +779,75 @@ class ResourceRegistry:
     ) -> None:
         """Accumulate :class:`ExceptionGroup` retention estimate.
 
-        ``group_id`` is a process-local synthetic identifier (e.g.
-        ``f"{exception_type}@{first_seen_monotonic}"``); the registry
-        deduplicates so a single ExceptionGroup observed multiple
-        times in the chain doesn't multiply the counter.
+        ``group_id`` is a process-local synthetic identifier built by
+        :mod:`sovyx.observability._exception_cohort_record_helper` as
+        ``f"{exception_type}@{int(time.monotonic())}"`` — the
+        1-second rounding collapses repeat instances of the same
+        class within 1 s into one cohort observation. The registry
+        ENFORCES that collapse here: same-group-id within
+        :data:`_EXCEPTION_COHORT_DEDUP_WINDOW_S` is a chain-walk
+        duplicate (no bytes add, no observation append). Outside the
+        window the same class firing again is genuine recurrence and
+        DOES add.
+
+        Mission B B-P0-2 + B-P2-12 (B.1.P2 closure 2026-05-21):
+        previously the bytes accumulator always added even on
+        duplicate group_id — over-counting under chain walks. The
+        docstring claimed "the registry deduplicates so a single
+        ExceptionGroup observed multiple times in the chain doesn't
+        multiply the counter" but the dedup only applied to the
+        ``distinct_group_ids`` set, not the bytes accumulator.
+
+        Mission B B-P1-07: ``distinct_group_ids`` is now LRU-bounded
+        — see :class:`_ExceptionCohortCounter` docstring. Touches the
+        LRU on every observation (window or out-of-window).
+
+        Mission B B-P1-06: emits ``exception_cohort.deque_saturation``
+        DEBUG (≤1/sec via the producer-side debouncing) when the
+        observations deque is at maxlen at record time — operators
+        know the window-counts are under-reporting an ongoing storm.
         """
         with self._lock:
             now = time.monotonic()
-            if group_id not in self._exception_cohort.distinct_group_ids:
-                self._exception_cohort.distinct_group_ids.add(group_id)
-            self._exception_cohort.retained_bytes_estimate += retained_bytes_estimate
+            cohort = self._exception_cohort
+            last_seen = cohort.distinct_group_ids.get(group_id)
+            if last_seen is not None and (now - last_seen) < _EXCEPTION_COHORT_DEDUP_WINDOW_S:
+                # Chain-walk duplicate — same exception being observed
+                # again at a different chain depth. Touch LRU; do not
+                # double-count bytes or observation.
+                cohort.distinct_group_ids[group_id] = now
+                cohort.distinct_group_ids.move_to_end(group_id)
+                return
+
+            # Saturation check BEFORE append: if the deque is at maxlen
+            # we are about to evict the oldest in-window observation
+            # silently. Surface a debug breadcrumb so operators see
+            # under-counting risk. Sampling discipline (≤1/sec) lives
+            # at the helper producer, not here — the lock is held so
+            # we keep this site minimal.
+            _maxlen = cohort.observations.maxlen
+            if _maxlen and len(cohort.observations) >= _maxlen:
+                logger.debug(
+                    "exception_cohort.deque_saturation",
+                    maxlen=_maxlen,
+                    hint=(
+                        "raise SOVYX_OBSERVABILITY__TUNING__"
+                        "EXCEPTION_COHORT_OBSERVATIONS_MAXLEN if the "
+                        "window-undercount is operationally material"
+                    ),
+                )
+
+            # Update LRU + lifetime accumulators + windowed observation.
+            cohort.distinct_group_ids[group_id] = now
+            cohort.distinct_group_ids.move_to_end(group_id)
+            lru_cap = cohort.observations_maxlen * _DISTINCT_GROUP_IDS_LRU_MULTIPLIER
+            while len(cohort.distinct_group_ids) > lru_cap:
+                cohort.distinct_group_ids.popitem(last=False)
+            cohort.retained_bytes_estimate += retained_bytes_estimate
             # MISSION-A.1 F-002+F-003: triple now carries group_id so window
-            # observers can compute distinct-in-window counts WITHOUT the
-            # unbounded ``distinct_group_ids`` set.
-            self._exception_cohort.observations.append(
+            # observers can compute distinct-in-window counts WITHOUT
+            # consulting the bounded ``distinct_group_ids`` LRU.
+            cohort.observations.append(
                 (now, group_id, retained_bytes_estimate),
             )
 

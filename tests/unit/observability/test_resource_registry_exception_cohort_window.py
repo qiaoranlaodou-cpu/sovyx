@@ -147,11 +147,23 @@ class TestExceptionCohortWindowAndCumulative:
         )
 
     def test_duplicate_group_id_within_window_counted_once(self) -> None:
-        """Same group_id observed N times within window counts as 1 distinct.
+        """Same group_id observed N times within 1 s collapses to ONE bytes obs.
 
-        ``window_distinct_group_id_count`` is the SET cardinality within window.
-        ``window_retained_bytes`` and the cumulative bytes still sum all
-        observations — bytes are additive even if the group_id repeats.
+        Mission B B-P2-12 (B.1.P2 closure 2026-05-21). Pre-fix bytes
+        were additive even if the group_id repeated within the dedup
+        window (cumulative bytes 5×1000 = 5000); the registry's
+        docstring claimed dedup-on-group_id but only the SET dedup'd —
+        the bytes accumulator was over-counting under any chained
+        ExceptionGroup walk that visited the same exception more than
+        once. The post-fix invariant: repeat observations of the same
+        group_id within ``_EXCEPTION_COHORT_DEDUP_WINDOW_S`` are
+        chain-walk duplicates — neither bytes nor observation deque
+        entry is added a second time.
+
+        Distinct-class re-occurrence OUTSIDE the dedup window IS
+        counted as genuine recurrence (the helper's group_id rounds
+        ``time.monotonic()`` to 1 s, so re-occurrence in a different
+        second produces a different group_id which is genuinely new).
         """
         reg = ResourceRegistry()
         for _ in range(5):
@@ -160,9 +172,9 @@ class TestExceptionCohortWindowAndCumulative:
             )
         fields = reg.snapshot_fields(exception_cohort_window_s=60.0)
         assert fields["exception_cohort.window_distinct_group_id_count"] == 1
-        assert fields["exception_cohort.window_retained_bytes"] == 5000
-        # Cumulative bytes accumulate 5×; distinct_group_ids set holds {"same"}.
-        assert fields["exception_cohort.cumulative_retained_bytes_since_start"] == 5000
+        assert fields["exception_cohort.window_retained_bytes"] == 1000
+        # Cumulative bytes ALSO count ONCE (B-P2-12).
+        assert fields["exception_cohort.cumulative_retained_bytes_since_start"] == 1000
         assert fields["exception_cohort.cumulative_distinct_group_id_count"] == 1
 
     def test_last_observation_monotonic_tracks_latest_observation(self) -> None:

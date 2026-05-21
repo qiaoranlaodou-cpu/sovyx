@@ -2784,6 +2784,18 @@ class ObservabilityFeaturesConfig(BaseSettings):
     # breaker (v0.49.36 behavior); when true, ack ALSO calls
     # clear_reason on the composite store (closes B-P1-03).
     cohort_axis_auto_clear: bool = True
+    # Mission B B-P0-2 (B.1.P2 closure 2026-05-21) — controls whether
+    # the structlog ``ExceptionTreeProcessor`` wires through to
+    # :func:`record_exception_cohort` on every serialized exception.
+    # Default FALSE per `feedback_staged_adoption` — foundation lands
+    # at v0.49.37, default-flip to True scheduled for v0.49.38. While
+    # False the EXCEPTION_COHORT cohort verdict stays permanently
+    # HEALTHY (window field forever 0) — identical to v0.49.36
+    # behavior. Operator override:
+    # SOVYX_OBSERVABILITY__FEATURES__EXCEPTION_COHORT_RECORDING=true
+    # to opt in early; =false to opt out post-default-flip if a
+    # production issue surfaces. Closes B-P0-2 / Mission A.3.P3 F-022.
+    exception_cohort_recording: bool = False
     # Phase 11 Task 11.6 — opt-in dedicated Prometheus scrape port. Default
     # off because operators commonly run behind a firewall that doesn't
     # expose 9101; the dashboard also serves /metrics on its own port for
@@ -2911,6 +2923,18 @@ class ObservabilityTuningConfig(BaseSettings):
     # banner-clear UX. Bounded [1, 20] so a misconfigured high value
     # cannot indefinitely defer the clear.
     cohort_clear_consecutive_healthy_threshold: int = Field(default=3, ge=1, le=20)
+    # Mission B B-P0-2 (B.1.P2 closure 2026-05-21) — rolling observations
+    # deque maxlen for the exception-cohort window producer. Default
+    # 128 matches the pre-fix constant. Under sustained storm rate >
+    # `maxlen / exception_cohort_window_s` observations per second, the
+    # deque saturates and emits ``exception_cohort.deque_saturation``
+    # DEBUG — operators tune upward by 4× if the under-count is
+    # operationally material. The LRU bound on ``distinct_group_ids``
+    # is 4× this value (see _resource_registry._DISTINCT_GROUP_IDS_LRU_MULTIPLIER).
+    # Bounded [16, 16384] so a misconfigured value cannot OOM the
+    # registry; the lower bound preserves at least 16 distinct samples
+    # for the windowed math to be statistically meaningful.
+    exception_cohort_observations_maxlen: int = Field(default=128, ge=16, le=16_384)
     exception_cohort_window_s: int = Field(default=300, ge=5, le=3_600)
     exception_cohort_retained_bytes_cap: int = Field(
         default=16 * 1024 * 1024, ge=1024, le=10 * 1024 * 1024 * 1024
