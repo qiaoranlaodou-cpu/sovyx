@@ -78,13 +78,38 @@ FIELD_REMEDIATIONS: Final[Mapping[str, str]] = {
         "Count of `proc.open_files()` (psutil; cheap on Linux/macOS, "
         "expensive on Windows). Skipped on the `final=True` shutdown "
         "snapshot to avoid the Windows `os.stat()` hang documented in "
-        "CLAUDE.md anti-pattern #30."
+        "CLAUDE.md anti-pattern #30. When ``None`` inspect the parallel "
+        "``process.open_files_status`` field for the exact reason "
+        "(MISSION-A.2.P4 F-012)."
+    ),
+    "process.open_files_status": (
+        "Disambiguation of why ``process.open_files_count`` may be "
+        "``None`` (MISSION-A.2.P4 F-012). One of: ``ok`` (count is "
+        "live), ``skipped_shutdown`` (final shutdown snapshot — "
+        "expensive psutil calls skipped to avoid Windows os.stat() "
+        "hang), ``denied`` (psutil raised PermissionError), "
+        "``unsupported`` (psutil edge case — NoSuchProcess, OSError), "
+        "``psutil_missing`` (psutil not installed). Operator action "
+        "depends on the status: ``denied`` → check process "
+        "capabilities; ``unsupported`` → file a bug with platform info."
     ),
     "process.connections_count": (
         "Count of `proc.net_connections(kind='inet')` (psutil). Healthy "
         "single-mind GA: 1-10 (dashboard HTTP + LLM provider keepalive "
         "+ bridge channels). Skipped on the `final=True` shutdown "
-        "snapshot."
+        "snapshot. When ``None`` inspect the parallel "
+        "``process.connections_status`` field for the exact reason "
+        "(MISSION-A.2.P4 F-012)."
+    ),
+    "process.connections_status": (
+        "Disambiguation of why ``process.connections_count`` may be "
+        "``None`` (MISSION-A.2.P4 F-012). Same status enum as "
+        "``process.open_files_status``: ``ok`` / ``skipped_shutdown`` / "
+        "``denied`` / ``unsupported`` / ``psutil_missing``. On Linux "
+        "non-root daemons ``net_connections`` shows only the process's "
+        "own connections (system-wide requires CAP_NET_ADMIN) — a "
+        "lower-than-expected count with status ``ok`` is permission-"
+        "restricted, not under-reporting."
     ),
     "process.memory_percent": (
         "Process RSS as percentage of system physical memory "

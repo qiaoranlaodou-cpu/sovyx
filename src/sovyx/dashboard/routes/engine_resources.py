@@ -71,6 +71,16 @@ class ResourceCohortMetrics(BaseModel):
 
     model_config = ConfigDict(extra="allow", populate_by_name=True)
 
+    # process (H4 + post-MISSION-A.2 extension fields)
+    # MISSION-A.2.P4 F-012: typed ``_status`` fields disambiguate the
+    # triple-None of ``open_files_count`` / ``connections_count``.
+    # Values are ``Literal["ok", "skipped_shutdown", "denied",
+    # "unsupported", "psutil_missing"]``. Typed as plain ``str`` here
+    # for forward-additive evolution (new status values can ship
+    # without a pydantic migration).
+    process_open_files_status: str = Field("ok", alias="process.open_files_status")
+    process_connections_status: str = Field("ok", alias="process.connections_status")
+
     # asyncio (H4 v0.49.31 extension fields land here via extra="allow";
     # MISSION-A.1.P3 F-005 types ``asyncio.all_task_names`` as first-class)
     # MISSION-A.1.P3 F-005 (anti-pattern #50, ADR-D15):

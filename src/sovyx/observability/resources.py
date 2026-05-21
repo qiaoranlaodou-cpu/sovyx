@@ -79,6 +79,12 @@ def _capture_psutil_metrics(*, skip_expensive: bool = False) -> dict[str, object
                 "self.health.psutil_missing",
                 **{"self.health.reason": "psutil unavailable; OS metrics dropped"},
             )
+        # MISSION-A.2.P4 F-012: triple-None disambiguation. Pre-fix the
+        # ``open_files_count`` / ``connections_count`` ``None`` value
+        # collapsed three distinct states — psutil missing, intentional
+        # shutdown skip, and permission/OS denial. Post-fix the parallel
+        # ``_status`` fields disambiguate. ``psutil_missing`` here
+        # covers the whole psutil-import-failure branch.
         return {
             "process.rss_bytes": None,
             "process.vms_bytes": None,
@@ -86,7 +92,9 @@ def _capture_psutil_metrics(*, skip_expensive: bool = False) -> dict[str, object
             "process.num_threads": None,
             "process.num_handles_or_fds": None,
             "process.open_files_count": None,
+            "process.open_files_status": "psutil_missing",
             "process.connections_count": None,
+            "process.connections_status": "psutil_missing",
             # Mission H4 §0 item 4 + §T2.1 + §3 F2 extension fields.
             "process.memory_percent": None,
             "process.cpu_times_user_s": None,
@@ -134,20 +142,40 @@ def _capture_psutil_metrics(*, skip_expensive: bool = False) -> dict[str, object
     # snapshot is best-effort, not a forensic capture. Skip entirely
     # during shutdown to avoid the ``os.stat()`` hang on closing
     # handles documented in :func:`_capture_psutil_metrics`.
+    #
+    # MISSION-A.2.P4 F-012: parallel ``_status`` fields disambiguate
+    # the four reasons the count can be ``None`` — shutdown-skip,
+    # permission-denied, OS-unsupported, or psutil-missing. The
+    # status field is the SoT for downstream consumers; the count
+    # remains operator-friendly numeric or None.
     open_files_count: int | None
+    open_files_status: str
     connections_count: int | None
+    connections_status: str
     if skip_expensive:
         open_files_count = None
+        open_files_status = "skipped_shutdown"
         connections_count = None
+        connections_status = "skipped_shutdown"
     else:
         try:
             open_files_count = len(proc.open_files())
-        except Exception:  # noqa: BLE001
+            open_files_status = "ok"
+        except PermissionError:
             open_files_count = None
+            open_files_status = "denied"
+        except Exception:  # noqa: BLE001 — psutil edge cases (NoSuchProcess, OSError)
+            open_files_count = None
+            open_files_status = "unsupported"
         try:
             connections_count = len(proc.net_connections(kind="inet"))
+            connections_status = "ok"
+        except PermissionError:
+            connections_count = None
+            connections_status = "denied"
         except Exception:  # noqa: BLE001
             connections_count = None
+            connections_status = "unsupported"
 
     # Mission H4 §0 item 4 + §T2.1 + §3 F2 — extension fields.
     # ``memory_percent`` is psutil-derived (rss / total physical memory).
@@ -174,7 +202,9 @@ def _capture_psutil_metrics(*, skip_expensive: bool = False) -> dict[str, object
         "process.num_threads": num_threads,
         "process.num_handles_or_fds": handles_or_fds,
         "process.open_files_count": open_files_count,
+        "process.open_files_status": open_files_status,
         "process.connections_count": connections_count,
+        "process.connections_status": connections_status,
         "process.memory_percent": memory_percent,
         "process.cpu_times_user_s": cpu_times_user_s,
         "process.cpu_times_system_s": cpu_times_system_s,

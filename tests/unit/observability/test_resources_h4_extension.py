@@ -80,6 +80,9 @@ _H4_NEW_FIELDS: frozenset[str] = frozenset(
         "process.cpu_times_user_s",
         "process.cpu_times_system_s",
         "asyncio.default_executor_state",
+        # MISSION-A.2.P4 F-012: triple-None disambiguation.
+        "process.open_files_status",
+        "process.connections_status",
     },
 )
 
@@ -294,7 +297,11 @@ class TestSpecF2CanonicalFieldList:
         (ADR-D16).
 
         Net delta: 35 + 0 (5 new − 5 demoted to shim) = 35.
+
+        MISSION-A.2.P4 delta (F-012): triple-None disambiguation adds
+        ``process.open_files_status`` + ``process.connections_status``
+        as two new canonical typed-status fields. Net delta: +2 → 37.
         """
         from sovyx.observability._resource_registry import _HEALTH_SNAPSHOT_FIELDS
 
-        assert len(_HEALTH_SNAPSHOT_FIELDS) == 35
+        assert len(_HEALTH_SNAPSHOT_FIELDS) == 37

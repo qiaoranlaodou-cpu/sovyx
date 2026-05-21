@@ -216,11 +216,31 @@ _HEALTH_SNAPSHOT_FIELDS: Final[Mapping[str, FieldSpec]] = {
         operator_hint_key="process_open_files_count",
         section="process",
     ),
+    # MISSION-A.2.P4 F-012: triple-None disambiguation. Pre-fix the
+    # ``open_files_count`` / ``connections_count`` ``None`` value
+    # collapsed three distinct conditions (shutdown-skip / permission-
+    # denied / psutil-missing). The parallel ``_status`` field carries
+    # one of ``ok`` / ``skipped_shutdown`` / ``denied`` / ``unsupported``
+    # / ``psutil_missing`` so downstream consumers can disambiguate.
+    "process.open_files_status": FieldSpec(
+        canonical_key="process.open_files_status",
+        type_constraint=str,
+        producer_module="sovyx.observability.resources",
+        operator_hint_key="process_open_files_status",
+        section="process",
+    ),
     "process.connections_count": FieldSpec(
         canonical_key="process.connections_count",
         type_constraint=int,
         producer_module="sovyx.observability.resources",
         operator_hint_key="process_connections_count",
+        section="process",
+    ),
+    "process.connections_status": FieldSpec(
+        canonical_key="process.connections_status",
+        type_constraint=str,
+        producer_module="sovyx.observability.resources",
+        operator_hint_key="process_connections_status",
         section="process",
     ),
     # ── H4 new fields: process block extension (Mission H4 §0 item 4 + §T2.1 + §3 F2). ──
