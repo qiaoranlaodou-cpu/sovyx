@@ -1951,6 +1951,19 @@ export const EngineDegradedResponseSchema = z
       .nullable()
       .optional(),
     composite_axis_count: z.number().int().nonnegative().optional().default(0),
+    // Mission D.1 / D-P0-1 — additive max-per-axis severity field.
+    // Carries the highest per-entry DegradedEntry.severity under
+    // None < warn < error < critical ordering. When the server-side
+    // SOVYX_TUNING__DASHBOARD__COMPOSITE_SEVERITY_BY_MAX knob is True
+    // (default after the D.1-c PERCEIVED flip), composite_severity
+    // already reflects max(per-axis, count-tier); this field is still
+    // emitted so consumers that want the raw per-axis signal can read
+    // it independently. Pre-D.1 producers omit the field entirely —
+    // .nullable().optional() preserves that pathway.
+    composite_max_severity: z
+      .enum(["warn", "error", "critical"])
+      .nullable()
+      .optional(),
     // Default ack uses an explicit ``acked: false`` so the inferred
     // TS shape stays satisfied (zod cannot fully infer "empty object
     // is valid when every field is optional" with .passthrough()).

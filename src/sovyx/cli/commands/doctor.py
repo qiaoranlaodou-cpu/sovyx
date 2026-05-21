@@ -1718,6 +1718,22 @@ def _render_voice_failover_history_surface(
             )
 
 
+def _doctor_composite_severity_by_max_enabled() -> bool:
+    """Best-effort read of the D.1 LENIENT knob from the env.
+
+    Mission D.1 / D-P0-1 — keeps CLI/dashboard composite-severity
+    parity. A fresh :class:`EngineConfig` instantiation reads
+    ``SOVYX_TUNING__DASHBOARD__COMPOSITE_SEVERITY_BY_MAX`` from env;
+    on any failure the helper returns False so the CLI matches the
+    pre-D.1 count-tier behavior.
+    """
+    try:
+        config = EngineConfig()
+        return bool(config.tuning.dashboard.composite_severity_by_max)
+    except Exception:  # noqa: BLE001 — knob lookup must never raise
+        return False
+
+
 def _render_voice_degraded_banner_surface(
     *,
     output_json: bool,
@@ -1742,6 +1758,11 @@ def _render_voice_degraded_banner_surface(
     if output_json:
         return
     try:
+        from sovyx.dashboard.routes.engine_degraded import (
+            _compute_composite_severity,
+            _compute_composite_severity_hybrid,
+            _max_per_axis_severity,
+        )
         from sovyx.engine._degraded_store import get_default_degraded_store
     except Exception as exc:  # noqa: BLE001
         console.print(
@@ -1755,17 +1776,25 @@ def _render_voice_degraded_banner_surface(
         console.print("[dim]No degraded axes.[/dim]")
         return
 
-    # Severity counter (composite-severity per ADR-D6)
+    # Mission D.1 / D-P0-1 — composite severity via the dashboard route's
+    # SSoT helpers. Pre-D.1, this surface re-implemented the count-tier
+    # rule inline; the duplicate copy was a drift risk (anti-pattern
+    # #52/#53 sibling) that consolidation closes. The CLI honors the
+    # same SOVYX_TUNING__DASHBOARD__COMPOSITE_SEVERITY_BY_MAX knob the
+    # dashboard route reads (via env vars on a fresh EngineConfig()),
+    # so operator perception parity is preserved.
     distinct_axes = sorted({e.axis for e in entries})
-    if len(distinct_axes) >= 3:
-        composite_color = "red"
-        composite_label = "CRITICAL"
-    elif len(distinct_axes) == 2:
-        composite_color = "red"
-        composite_label = "ERROR"
+    max_per_axis = _max_per_axis_severity(entries)
+    by_max = _doctor_composite_severity_by_max_enabled()
+    if by_max:
+        severity_str = _compute_composite_severity_hybrid(
+            len(distinct_axes),
+            max_per_axis,
+        )
     else:
-        composite_color = "yellow"
-        composite_label = "WARN"
+        severity_str = _compute_composite_severity(len(distinct_axes))
+    composite_label = (severity_str or "warn").upper()
+    composite_color = "red" if severity_str in {"error", "critical"} else "yellow"
     console.print(
         f"  [bold {composite_color}]{composite_label}[/bold {composite_color}]  "
         f"[dim]({len(distinct_axes)} axis(es) degraded: "

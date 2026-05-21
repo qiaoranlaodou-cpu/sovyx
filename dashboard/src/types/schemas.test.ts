@@ -3,6 +3,7 @@ import {
   CancelJobResponseSchema,
   CaptureRestartFrameSchema,
   CaptureRestartReasonSchema,
+  EngineDegradedResponseSchema,
   FailoverHistoryEntrySchema,
   FailoverHistoryResponseSchema,
   ForgetMindResponseSchema,
@@ -1443,6 +1444,117 @@ describe("FailoverHistoryResponseSchema (Mission C3 §T2.9)", () => {
       ring_capacity: 16,
       future_field_for_c4: "banner_dismissed",
     });
+    expect(result.success).toBe(true);
+  });
+});
+
+// Mission D.1 / D-P0-1 — pin the EngineDegradedResponse contract so
+// the additive composite_max_severity field is rejected if the backend
+// renames it or changes the enum, and so the pre-D.1 payload (no
+// composite_max_severity) still parses while the LENIENT shim is live.
+describe("EngineDegradedResponseSchema (Mission D.1)", () => {
+  it("accepts pre-D.1 payload without composite_max_severity", () => {
+    const payload = {
+      axes: [],
+      composite_severity: null,
+      composite_axis_count: 0,
+      ack: { acked: false },
+    };
+    const result = EngineDegradedResponseSchema.safeParse(payload);
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.composite_max_severity).toBeUndefined();
+    }
+  });
+
+  it("accepts composite_max_severity explicit null (no degraded entries)", () => {
+    const payload = {
+      axes: [],
+      composite_severity: null,
+      composite_axis_count: 0,
+      composite_max_severity: null,
+      ack: { acked: false },
+    };
+    const result = EngineDegradedResponseSchema.safeParse(payload);
+    expect(result.success).toBe(true);
+  });
+
+  it("accepts composite_max_severity = warn", () => {
+    const payload = {
+      axes: [],
+      composite_severity: "warn",
+      composite_axis_count: 1,
+      composite_max_severity: "warn",
+      ack: { acked: false },
+    };
+    const result = EngineDegradedResponseSchema.safeParse(payload);
+    expect(result.success).toBe(true);
+  });
+
+  it("accepts composite_max_severity = error", () => {
+    const payload = {
+      axes: [],
+      composite_severity: "error",
+      composite_axis_count: 2,
+      composite_max_severity: "error",
+      ack: { acked: false },
+    };
+    const result = EngineDegradedResponseSchema.safeParse(payload);
+    expect(result.success).toBe(true);
+  });
+
+  it("accepts composite_max_severity = critical (the D-P0-1 smoking gun)", () => {
+    const payload = {
+      axes: [],
+      composite_severity: "warn",
+      composite_axis_count: 1,
+      composite_max_severity: "critical",
+      ack: { acked: false },
+    };
+    const result = EngineDegradedResponseSchema.safeParse(payload);
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.composite_max_severity).toBe("critical");
+    }
+  });
+
+  it("rejects composite_max_severity = warning (sibling grammar drift)", () => {
+    // Producer-side normalization happens server-side in
+    // _normalize_severity; the wire grammar STILL only accepts the
+    // canonical {warn,error,critical} set.
+    const payload = {
+      axes: [],
+      composite_severity: "warn",
+      composite_axis_count: 1,
+      composite_max_severity: "warning",
+      ack: { acked: false },
+    };
+    const result = EngineDegradedResponseSchema.safeParse(payload);
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects composite_max_severity = unknown literal", () => {
+    const payload = {
+      axes: [],
+      composite_severity: "warn",
+      composite_axis_count: 1,
+      composite_max_severity: "emergency",
+      ack: { acked: false },
+    };
+    const result = EngineDegradedResponseSchema.safeParse(payload);
+    expect(result.success).toBe(false);
+  });
+
+  it("passthrough preserves unknown top-level fields", () => {
+    const payload = {
+      axes: [],
+      composite_severity: null,
+      composite_axis_count: 0,
+      composite_max_severity: null,
+      ack: { acked: false },
+      future_d2_governor_hint: "ok",
+    };
+    const result = EngineDegradedResponseSchema.safeParse(payload);
     expect(result.success).toBe(true);
   });
 });
