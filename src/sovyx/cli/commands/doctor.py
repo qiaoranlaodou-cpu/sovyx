@@ -3081,4 +3081,128 @@ def doctor_resources(
     _render_resource_payload(payload, cohort=cohort, source=source, console=console)
 
 
+# ────────────────────────────────────────────────────────────────────
+# MISSION-A.2.P3 F-020 — `sovyx doctor gates` (LENIENT/STRICT visibility)
+# ────────────────────────────────────────────────────────────────────
+#
+# Pre-fix: operators on v0.49.x had no surface to discover which Quality
+# Gates were LENIENT vs STRICT, what their STRICT-flip target tag was,
+# or which validation gate (V-* in OPERATOR-VALIDATION-BACKLOG-2026.md)
+# unblocks the flip. Operators relied on memory or grep through
+# CLAUDE.md to answer "is Gate 15 going STRICT in v0.54.0 or v0.55.0?".
+#
+# Post-fix: ``sovyx doctor gates`` prints a single source-of-truth
+# table. The registry below is the operator-facing snapshot of the
+# Quality Gates section of CLAUDE.md (numbers + scripts + states +
+# target versions + V-* IDs). It is HAND-MAINTAINED and audited via
+# the CLAUDE.md anti-pattern table — every new gate landing in
+# verify_gates.sh MUST add a row here in the same commit.
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class _GateEntry:
+    """One Quality Gate row, mirroring CLAUDE.md Quality Gates section."""
+
+    number: int
+    name: str
+    status: str  # "STRICT" or "LENIENT"
+    strict_target: str  # version tag like "v0.54.0" or "—" (always strict)
+    validation_gate: str  # V-* ID or "—"
+
+
+# Mirrors CLAUDE.md ``Gates (in order):`` block. Single-source-of-truth
+# for the operator-facing surface. Land here in the SAME commit that
+# adds a gate to verify_gates.sh (CLAUDE.md gate-table is the spec; this
+# registry is the operator-facing render of it).
+_QUALITY_GATES: tuple[_GateEntry, ...] = (
+    _GateEntry(1, "ruff check", "STRICT", "—", "—"),
+    _GateEntry(2, "ruff format --check", "STRICT", "—", "—"),
+    _GateEntry(3, "mypy (strict)", "STRICT", "—", "—"),
+    _GateEntry(4, "bandit", "STRICT", "—", "—"),
+    _GateEntry(5, "pytest --timeout=30 -q", "STRICT", "—", "—"),
+    _GateEntry(6, "dashboard: npx tsc -b tsconfig.app.json", "STRICT", "—", "—"),
+    _GateEntry(7, "dashboard: npx vitest run --reporter=dot", "STRICT", "—", "—"),
+    _GateEntry(8, "check_boundary_round_trip_coverage.py (C2)", "STRICT", "—", "V-C2-1"),
+    _GateEntry(9, "check_ladder_iteration_discipline.py (C3)", "STRICT", "—", "V-C3-1"),
+    _GateEntry(10, "check_degraded_signal_surface.py (C4)", "STRICT", "—", "V-C4-1"),
+    _GateEntry(11, "check_dashboard_bundle_integrity.py (C5)", "LENIENT", "v0.48.0", "V-C5-7"),
+    _GateEntry(12, "check_llm_provider_discipline.py (C6)", "LENIENT", "v0.50.0", "V-C6-11"),
+    _GateEntry(13, "check_platform_neutral_event_names.py (H2)", "LENIENT", "v0.51.0", "V-H2-11"),
+    _GateEntry(14, "check_quarantine_reason_discipline.py (H3)", "LENIENT", "v0.53.0", "V-H3-11"),
+    _GateEntry(15, "check_resource_hygiene_discipline.py (H4)", "LENIENT", "v0.54.0", "V-H4-13"),
+)
+
+
+@doctor_app.command("gates")
+def doctor_gates(
+    output_json: bool = typer.Option(
+        False,
+        "--json",
+        help="Emit the gate registry as a JSON array on stdout.",
+    ),
+) -> None:
+    """Surface the Quality Gates registry — STRICT/LENIENT state + sunset target.
+
+    MISSION-A.2.P3 F-020 — operator-facing LENIENT/STRICT visibility.
+
+    Pre-fix operators on v0.49.x relied on memory or grep through
+    CLAUDE.md to answer "is Gate 15 going STRICT in v0.54.0 or v0.55.0?".
+    The pending strict-flips are tagged via validation gates
+    (V-C5-7 / V-C6-11 / V-H2-11 / V-H3-11 / V-H4-13) and the operator-
+    validation backlog at
+    ``docs-internal/OPERATOR-VALIDATION-BACKLOG-2026.md``.
+
+    The table below mirrors CLAUDE.md's Quality Gates section. Every
+    new gate landing in ``scripts/verify_gates.sh`` MUST add a row to
+    ``_QUALITY_GATES`` in the same commit (mechanically anchored via
+    the test ``tests/unit/cli/test_doctor_gates.py``).
+    """
+    if output_json:
+        print(
+            json.dumps(
+                [
+                    {
+                        "number": g.number,
+                        "name": g.name,
+                        "status": g.status,
+                        "strict_target": g.strict_target,
+                        "validation_gate": g.validation_gate,
+                    }
+                    for g in _QUALITY_GATES
+                ],
+                indent=2,
+            )
+        )
+        return
+    console = Console()
+    table = Table(
+        title="Sovyx Quality Gates",
+        show_header=True,
+        header_style="bold cyan",
+        title_style="bold",
+    )
+    table.add_column("#", justify="right", style="dim")
+    table.add_column("Gate")
+    table.add_column("Status", justify="center")
+    table.add_column("STRICT target", justify="center")
+    table.add_column("Validation gate", justify="center")
+    for gate in _QUALITY_GATES:
+        status_style = "green" if gate.status == "STRICT" else "yellow"
+        table.add_row(
+            str(gate.number),
+            gate.name,
+            f"[{status_style}]{gate.status}[/{status_style}]",
+            gate.strict_target,
+            gate.validation_gate,
+        )
+    console.print(table)
+    lenient_count = sum(1 for g in _QUALITY_GATES if g.status == "LENIENT")
+    if lenient_count > 0:
+        console.print(
+            f"[dim]{lenient_count} gate(s) in LENIENT — see "
+            f"docs-internal/OPERATOR-VALIDATION-BACKLOG-2026.md "
+            f"for V-* unblock criteria.[/dim]"
+        )
+
+
 __all__ = ["doctor_app"]
