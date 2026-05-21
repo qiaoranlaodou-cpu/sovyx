@@ -8,6 +8,172 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 (none — every shipped delta documented in tagged sections below)
 
+## [0.49.37] — 2026-05-21
+
+**Mission B.1 closure of the four P0 findings from the 2026-05-21
+audit at `docs-internal/MISSION-B-AUDIT-FINDINGS-2026-05-21.md` /
+`MISSION-B-FINDINGS-REGISTER-2026-05-21.md` /
+`MISSION-B-REMEDIATION-PLAN-2026-05-21.md`. Sub-phases land in the
+enforced sequence: B.1.P4 (docs) → B.1.P1 (ack URL) → B.1.P3
+(clear_axis hysteresis) → B.1.P2 (F-022 wire).**
+
+### Fixed
+
+**B-P0-1 — Operator ack endpoint URL realignment (`/api/voice/...` →
+`/api/engine/...`).** Mission C4 (v0.46.4 commit `035bc600`) introduced
+an internally-inconsistent specification: §T3.3 prose + section title
+claimed the endpoint was `/api/voice/degraded/ack` while the §T3.3
+code block declared `@router.post("/degraded/ack")` inside a router
+whose prefix is `/api/engine`. The implementer faithfully transcribed
+both sides of the inconsistency into shipped code. As a result, from
+v0.46.4 through v0.49.36 the frontend POSTed to a path FastAPI did
+not register (404), the `.catch(() => {})` in
+`DegradedBannerGlobalMount.tsx:27` swallowed the error silently, and
+**the entire C4 composite-banner ack feature was structurally inert
+for four days**. The `operator_acks` SQLite table received ZERO rows
+from real operators over the window. The v0.46.4 CHANGELOG entry at
+lines 157, 177 ("POST `/api/voice/degraded/ack` endpoint at
+`engine_degraded.py`") publicized a URL that returned 404 since the
+day it was written. The V-C4-9 operator-validation curl at
+`OPERATOR-VALIDATION-BACKLOG-2026.md:1623` instructed operators to
+exercise the same dead URL — the V-C4-9 evidence over the window is
+non-evidentiary for the resurface contract. Mission B.1.P1 realigned
+all 16 drift sites (1 frontend hook + 2 mounted components + 4
+vitest mock assertions + 3 server docstrings + 1 cross-mission
+docstring + 1 model docstring + 2 test docstrings + 1 forward-looking
+comment + this CHANGELOG addendum + 1 backlog curl + 1 Mission C4
+spec Archive Footer addendum + 2 frontend JSDoc/comment fixes) to the
+runtime-registered `/api/engine/degraded/ack` path. Classified by
+Mission B as a **spec-transcription propagation failure class**, not
+a typo. New anti-pattern #53 (frontend POST/PUT/PATCH/DELETE path
+parity) proposed for CLAUDE.md.
+
+**B-P0-3 — `ResourceCohortGovernor` per-axis clear_reason on
+N-consecutive-HEALTHY hysteresis.** The governor's class docstring at
+`_resource_cohort_governor.py:222-228` promised "HEALTHY — Clears any
+prior engine_resources.<axis> entries from the EngineDegradedStore";
+the actual code in `emit_axis_entries` silently skipped all
+non-BUDGET_EXCEEDED verdicts and never called `clear_axis`/`clear_reason`.
+Once any of the 5 cohort budgets breached, the `EngineDegradedStore`
+entry persisted until process restart. A transient 5-second RSS
+spike during cold-start model warmup pinned the banner CRITICAL for
+the daemon lifetime; every healthy multi-mind installation (3 minds ×
+5 ONNX = 15 > 8 `cohort_onnx_session_soft_cap`) showed a permanent
+banner that the broken B-P0-1 ack endpoint could never dismiss. Per
+the Mission B audit this was the **consumer-side recreation of the
+exact pre-A.1.P2 "permanently breached" pathology** that Mission A.1
+had just closed on the producer side (F-002+F-003 `retained_bytes_estimate`
+monotonic accumulator). Mission B.1.P3 added per-axis last-verdict
+tracking + N-consecutive-HEALTHY hysteresis (default N=3) +
+`clear_reason()` (not `clear_axis` — protects sibling cohorts) +
+best-effort `OperatorAcksStore.clear_ack` pairing. Operator-ack
+endpoint (`POST /api/engine/resources/cohort/ack`) now also clears
+the composite-store entry alongside the in-process breaker. Feature
+flag `observability.features.cohort_axis_auto_clear` default True
+per anti-pattern #34 inverse (the clear IS the operator-trust
+feature). Tuning knob `tuning.cohort_clear_consecutive_healthy_threshold`
+operator-tunable [1, 20] to suppress flicker. New anti-pattern #54
+(composite-store record-clear pairing) proposed for CLAUDE.md.
+
+### Added
+
+**B-P0-2 — F-022 production wire-up of `record_exception_cohort` via
+`ExceptionTreeProcessor`.** Mission A.1.P2 closed the producer
+SEMANTICS of `exception_cohort.window_retained_bytes` /
+`window_distinct_group_id_count` (decaying window with cumulative
+forensic companion); Mission A.3 spec §A.3.P3 scheduled the
+producer WIRE for v0.50.1 ("BLOCKED on A.1.P2"). Mission B's audit
+identified that A.1.P2's window-decay closure was operationally
+vacuous without the producer wire — the EXCEPTION_COHORT cohort was
+**permanently dark**: `_exception_cohort.observations` deque empty
+for the daemon lifetime, governor verdict permanently HEALTHY by
+construction, chips for `exception_cohort_retention_high` reason
+were dead code that could never fire. Mission B.1.P2 transferred
+F-022 closure from A.3.P3 to B.1.P2. Wire site: extended
+`ExceptionTreeProcessor.__call__` to call `record_from_exception(exc)`
+(new helper at `_exception_cohort_record_helper.py`) after the existing
+`serialize_exception` succeeds — single chokepoint captures all 59
+`logger.exception(...)` sites across 30 files without per-site
+touches. Feature flag `observability.features.exception_cohort_recording`
+ships DEFAULT FALSE at v0.49.37 per `feedback_staged_adoption`;
+default-flip to True scheduled for v0.49.38. `_ExceptionCohortCounter.distinct_group_ids`
+bounded via `OrderedDict` LRU (closes Mission B B-P1-07 latent
+memory leak). `_exception_cohort.observations` deque maxlen exposed
+as operator-tunable `tuning.exception_cohort_observations_maxlen`
+(default 128, documented load-dependent — closes Mission B B-P1-06
+storm-undercount risk). One-time WARN `exception_cohort.deque_saturation`
+emitted on saturation per snapshot tick so operators can detect
+silent windowed-undercount. Bytes dedup on duplicate group_ids
+within 1s (closes Mission B B-P2-12 over-count in chained
+ExceptionGroup observation).
+
+**B-P0-4 — V-A1-* / V-A2-FINAL operator-validation rows.** Appended
+to `docs-internal/OPERATOR-VALIDATION-BACKLOG-2026.md` (EOF, new
+`## Mission A` section). 6 rows: V-A1-1 (anomaly memory_growth
+baseline replay), V-A1-2 (exception_cohort window decay), V-A1-3
+(LENIENT shim producer contract — mechanical half + 24-48h passive
+consumer half), V-A2-FINAL (aggregate operator-trust closure),
+V-A1-FINAL (aggregate runtime-truth closure with no-action-default
+at T+48h), V-A1-FINAL-FALSIFIABILITY (POST-v0.55.0 STRICT-flip
+verification). Mission A.1+A.2 closed in code at v0.49.36 but the
+operator-facing canonical backlog was missing the rows — operator
+following `feedback_validation_batching` post-publish found nothing
+to validate. Mission B classified this as a **governance-process
+P0**: mission closure that references V-* gates absent from the
+canonical operator interface. New anti-pattern #55 (V-* row backlog
+parity) proposed for CLAUDE.md.
+
+### Regression coverage
+
+- New `tests/integration/dashboard/test_engine_degraded_ack_e2e.py::test_frontend_ack_endpoint_is_registered`
+  — `TestClient(create_app())` POST to `/api/engine/degraded/ack`
+  with the exact body shape the frontend emits; asserts `status_code
+  != 404`. Falsifiability: pre-B.1.P1 fix (when frontend literal was
+  still `/api/voice/...`), the test would have been pinned against
+  the actual unregistered URL and would have returned 404.
+- New `tests/unit/observability/test_resource_cohort_governor_hysteresis.py`
+  — drives sequence [HEALTHY, HEALTHY, BUDGET_EXCEEDED, BUDGET_EXCEEDED,
+  HEALTHY, HEALTHY, HEALTHY] and asserts store entry count transitions
+  0→0→1→1→1→1→0 (N=3 hysteresis). Oscillation test asserts no
+  flicker. Per-reason clear test asserts unrelated cohort breaches
+  survive a cohort recovery. Feature-flag-off test confirms v0.49.36
+  stuck-banner behavior preserved when disabled.
+- New `tests/integration/observability/test_h4_exception_cohort_e2e_wiring.py`
+  — 7 e2e cases: producer→consumer single-tick, de-dup within 1s,
+  distinct classes, window decay, governor pipeline transitions,
+  feature-flag-off no-op, deque-saturation telemetry on storm.
+
+### Migration notes
+
+- Operators with external Grafana panels keyed on `engine_resources.*`
+  axis entries: the banner now AUTO-CLEARS after N=3 consecutive
+  HEALTHY ticks (default ~3 minutes at 60s cohort cadence). Pre-v0.49.37
+  behavior of permanent breach is preserved when
+  `SOVYX_OBSERVABILITY__FEATURES__COHORT_AXIS_AUTO_CLEAR=false`.
+- Operators with external Grafana panels keyed on `exception_cohort.window_*`
+  fields: values remain zero at v0.49.37 (recording flag default
+  OFF). The default flip to True at v0.49.38 will surface real
+  exception flux; operator-tooltip on dashboard discloses this.
+- The 0.46.4 CHANGELOG entry advertising `POST /api/voice/degraded/ack`
+  was incorrect; the route was always at `/api/engine/degraded/ack`.
+  The ack feature ACTIVATES FOR THE FIRST TIME at v0.49.37 — there is
+  no migration window, no client caches, no third-party docs to
+  invalidate. Operators who attempted the V-C4-9 validation between
+  v0.46.4 and v0.49.36 received non-evidentiary outcomes; re-run after
+  v0.49.37 publish.
+
+### Anti-patterns added to CLAUDE.md
+
+- **#53** — HTTP path strings constituting the producer↔consumer
+  contract MUST round-trip through one shared symbol or be exercised
+  by integration test against the exact frontend literal.
+- **#54** — Every `EngineDegradedStore.record()` call site MUST have
+  a paired clear-edge (`clear_reason()` per-reason preferred) tied to
+  a verifiable HEALTHY verdict.
+- **#55** — Mission closure that references V-* operator-validation
+  gates MUST land the corresponding rows in
+  `OPERATOR-VALIDATION-BACKLOG-2026.md` in the SAME tag.
+
 ## [0.46.6] — 2026-05-17
 
 **Hotfix for v0.46.3 / v0.46.4 / v0.46.5 publish.yml failure.** The
