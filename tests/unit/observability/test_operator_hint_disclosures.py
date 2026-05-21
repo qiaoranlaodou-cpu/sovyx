@@ -72,9 +72,9 @@ class TestOperatorHintDisclosures:
                 )
         # The user_s hint MUST include a concrete derivative formula example
         # (operator-actionability requirement per the F-011 finding).
-        assert (
-            "snapshot_taken_at_monotonic" in FIELD_REMEDIATIONS["process.cpu_times_user_s"]
-        ), "F-011 disclosure SHOULD include a concrete Δ/Δt formula example."
+        assert "snapshot_taken_at_monotonic" in FIELD_REMEDIATIONS["process.cpu_times_user_s"], (
+            "F-011 disclosure SHOULD include a concrete Δ/Δt formula example."
+        )
 
     def test_f013_connections_count_discloses_cap_net_admin(self) -> None:
         """F-013: Linux CAP_NET_ADMIN requirement MUST be disclosed."""
