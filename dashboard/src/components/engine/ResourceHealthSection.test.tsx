@@ -47,20 +47,23 @@ describe("ResourceHealthSection", () => {
   });
 
   it("renders 8 cohort sections when snapshot present", () => {
+    // MISSION-A.2.P1 F-004: post-A.1 canonical field names. The 9
+    // LENIENT shims emitted by the backend snapshotter are NOT rendered
+    // by the dashboard — operators see the disambiguated post-A.1 names.
     mockPollerState.data = {
       observed_at_unix: 1716143280,
       cohorts: {
         "process.rss_bytes": 100_000_000,
         "asyncio.task_count": 5,
-        "to_thread.pool_size": 4,
+        "to_thread.pool_size_at_last_dispatch": 4,
         "lock_dict.total_cardinality": 42,
         "onnx.session_count": 4,
         "gc.objects_count": 50000,
         "tracemalloc.is_tracing": false,
-        "exception_cohort.retained_bytes_estimate": 0,
+        "exception_cohort.window_retained_bytes": 0,
       },
-      canonical_field_count: 28,
-      legacy_alias_count: 1,
+      canonical_field_count: 35,
+      legacy_alias_count: 9,
     };
     render(<ResourceHealthSection />);
     expect(screen.getByTestId("resource-health-sections")).toBeInTheDocument();
@@ -196,6 +199,123 @@ describe("ResourceHealthSection", () => {
       fireEvent.click(tmBtn);
     }
     expect(screen.getByText("true")).toBeInTheDocument();
+  });
+
+  it("does NOT render the 9 LENIENT shims as dashboard rows", () => {
+    // MISSION-A.2.P1 F-004: the 9 LENIENT shims emitted by the backend
+    // snapshotter (sunset v0.55.0 — see ADR-D14/D15/D16) are for
+    // external Grafana / log forwarders during the dual-emit cycle.
+    // The Sovyx dashboard renders the disambiguated post-A.1 canonical
+    // names; the shims MUST NOT appear in the operator-facing UI even
+    // when present in the API payload.
+    mockPollerState.data = {
+      observed_at_unix: 1716143280,
+      cohorts: {
+        // Canonical (rendered)
+        "to_thread.pool_size_at_last_dispatch": 4,
+        "asyncio.not_done_count": 5,
+        "asyncio.awaiting_count": 4,
+        "exception_cohort.window_retained_bytes": 0,
+        // LENIENT shims (MUST NOT render)
+        "to_thread.pool_size": 4,
+        "to_thread.active_workers": 4,
+        "asyncio.running_count": 5,
+        "asyncio.pending_count": 4,
+        "asyncio.current_running_task_name": "resource-snapshotter",
+        "exception_cohort.retained_bytes_estimate": 0,
+        "exception_cohort.distinct_group_id_count": 0,
+        "system.rss_bytes": 100_000_000,
+      },
+      canonical_field_count: 35,
+      legacy_alias_count: 9,
+    };
+    render(<ResourceHealthSection />);
+    // Open the asyncio + to_thread + exception_cohort sections.
+    for (const section of ["asyncio", "to_thread", "exception_cohort"] as const) {
+      const sectionEl = screen.getByTestId(`resource-section-${section}`);
+      const btn = sectionEl.querySelector("button");
+      if (btn) fireEvent.click(btn);
+    }
+    // Canonical names render.
+    expect(
+      screen.getByTestId("resource-field-to_thread.pool_size_at_last_dispatch"),
+    ).toBeInTheDocument();
+    expect(screen.getByTestId("resource-field-asyncio.not_done_count")).toBeInTheDocument();
+    expect(
+      screen.getByTestId("resource-field-exception_cohort.window_retained_bytes"),
+    ).toBeInTheDocument();
+    // LENIENT shims do NOT render.
+    expect(screen.queryByTestId("resource-field-to_thread.pool_size")).not.toBeInTheDocument();
+    expect(
+      screen.queryByTestId("resource-field-to_thread.active_workers"),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByTestId("resource-field-asyncio.running_count")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("resource-field-asyncio.pending_count")).not.toBeInTheDocument();
+    expect(
+      screen.queryByTestId("resource-field-asyncio.current_running_task_name"),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByTestId("resource-field-exception_cohort.retained_bytes_estimate"),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByTestId("resource-field-exception_cohort.distinct_group_id_count"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("attaches operator-trust tooltips to semantic-hazard fields", () => {
+    // MISSION-A.2.P1 F-004: every field with a documented semantic
+    // hazard in the Mission A audit MUST surface its disclosure via a
+    // ``title`` attribute (and a stable data-testid). Fields without a
+    // documented hazard render WITHOUT a tooltip — the test verifies
+    // both halves of the contract.
+    mockPollerState.data = {
+      observed_at_unix: 1716143280,
+      cohorts: {
+        "process.rss_bytes": 100_000_000,
+        "process.memory_percent": 5.2,
+        "process.cpu_percent": 0.0,
+        "asyncio.not_done_count": 5,
+        "to_thread.pool_size_at_last_dispatch": 4,
+        "exception_cohort.window_retained_bytes": 0,
+        "exception_cohort.cumulative_retained_bytes_since_start": 1024,
+      },
+      canonical_field_count: 35,
+      legacy_alias_count: 9,
+    };
+    render(<ResourceHealthSection />);
+    for (const section of [
+      "process",
+      "asyncio",
+      "to_thread",
+      "exception_cohort",
+    ] as const) {
+      const sectionEl = screen.getByTestId(`resource-section-${section}`);
+      const btn = sectionEl.querySelector("button");
+      if (btn) fireEvent.click(btn);
+    }
+    // Semantic-hazard fields HAVE tooltips.
+    expect(
+      screen.getByTestId("resource-field-tooltip-process.memory_percent"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByTestId("resource-field-tooltip-process.cpu_percent"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByTestId("resource-field-tooltip-asyncio.not_done_count"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByTestId("resource-field-tooltip-to_thread.pool_size_at_last_dispatch"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByTestId("resource-field-tooltip-exception_cohort.window_retained_bytes"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByTestId("resource-field-tooltip-exception_cohort.cumulative_retained_bytes_since_start"),
+    ).toBeInTheDocument();
+    // No-hazard fields render WITHOUT a tooltip.
+    expect(
+      screen.queryByTestId("resource-field-tooltip-process.rss_bytes"),
+    ).not.toBeInTheDocument();
   });
 
   it("renders an em-dash placeholder when observed_at is missing", () => {

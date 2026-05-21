@@ -37,7 +37,17 @@ const SECTION_ORDER = [
 ] as const;
 
 // Map cohort sections → the field keys they own (mirrors
-// _HEALTH_SNAPSHOT_FIELDS[k].section grouping).
+// _HEALTH_SNAPSHOT_FIELDS[k].section grouping post-MISSION-A.1 closure).
+//
+// MISSION-A.2.P1 F-004: post-A.1 the dashboard renders the 35 NEW
+// CANONICAL keys. The 9 LENIENT shims (system.rss_bytes,
+// exception_cohort.{retained_bytes_estimate,distinct_group_id_count},
+// to_thread.{active_workers,pool_size,queue_depth,max_workers},
+// asyncio.{current_running_task_name,running_count,pending_count}) are
+// emitted by the backend snapshotter for external Grafana / log
+// forwarders but DO NOT appear in the operator dashboard — operators
+// see the disambiguated post-A.1 names directly. Sunset v0.55.0 retires
+// all 9 shims (ADR-D14 + ADR-D15 + ADR-D16).
 const SECTION_FIELDS: Record<(typeof SECTION_ORDER)[number], readonly string[]> = {
   process: [
     "process.rss_bytes",
@@ -47,16 +57,26 @@ const SECTION_FIELDS: Record<(typeof SECTION_ORDER)[number], readonly string[]> 
     "process.num_handles_or_fds",
     "process.open_files_count",
     "process.connections_count",
+    "process.memory_percent",
+    "process.cpu_times_user_s",
+    "process.cpu_times_system_s",
   ],
   asyncio: [
     "asyncio.task_count",
-    "asyncio.running_count",
-    "asyncio.pending_count",
+    // MISSION-A.1.P3.b F-014 (ADR-D16): math-vs-name renames.
+    "asyncio.not_done_count",
+    "asyncio.awaiting_count",
+    // MISSION-A.1.P3 F-005 (ADR-D15): replaces observation-paradox field.
+    "asyncio.all_task_names",
+    // LIVE executor introspection (twin of the to_thread.*_at_last_dispatch
+    // STALE block — operators compare both for freshness contrast).
+    "asyncio.default_executor_state",
   ],
   to_thread: [
-    "to_thread.pool_size",
-    "to_thread.queue_depth",
-    "to_thread.max_workers",
+    // MISSION-A.1.P3.b F-007 (ADR-D16): twin-name freshness rename.
+    "to_thread.pool_size_at_last_dispatch",
+    "to_thread.queue_depth_at_last_dispatch",
+    "to_thread.max_workers_at_last_dispatch",
     "to_thread.dispatch_count_total",
     "to_thread.dispatch_count_per_label",
   ],
@@ -73,10 +93,54 @@ const SECTION_FIELDS: Record<(typeof SECTION_ORDER)[number], readonly string[]> 
     "tracemalloc.peak_kb",
   ],
   exception_cohort: [
-    "exception_cohort.retained_bytes_estimate",
-    "exception_cohort.distinct_group_id_count",
+    // MISSION-A.1.P2 F-002+F-003 (ADR-D14): cumulative-vs-window split.
+    "exception_cohort.window_retained_bytes",
+    "exception_cohort.window_distinct_group_id_count",
+    "exception_cohort.cumulative_retained_bytes_since_start",
+    "exception_cohort.cumulative_distinct_group_id_count",
     "exception_cohort.last_observation_monotonic",
   ],
+};
+
+// MISSION-A.2.P1 F-004: per-field operator-trust disclosure tooltips.
+// Each entry maps a canonical SSoT field key → an i18n tooltip key that
+// resolves to a short explanation of the field's semantic hazard
+// (staleness, cross-platform overload, observation paradox, etc.). The
+// tooltip surfaces as a native ``title`` attribute on the field label
+// so operators see the disclosure on hover without UI churn.
+//
+// Fields not listed here have no semantic-trust hazard documented in
+// the Mission A audit; rendering proceeds without a tooltip.
+const FIELD_TOOLTIPS: Record<string, string> = {
+  "process.cpu_percent": "resources.fieldTooltips.process_cpu_percent",
+  "process.num_handles_or_fds": "resources.fieldTooltips.process_num_handles_or_fds",
+  "process.memory_percent": "resources.fieldTooltips.process_memory_percent",
+  "process.cpu_times_user_s": "resources.fieldTooltips.process_cpu_times_s",
+  "process.cpu_times_system_s": "resources.fieldTooltips.process_cpu_times_s",
+  "process.connections_count": "resources.fieldTooltips.process_connections_count",
+  "process.open_files_count": "resources.fieldTooltips.process_open_files_count",
+  "asyncio.not_done_count": "resources.fieldTooltips.asyncio_not_done_count",
+  "asyncio.awaiting_count": "resources.fieldTooltips.asyncio_awaiting_count",
+  "asyncio.all_task_names": "resources.fieldTooltips.asyncio_all_task_names",
+  "asyncio.default_executor_state": "resources.fieldTooltips.asyncio_default_executor_state",
+  "to_thread.pool_size_at_last_dispatch":
+    "resources.fieldTooltips.to_thread_at_last_dispatch",
+  "to_thread.queue_depth_at_last_dispatch":
+    "resources.fieldTooltips.to_thread_at_last_dispatch",
+  "to_thread.max_workers_at_last_dispatch":
+    "resources.fieldTooltips.to_thread_at_last_dispatch",
+  "gc.objects_count": "resources.fieldTooltips.gc_objects_count",
+  "tracemalloc.is_tracing": "resources.fieldTooltips.tracemalloc_is_tracing",
+  "exception_cohort.window_retained_bytes":
+    "resources.fieldTooltips.exception_cohort_window",
+  "exception_cohort.window_distinct_group_id_count":
+    "resources.fieldTooltips.exception_cohort_window",
+  "exception_cohort.cumulative_retained_bytes_since_start":
+    "resources.fieldTooltips.exception_cohort_cumulative",
+  "exception_cohort.cumulative_distinct_group_id_count":
+    "resources.fieldTooltips.exception_cohort_cumulative",
+  "exception_cohort.last_observation_monotonic":
+    "resources.fieldTooltips.exception_cohort_last_observation_monotonic",
 };
 
 function formatValue(value: unknown): string {
@@ -148,20 +212,30 @@ function SectionRow({ section, cohorts }: SectionRowProps) {
             {t(`resources.sections.${section}.description`)}
           </p>
           <dl className="space-y-1">
-            {presentFields.map((field) => (
-              <div
-                key={field}
-                className="flex items-baseline justify-between gap-3 text-xs"
-                data-testid={`resource-field-${field}`}
-              >
-                <dt className="font-mono text-[var(--svx-color-text-secondary)]">
-                  {field}
-                </dt>
-                <dd className="font-mono text-[var(--svx-color-text-primary)] break-all text-right">
-                  {formatValue(cohorts[field])}
-                </dd>
-              </div>
-            ))}
+            {presentFields.map((field) => {
+              const tooltipKey = FIELD_TOOLTIPS[field];
+              const tooltip = tooltipKey ? t(tooltipKey) : undefined;
+              return (
+                <div
+                  key={field}
+                  className="flex items-baseline justify-between gap-3 text-xs"
+                  data-testid={`resource-field-${field}`}
+                >
+                  <dt
+                    className="font-mono text-[var(--svx-color-text-secondary)]"
+                    title={tooltip}
+                    data-testid={
+                      tooltip ? `resource-field-tooltip-${field}` : undefined
+                    }
+                  >
+                    {field}
+                  </dt>
+                  <dd className="font-mono text-[var(--svx-color-text-primary)] break-all text-right">
+                    {formatValue(cohorts[field])}
+                  </dd>
+                </div>
+              );
+            })}
           </dl>
         </div>
       )}

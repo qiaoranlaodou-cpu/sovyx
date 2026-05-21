@@ -833,11 +833,11 @@
       },
       "asyncio": {
         "title": "asyncio",
-        "description": "Event-loop task counts (total / running / pending)."
+        "description": "Event-loop task counts + LIVE default-executor introspection. Post-MISSION-A.1: not_done_count + awaiting_count (renamed from running/pending) + all_task_names (replaces the observation-paradox current_running_task_name field)."
       },
       "to_thread": {
-        "title": "to_thread",
-        "description": "asyncio default-executor pool state + per-label dispatch counters."
+        "title": "to_thread (stale-at-last-dispatch)",
+        "description": "Pool state recorded at the LAST dispatch_to_thread() call. NOT live — for the live executor state see asyncio.default_executor_state (post-MISSION-A.1.P3.b twin-name disambiguation, ADR-D16). Per-label dispatch counters track work distribution."
       },
       "lock_dict": {
         "title": "Lock dicts",
@@ -857,8 +857,26 @@
       },
       "exception_cohort": {
         "title": "Exception cohort",
-        "description": "Estimated retained bytes from recent ExceptionGroup chains."
+        "description": "Post-MISSION-A.1.P2 (ADR-D14): cumulative-vs-window split. ‘window_*’ fields decay as observations age out of the rolling window (governor reads these). ‘cumulative_*’ fields are monotonic since process start (forensic-only)."
       }
+    },
+    "fieldTooltips": {
+      "process_cpu_percent": "psutil delta since last call — first snapshot reports 0.0 (calibration tick). For instantaneous CPU read this field on the second tick onwards.",
+      "process_num_handles_or_fds": "Windows: psutil.num_handles() (kernel handles — files, registry, GDI, threads, etc.; typical 2,000–10,000+). POSIX: psutil.num_fds() (file descriptors only; typical 30–80). Magnitude is NOT comparable across platforms.",
+      "process_memory_percent": "psutil.memory_percent() — process RSS as % of HOST physical memory. On Docker/k8s with cgroup limits the host total is NOT the container limit — 5% on host can be 80% of a 2 GiB cgroup. Inspect /sys/fs/cgroup/memory.max for the container limit.",
+      "process_cpu_times_s": "CUMULATIVE since process start (NOT instantaneous). For instantaneous CPU-bound classification compute Δ/Δt across successive snapshots: (cpu_times_user_s_new - cpu_times_user_s_old) / (snapshot_interval_s).",
+      "process_connections_count": "psutil.net_connections() — Linux non-root sees ONLY the daemon's own connections (system-wide view requires CAP_NET_ADMIN). Count lower than `lsof -i` is permission-restricted, not under-reporting.",
+      "process_open_files_count": "Null may mean: (a) intentional skip during the shutdown snapshot, (b) psutil PermissionError, or (c) psutil missing. The triple semantics are disambiguated by the parallel process.open_files_status field (MISSION-A.2.P4 F-012 closure).",
+      "asyncio_not_done_count": "Count of asyncio tasks where not t.done() is True. INCLUDES tasks blocked on await asyncio.sleep, I/O, or locks — this is NOT a measure of tasks executing on the loop step. Post-MISSION-A.1.P3.b rename of running_count (anti-pattern #51, ADR-D16).",
+      "asyncio_awaiting_count": "not_done_count minus the snapshotter task itself. Most workload tasks live here. Sustained growth without matching completion suggests a task leak. Post-MISSION-A.1.P3.b rename of pending_count.",
+      "asyncio_all_task_names": "List of names of every not-done asyncio task (cap N=64). Replaces the pre-MISSION-A.1 current_running_task_name field that always returned the snapshotter task name (observation paradox, ADR-D15).",
+      "asyncio_default_executor_state": "LIVE introspection of asyncio's default ThreadPoolExecutor at snapshot time (pool_size = created threads, queue_depth = pending submissions, max_workers = ceiling). Twin of to_thread.*_at_last_dispatch — these are LIVE; those are STALE.",
+      "to_thread_at_last_dispatch": "Recorded at the LAST dispatch_to_thread() call — may be up to one snapshot interval stale if no dispatch occurred recently. For LIVE values see asyncio.default_executor_state. Post-MISSION-A.1.P3.b rename (anti-pattern #51, ADR-D16).",
+      "gc_objects_count": "len(gc.get_objects()) — O(heap-size) cost per snapshot. Default 60s interval is cheap; tuning perf_hotpath_interval_seconds below ~10s on a populated process can stall the event loop.",
+      "tracemalloc_is_tracing": "Allocator tracing is opt-in (SOVYX_OBSERVABILITY__FEATURES__TRACEMALLOC=true). When true the process pays ~25-30% memory overhead. current_kb + peak_kb are 0 when not tracing — that's the NOT-TRACING marker, not 'zero memory used'.",
+      "exception_cohort_window": "Rolling window over the last tuning.exception_cohort_window_s seconds (default 300s). Decays as observations age out of the bounded observations deque (maxlen=128). The cohort governor reads these fields for the EXCEPTION_COHORT budget verdict — large values trigger BUDGET_EXCEEDED.",
+      "exception_cohort_cumulative": "MONOTONIC ACCUMULATOR since process start. Never decays; never resets. Forensic-only — do NOT use for real-time triage; use exception_cohort.window_* instead.",
+      "exception_cohort_last_observation_monotonic": "time.monotonic() value at the most recent record_exception_cohort() call. Opaque process-local value — useful only for relative comparison (now - this value = age of last observation)."
     },
     "fields": {
       "rss_bytes": {

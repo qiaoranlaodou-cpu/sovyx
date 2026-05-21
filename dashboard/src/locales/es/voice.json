@@ -833,11 +833,11 @@
       },
       "asyncio": {
         "title": "asyncio",
-        "description": "Conteo de tasks del event-loop (total / en ejecución / pendientes)."
+        "description": "Conteo de tasks del event-loop + introspección LIVE del default-executor. Post-MISSION-A.1: not_done_count + awaiting_count (renombrados de running/pending) + all_task_names (reemplaza el campo paradoja current_running_task_name)."
       },
       "to_thread": {
-        "title": "to_thread",
-        "description": "Estado del pool default-executor de asyncio + contadores de dispatch por label."
+        "title": "to_thread (estado en el último dispatch)",
+        "description": "Estado del pool registrado en la ÚLTIMA llamada dispatch_to_thread(). NO es en vivo — para el estado vivo vea asyncio.default_executor_state (post-MISSION-A.1.P3.b desambiguación twin-name, ADR-D16). Contadores de dispatch por label rastrean distribución de trabajo."
       },
       "lock_dict": {
         "title": "Lock dicts",
@@ -857,8 +857,26 @@
       },
       "exception_cohort": {
         "title": "Cohort de excepciones",
-        "description": "Bytes estimados retenidos por cadenas ExceptionGroup recientes."
+        "description": "Post-MISSION-A.1.P2 (ADR-D14): split cumulative-vs-window. Campos ‘window_*’ decaen mientras observaciones salen de la ventana rodante (el governor las lee). Campos ‘cumulative_*’ son monotónicos desde el inicio del proceso (solo forense)."
       }
+    },
+    "fieldTooltips": {
+      "process_cpu_percent": "Delta psutil desde la última llamada — primer snapshot reporta 0.0 (tick de calibración). Para CPU instantánea lea este campo del segundo tick en adelante.",
+      "process_num_handles_or_fds": "Windows: psutil.num_handles() (handles del kernel — archivos, registro, GDI, threads, etc.; típico 2.000–10.000+). POSIX: psutil.num_fds() (solo descriptores de archivo; típico 30–80). Magnitudes NO son comparables entre plataformas.",
+      "process_memory_percent": "psutil.memory_percent() — RSS del proceso como % de memoria física del HOST. En Docker/k8s con límites cgroup el total del host NO es el límite del container — 5% en el host puede ser 80% de un cgroup de 2 GiB. Inspeccione /sys/fs/cgroup/memory.max para el límite del container.",
+      "process_cpu_times_s": "ACUMULATIVO desde el inicio del proceso (NO instantáneo). Para clasificación CPU-bound instantánea compute Δ/Δt entre snapshots sucesivos: (cpu_times_user_s_nuevo - cpu_times_user_s_viejo) / (intervalo_snapshot_s).",
+      "process_connections_count": "psutil.net_connections() — Linux non-root ve SOLO las conexiones del propio daemon (vista system-wide requiere CAP_NET_ADMIN). Conteo menor que `lsof -i` es restricción de permiso, no sub-conteo.",
+      "process_open_files_count": "Null puede significar: (a) skip intencional en el snapshot de shutdown, (b) PermissionError de psutil, o (c) psutil ausente. La semántica triple se desambigua con el campo paralelo process.open_files_status (cierre MISSION-A.2.P4 F-012).",
+      "asyncio_not_done_count": "Conteo de tasks asyncio donde not t.done() es True. INCLUYE tasks bloqueadas en await asyncio.sleep, I/O o locks — NO es medida de tasks ejecutándose en el paso del loop. Renombrado post-MISSION-A.1.P3.b de running_count (anti-patrón #51, ADR-D16).",
+      "asyncio_awaiting_count": "not_done_count menos la task del snapshotter. La mayoría de tasks de workload viven aquí. Crecimiento sostenido sin completion correspondiente sugiere task leak. Renombrado post-MISSION-A.1.P3.b de pending_count.",
+      "asyncio_all_task_names": "Lista de nombres de toda task asyncio not-done (cap N=64). Reemplaza el campo pre-MISSION-A.1 current_running_task_name que siempre retornaba el nombre de la task del snapshotter (paradoja de observación, ADR-D15).",
+      "asyncio_default_executor_state": "Introspección LIVE del ThreadPoolExecutor default de asyncio al momento del snapshot (pool_size = threads creados, queue_depth = submissions pendientes, max_workers = techo). Twin de to_thread.*_at_last_dispatch — estos son LIVE; aquellos son STALE.",
+      "to_thread_at_last_dispatch": "Registrado en la ÚLTIMA llamada dispatch_to_thread() — puede estar hasta un intervalo de snapshot atrasado si no hubo dispatch recientemente. Para valores LIVE vea asyncio.default_executor_state. Renombrado post-MISSION-A.1.P3.b (anti-patrón #51, ADR-D16).",
+      "gc_objects_count": "len(gc.get_objects()) — costo O(heap-size) por snapshot. Intervalo default de 60s es barato; ajustar perf_hotpath_interval_seconds bajo ~10s en proceso populado puede atascar el event loop.",
+      "tracemalloc_is_tracing": "Rastreo del asignador es opt-in (SOVYX_OBSERVABILITY__FEATURES__TRACEMALLOC=true). Cuando true el proceso paga ~25-30% de overhead de memoria. current_kb + peak_kb son 0 cuando no rastreando — ese es el marcador NO-RASTREANDO, no ‘cero memoria usada’.",
+      "exception_cohort_window": "Ventana rodante sobre los últimos tuning.exception_cohort_window_s segundos (default 300s). Decae mientras observaciones salen del deque acotado (maxlen=128). El cohort governor lee estos campos para el veredicto EXCEPTION_COHORT — valores grandes disparan BUDGET_EXCEEDED.",
+      "exception_cohort_cumulative": "ACUMULADOR MONOTÓNICO desde el inicio del proceso. Nunca decae; nunca resetea. Solo forense — NO use para triage en tiempo real; use exception_cohort.window_* en su lugar.",
+      "exception_cohort_last_observation_monotonic": "Valor time.monotonic() en la llamada record_exception_cohort() más reciente. Valor opaco process-local — útil solo para comparación relativa (ahora - este valor = edad de la última observación)."
     },
     "fields": {
       "rss_bytes": {
