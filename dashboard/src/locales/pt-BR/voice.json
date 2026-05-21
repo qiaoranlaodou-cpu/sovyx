@@ -1119,8 +1119,8 @@
         "body": "Sessões ONNX InferenceSession ativas: {{observed}} (esperado {{budget}}). Sessões não estão sendo liberadas — referência vazada. Reinicie o daemon se o crescimento continuar."
       },
       "exception_cohort_retention_high": {
-        "title": "Retenção alta em cohort de exceções",
-        "body": "Bytes estimados retidos por cadeias ExceptionGroup recentes: {{observed}} (cap {{budget}}). Uma tempestade de falhas está retendo tracebacks. Inspecione o stream de logs estruturados para falhas repetidas."
+        "title": "Retenção alta na janela do cohort de exceções",
+        "body": "Bytes retidos na janela rolante de cadeias ExceptionGroup recentes: {{observed}} (cap {{budget}}). A janela decai conforme observações saem do deque limitado (padrão exception_cohort_window_s=300s) — o breach auto-limpa quando a retenção volta abaixo do cap. Inspecione o stream de logs estruturados para falhas repetidas que dirigem a tempestade."
       },
       "heap_snapshot_triggered": {
         "title": "Snapshot de heap capturado",
@@ -1134,6 +1134,7 @@
         "viewOnnx": "Ver sessões ONNX",
         "viewExceptionCohort": "Ver cohort de exceções",
         "viewRecent500s": "Ver erros 500 recentes",
+        "inspectWindowDecay": "Inspecionar decaimento da janela (cohort governor)",
         "viewSnapshot": "Ver snapshot",
         "openDoctor": "Abrir resource doctor",
         "adjustLruDocs": "Ajustar maxsize do LRULockDict",

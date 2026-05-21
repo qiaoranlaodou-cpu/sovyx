@@ -342,12 +342,20 @@ class TestAdrD8ChipMapping:
         assert chips[0].target == "/engine/resources#onnx"
 
     def test_exception_cohort_chips_anchor_plus_c2_link(self) -> None:
+        # MISSION-A.2.P2 F-019: post-A.1.P2 window-decay surface added as
+        # a 3rd action chip (anti-pattern #49 + ADR-D14 closure unblocks
+        # actionable remediation — operator now has a concrete command
+        # to inspect the windowed retention rather than a vacuous
+        # "fix the producer boundary" message).
         from sovyx.observability._resource_cohort_governor import _chips_for_reason
 
         chips = _chips_for_reason("engine_resources.exception_cohort_retention_high", {})
-        assert len(chips) == 2
+        assert len(chips) == 3
         assert chips[0].target == "/engine/resources#exception-cohort"
         assert chips[1].label_token == "degraded.engine_resources.actions.viewRecent500s"
+        assert chips[2].label_token == "degraded.engine_resources.actions.inspectWindowDecay"
+        assert chips[2].action == "command_hint"
+        assert "exception_cohort.window_retained_bytes" in chips[2].target
 
     def test_heap_snapshot_triggered_chips_view_plus_ack(self) -> None:
         from sovyx.observability._resource_cohort_governor import _chips_for_reason
@@ -371,6 +379,66 @@ class TestAdrD8ChipMapping:
         # entry; the fallback exists so the banner does not crash).
         assert len(chips) == 1
         assert chips[0].target == "/engine/resources"
+
+
+class TestBudgetExceededWarnTuningPath:
+    """F-018 — engine.resources.cohort_budget_exceeded WARN includes tuning_env_path.
+
+    Pre-fix the WARN payload included axis + observed + budget + note,
+    but NOT the SOVYX_OBSERVABILITY__TUNING__* env path the operator
+    must set to adjust the breached budget. Operators reading the
+    WARN had to invoke ``sovyx doctor resources --explain X`` to
+    discover the env path — the breach disclosure was incomplete.
+    Post-fix each of the 5 CohortAxis verdicts maps to its tuning env
+    path via ``_TUNING_ENV_PATH_FOR_AXIS``; the WARN payload carries
+    ``engine.resources.tuning_env_path`` with the literal env var.
+    """
+
+    def test_warn_payload_includes_tuning_env_path_for_rss(self) -> None:
+        from unittest.mock import patch
+
+        from sovyx.observability import _resource_cohort_governor as gov_module
+        from sovyx.observability._resource_cohort_governor import _TUNING_ENV_PATH_FOR_AXIS
+
+        governor = ResourceCohortGovernor()
+        governor.evaluate_snapshot({"process.rss_bytes": 100_000_000})
+        results = governor.evaluate_snapshot({"process.rss_bytes": 100_000_000 + 10**9})
+        # Patch the module-level structlog logger so we can capture the
+        # exact WARN kwargs (caplog doesn't bridge structlog).
+        with patch.object(gov_module, "logger") as mock_logger:
+            emit_axis_entries(results)
+        warn_calls = [
+            (call_args.args, call_args.kwargs) for call_args in mock_logger.warning.call_args_list
+        ]
+        breach = next(
+            (
+                (args, kwargs)
+                for args, kwargs in warn_calls
+                if args and args[0] == "engine.resources.cohort_budget_exceeded"
+            ),
+            None,
+        )
+        assert breach is not None, f"no cohort_budget_exceeded WARN; saw: {warn_calls}"
+        _, kwargs = breach
+        assert (
+            kwargs.get("engine.resources.tuning_env_path")
+            == _TUNING_ENV_PATH_FOR_AXIS[CohortAxis.RSS_GROWTH]
+        )
+
+    def test_tuning_env_path_map_covers_all_axes(self) -> None:
+        # Every CohortAxis member MUST have a tuning env path; new
+        # axis without an entry is a discipline violation (operator
+        # would see an empty string on breach).
+        from sovyx.observability._resource_cohort_governor import _TUNING_ENV_PATH_FOR_AXIS
+
+        for axis in CohortAxis:
+            assert axis in _TUNING_ENV_PATH_FOR_AXIS, (
+                f"CohortAxis.{axis.name} missing from _TUNING_ENV_PATH_FOR_AXIS — "
+                "every breach WARN must surface a tuning env path (F-018)."
+            )
+            assert _TUNING_ENV_PATH_FOR_AXIS[axis].startswith("SOVYX_OBSERVABILITY__TUNING__"), (
+                f"axis {axis.name} env path doesn't follow SOVYX_*__TUNING__ convention"
+            )
 
 
 class TestAdrD6SeverityEscalation:

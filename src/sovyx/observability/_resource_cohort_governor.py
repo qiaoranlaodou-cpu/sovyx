@@ -191,6 +191,24 @@ _REASON_FOR_AXIS: dict[CohortAxis, str] = {
 _REASON_HEAP_SNAPSHOT_TRIGGERED: str = "engine_resources.heap_snapshot_triggered"
 
 
+# MISSION-A.2.P2 F-018: per-axis SOVYX_OBSERVABILITY__TUNING__* env path.
+# Surfaces in the ``engine.resources.cohort_budget_exceeded`` WARN payload
+# so operators see the env-var to tune WITHOUT having to invoke
+# ``sovyx doctor resources --explain`` post-breach. The env paths mirror
+# the ``ObservabilityTuningConfig`` field names with the SOVYX_OBSERVABILITY__
+# TUNING__ prefix per the pydantic-settings env-var convention
+# (``SOVYX_*`` prefix, ``__`` for nesting — CLAUDE.md Conventions).
+_TUNING_ENV_PATH_FOR_AXIS: dict[CohortAxis, str] = {
+    CohortAxis.RSS_GROWTH: "SOVYX_OBSERVABILITY__TUNING__COHORT_RSS_GROWTH_THRESHOLD_MB",
+    CohortAxis.THREAD_COUNT: "SOVYX_OBSERVABILITY__TUNING__COHORT_THREAD_GROWTH_THRESHOLD",
+    CohortAxis.LOCK_DICT_CARDINALITY: "SOVYX_OBSERVABILITY__TUNING__COHORT_LOCK_DICT_SOFT_CAP",
+    CohortAxis.ONNX_SESSION: "SOVYX_OBSERVABILITY__TUNING__COHORT_ONNX_SESSION_SOFT_CAP",
+    CohortAxis.EXCEPTION_COHORT: (
+        "SOVYX_OBSERVABILITY__TUNING__EXCEPTION_COHORT_RETAINED_BYTES_CAP"
+    ),
+}
+
+
 @dataclass
 class ResourceCohortGovernor:
     """Per-snapshot-tick cohort budget evaluator.
@@ -578,6 +596,13 @@ def emit_axis_entries(evaluations: list[CohortEvaluation]) -> int:
                 "engine.resources.observed": evaluation.observed,
                 "engine.resources.budget": evaluation.budget,
                 "engine.resources.note": evaluation.note,
+                # MISSION-A.2.P2 F-018: operator-trust disclosure.
+                # Operators reading the breach WARN see the env-var to
+                # tune WITHOUT a separate ``sovyx doctor resources
+                # --explain`` round-trip.
+                "engine.resources.tuning_env_path": _TUNING_ENV_PATH_FOR_AXIS.get(
+                    evaluation.axis, ""
+                ),
             },
         )
         # Mission H4 §8 T4.1 (e) + §4.6 ADR-D6 v0.49.29 — circuit-breaker
@@ -1032,6 +1057,14 @@ def _chips_for_reason(
             ),
         )
     if reason == "engine_resources.exception_cohort_retention_high":
+        # MISSION-A.2.P2 F-019 (unblocked by A.1.P2 / ADR-D14 closure):
+        # post-fix the cohort governor reads ``window_retained_bytes``
+        # (rolling window) rather than the pre-A.1 lifetime accumulator
+        # ``retained_bytes_estimate``. The breach now decays naturally
+        # as observations age out of the window. Add a third chip
+        # pointing the operator at the window-decay surface so the
+        # remediation is actionable ("wait for decay" / "inspect window")
+        # rather than vacuous ("fix the producer boundary").
         return (
             ActionChip(
                 label_token="degraded.engine_resources.actions.viewExceptionCohort",
@@ -1042,6 +1075,11 @@ def _chips_for_reason(
                 label_token="degraded.engine_resources.actions.viewRecent500s",
                 action="navigate",
                 target="/voice/health#status-500-history",
+            ),
+            ActionChip(
+                label_token="degraded.engine_resources.actions.inspectWindowDecay",
+                action="command_hint",
+                target=("sovyx doctor resources --explain exception_cohort.window_retained_bytes"),
             ),
         )
     if reason == "engine_resources.heap_snapshot_triggered":

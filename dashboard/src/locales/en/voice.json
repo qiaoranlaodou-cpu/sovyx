@@ -1119,8 +1119,8 @@
         "body": "Live ONNX InferenceSession count is {{observed}} (expected {{budget}}). Sessions are not being released — likely a leaked reference. Restart the daemon if growth continues."
       },
       "exception_cohort_retention_high": {
-        "title": "ExceptionGroup retention high",
-        "body": "Estimated retained bytes from recent ExceptionGroup chains is {{observed}} (cap {{budget}}). A failure storm is retaining tracebacks. Inspect the structured-log stream for repeated failures."
+        "title": "ExceptionGroup window retention high",
+        "body": "Rolling-window retained bytes from recent ExceptionGroup chains is {{observed}} (cap {{budget}}). The window decays as observations age out of the bounded deque (default exception_cohort_window_s=300s) — the breach will auto-clear when retention drops back under cap. Inspect the structured-log stream for repeated failures driving the storm."
       },
       "heap_snapshot_triggered": {
         "title": "Heap snapshot captured",
@@ -1134,6 +1134,7 @@
         "viewOnnx": "View ONNX session list",
         "viewExceptionCohort": "View exception cohort",
         "viewRecent500s": "View recent 500s",
+        "inspectWindowDecay": "Inspect window decay (cohort governor)",
         "viewSnapshot": "View snapshot",
         "openDoctor": "Open resource doctor",
         "adjustLruDocs": "Adjust LRULockDict maxsize",
