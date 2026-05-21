@@ -59,7 +59,14 @@ FIELD_REMEDIATIONS: Final[Mapping[str, str]] = {
         "Snapshot-tick CPU utilization (psutil-derived, interval since "
         "last snapshot). Sustained > 80% with a quiescent operator "
         "session suggests a runaway loop; cross-reference "
-        "`asyncio.task_count` to find which subsystem is busy."
+        "`asyncio.task_count` to find which subsystem is busy. "
+        "MISSION-A.2.P5 F-010 disclosure: ``psutil.cpu_percent(interval=None)`` "
+        "returns 0.0 on the FIRST call after process start (no prior "
+        "sample to delta against) — treat the first snapshot's value "
+        "as calibration; meaningful CPU readings start at the second "
+        "snapshot tick (default 60 s after boot). Operators alerting on "
+        "CPU should skip the first sample or filter on `uptime_s > "
+        "tick_interval`."
     ),
     "process.num_threads": (
         "Live OS thread count (psutil-derived). Single-mind GA baseline: "
@@ -70,9 +77,15 @@ FIELD_REMEDIATIONS: Final[Mapping[str, str]] = {
     ),
     "process.num_handles_or_fds": (
         "Open file descriptors (POSIX) or kernel handles (Windows). "
-        "Healthy single-mind GA: 30-80. Sustained growth suggests an "
-        "unclosed socket / file pool — `sovyx doctor` general check "
-        "surfaces hung connections."
+        "MISSION-A.2.P5 F-009 disclosure: PER-PLATFORM baselines — "
+        "POSIX (Linux/macOS): `psutil.num_fds()` returns file descriptor "
+        "count only; healthy single-mind GA 30–80. WINDOWS: "
+        "`psutil.num_handles()` returns ALL kernel handles (files, "
+        "registry, GDI, threads, events, mutexes); healthy single-mind "
+        "GA 2,000–10,000+. Magnitudes are NOT comparable across "
+        "platforms. Alert thresholds MUST be per-platform. Sustained "
+        "growth suggests an unclosed socket / file pool — "
+        "`sovyx doctor` general check surfaces hung connections."
     ),
     "process.open_files_count": (
         "Count of `proc.open_files()` (psutil; cheap on Linux/macOS, "
@@ -119,30 +132,45 @@ FIELD_REMEDIATIONS: Final[Mapping[str, str]] = {
         "growth + `lock_dict.total_cardinality` + `onnx.session_count` "
         "for cohort attribution. Enable "
         "`observability.features.tracemalloc=True` for allocator-level "
-        "forensics on the next RSS_GROWTH cohort breach."
+        "forensics on the next RSS_GROWTH cohort breach. "
+        "MISSION-A.2.P5 F-008 disclosure: psutil reads HOST physical "
+        "memory total — on Docker/k8s with cgroup limits the host "
+        "total is NOT the container limit. A process consuming 1.5 GiB "
+        "in a 2 GiB cgroup shows ~5% on a 32 GiB host (apparent ample "
+        "headroom) but is one allocation away from OOM kill. "
+        "Containerized operators MUST cross-reference "
+        "`/sys/fs/cgroup/memory.max` (cgroup v2) or "
+        "`/sys/fs/cgroup/memory/memory.limit_in_bytes` (cgroup v1) "
+        "for the container-relative percentage."
     ),
     "process.cpu_times_user_s": (
         "Cumulative user-mode CPU seconds (psutil-derived, monotonic per "
         "process). Healthy operator session: ~0.1-2 s/min depending on "
-        "voice activity. Compute Δ user / Δ wallclock between snapshots "
-        "for instantaneous CPU-bound classification; sustained ratio > "
-        "0.8 indicates a CPU-bound subsystem — cross-reference "
-        "`to_thread.dispatch_count_per_label` for the noisy worker."
+        "voice activity. MISSION-A.2.P5 F-011 disclosure: this field is "
+        "CUMULATIVE since process start (NOT instantaneous). Reading "
+        "the raw value as a rate is wrong. Concrete derivative formula: "
+        "``cpu_pct = (cpu_times_user_s[N] - cpu_times_user_s[N-1]) / "
+        "(snapshot_taken_at_monotonic[N] - snapshot_taken_at_monotonic[N-1])``. "
+        "Sustained ratio > 0.8 indicates a CPU-bound subsystem — "
+        "cross-reference ``to_thread.dispatch_count_per_label`` for "
+        "the noisy worker."
     ),
     "process.cpu_times_system_s": (
-        "Cumulative kernel-mode CPU seconds (psutil-derived, monotonic). "
-        "Healthy single-mind GA: << user time (kernel-bound work is "
-        "rare). High system-time growth without matching user-time "
-        "growth suggests heavy syscall pressure (FD churn, network IO, "
-        "or `psutil.open_files()` enumeration on Windows — see "
-        "anti-pattern #30)."
+        "Cumulative kernel-mode CPU seconds (psutil-derived, monotonic — "
+        "MISSION-A.2.P5 F-011 disclosure: use the same Δ/Δt derivative "
+        "formula as ``cpu_times_user_s``). Healthy single-mind GA: << "
+        "user time (kernel-bound work is rare). High system-time growth "
+        "without matching user-time growth suggests heavy syscall "
+        "pressure (FD churn, network IO, or `psutil.open_files()` "
+        "enumeration on Windows — see anti-pattern #30)."
     ),
     # ── asyncio block ──
     "asyncio.task_count": (
         "Total `asyncio.all_tasks()` count at snapshot time. Healthy: "
         "10-25 (heartbeat + capture loop + LLM router + brain + dashboard "
         "background tasks + various schedulers). Sustained > 50 "
-        "suggests a task leak — inspect `asyncio.pending_count` to see "
+        "suggests a task leak — inspect `asyncio.awaiting_count` (post-"
+        "MISSION-A.1.P3.b rename of pending_count, ADR-D16) to see "
         "which tasks are stuck awaiting."
     ),
     "asyncio.not_done_count": (
