@@ -434,10 +434,6 @@ async def bootstrap(
         # before the loop tears down, so no entry in ``_closables`` is
         # needed — process-level cancellation already drains them cleanly.
         if engine_config.observability.features.async_queue:
-            from sovyx.observability.counters import HotPathSnapshotter
-            from sovyx.observability.resources import ResourceSnapshotter
-            from sovyx.observability.tasks import spawn
-
             # Mission B B-P0-2 (B.1.P2 closure 2026-05-21) — prime the
             # ResourceRegistry singleton with the operator-tunable
             # ``exception_cohort_observations_maxlen`` BEFORE the
@@ -451,6 +447,9 @@ async def bootstrap(
                 ResourceRegistry,
                 reset_default_resource_registry,
             )
+            from sovyx.observability.counters import HotPathSnapshotter
+            from sovyx.observability.resources import ResourceSnapshotter
+            from sovyx.observability.tasks import spawn
 
             reset_default_resource_registry()
             with _registry_mod._SINGLETON_LOCK:  # noqa: SLF001
