@@ -20,9 +20,10 @@ export function DegradedBannerGlobalMount() {
   const { data } = useEngineDegradedPoller();
 
   // Mission C4 §Phase 3 §T3.7 — ack click handler. POSTs to
-  // /api/voice/degraded/ack with reason="composite" so the server
+  // /api/engine/degraded/ack with reason="composite" so the server
   // records one ack per active axis. Errors are swallowed silently —
-  // the next poll will reflect server state regardless.
+  // the next poll will reflect server state regardless. (Mission B
+  // B-P0-1 2026-05-21: path realigned from `/api/voice/...`.)
   const handleAck = useCallback((ttlSec: number) => {
     void ackComposite(ttlSec).catch(() => {
       // Best-effort: poll cycle (5 s) re-syncs state if ack failed

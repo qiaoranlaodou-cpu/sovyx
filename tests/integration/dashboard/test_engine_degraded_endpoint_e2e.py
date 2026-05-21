@@ -11,8 +11,10 @@ verifies the operator-session shape) and the boundary test (Quality
 Gate 8 round-trip discipline) — this test verifies the FastAPI
 serialization layer doesn't drop or rename fields on the wire.
 
-Phase 3 will extend this with POST /api/voice/degraded/ack +
-TTL re-surface E2E flow.
+Phase 3 will extend this with POST /api/engine/degraded/ack +
+TTL re-surface E2E flow. (Mission B B-P0-1 2026-05-21: corrected
+path from the C4 spec's prose `/api/voice/...` claim to the
+actual decorator registration `/api/engine/...`.)
 """
 
 from __future__ import annotations

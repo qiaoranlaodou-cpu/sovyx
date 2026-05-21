@@ -1,8 +1,13 @@
-"""Boundary tests for POST /api/voice/degraded/ack + ack-state
+"""Boundary tests for POST /api/engine/degraded/ack + ack-state
 enrichment on GET /api/engine/degraded.
 
 Mission anchor: ``docs-internal/missions/MISSION-c4-degraded-mode-banner-2026-05-17.md``
-§Phase 3 §T3.3 + §T3.4 + §9.1 row "POST /api/voice/degraded/ack round-trip".
+§Phase 3 §T3.3 + §T3.4 + §9.1 row "POST /api/engine/degraded/ack round-trip".
+
+Mission B B-P0-1 (2026-05-21) realigned the module docstring to the
+actual route path the test code already exercised at lines 173+ — the
+C4 spec's prose `/api/voice/degraded/ack` claim never matched the
+decorator's `/api/engine/...` registration.
 
 Quality Gate 8 round-trip discipline: every Model.model_validate call
 at the route boundary has a paired test. Phase 3 added AckRequestBody

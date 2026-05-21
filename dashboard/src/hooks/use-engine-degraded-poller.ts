@@ -46,18 +46,29 @@ export function useEngineDegradedPoller(
 }
 
 /**
- * POST /api/voice/degraded/ack with the canonical composite-ack body.
+ * POST /api/engine/degraded/ack with the canonical composite-ack body.
  *
  * Mission C4 §Phase 3 §T3.3 — operator acknowledges all currently-
  * active degraded axes for ``ttlSec`` seconds. Server-side
  * persistence (OperatorAcksStore + operator_acks SQLite table) so
  * the ack survives browser refresh + multi-tab.
  *
+ * Route lives under `/api/engine` (router prefix in
+ * `src/sovyx/dashboard/routes/engine_degraded.py:51`), not under
+ * `/api/voice` — the C4 mission spec §T3.3 wrote the path as
+ * `/api/voice/degraded/ack` in prose but the decorator inherited the
+ * GET endpoint's `/api/engine` prefix; Mission B B-P0-1 (2026-05-21)
+ * realigned this hook + 15 sibling drift sites to the registered
+ * route. Pre-fix: this POST returned 404, the `.catch(() => {})` in
+ * `DegradedBannerGlobalMount.tsx:27` swallowed it, the ack feature
+ * was inert from v0.46.4 through v0.49.36. See anti-pattern #53 +
+ * Mission B B-P0-1 register entry.
+ *
  * Returns the response body; throws ``ApiError`` on 4xx/5xx via the
  * shared api helper.
  */
 export async function ackComposite(ttlSec = 3600): Promise<unknown> {
-  return api.post("/api/voice/degraded/ack", {
+  return api.post("/api/engine/degraded/ack", {
     reason: "composite",
     ttl_sec: ttlSec,
   });

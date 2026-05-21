@@ -112,7 +112,7 @@ class OperatorAcksStore:
     ) -> AckRecord:
         """Insert or replace an ack for ``reason``.
 
-        Operator-issued ack via ``POST /api/voice/degraded/ack``.
+        Operator-issued ack via ``POST /api/engine/degraded/ack``.
         Caller is responsible for bounds-validating ``ttl_sec``
         (the endpoint enforces [60, 86400] per ADR-D9); this store
         accepts whatever it is given so test fixtures can construct

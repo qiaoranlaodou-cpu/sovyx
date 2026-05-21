@@ -95,7 +95,7 @@ class AckStateModel(BaseModel):
     """Operator-acknowledgement state for the composite banner.
 
     Phase 1 ships the schema with default-empty values; Phase 3
-    (``operator_acks`` SQLite table + ``POST /api/voice/degraded/ack``)
+    (``operator_acks`` SQLite table + ``POST /api/engine/degraded/ack``)
     populates the fields from
     :mod:`sovyx.engine._operator_acks_store`.
 
@@ -282,9 +282,12 @@ async def get_engine_degraded(request: Request) -> EngineDegradedResponse:
 
 
 class AckRequestBody(BaseModel):
-    """Body for ``POST /api/voice/degraded/ack``.
+    """Body for ``POST /api/engine/degraded/ack``.
 
-    Mission C4 §Phase 3 §T3.3.
+    Mission C4 §Phase 3 §T3.3. Route registered under prefix
+    ``/api/engine`` (see :data:`router` at line 51); Mission B B-P0-1
+    (2026-05-21) realigned the docstring to the actual decorator path
+    from the C4 spec's prose `/api/voice/degraded/ack` claim.
 
     Acks EITHER a single axis (when ``reason`` is the canonical
     axis-reason composite, e.g. ``"voice.failover_ladder_exhausted"``)
@@ -312,7 +315,7 @@ class AckRequestBody(BaseModel):
 
 
 class AckResponse(BaseModel):
-    """Response for ``POST /api/voice/degraded/ack``."""
+    """Response for ``POST /api/engine/degraded/ack``."""
 
     model_config = {"extra": "allow"}
 

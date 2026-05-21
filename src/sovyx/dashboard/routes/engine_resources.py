@@ -265,7 +265,7 @@ async def post_cohort_ack(body: CohortAckRequest) -> CohortAckResponse:
     """Mission H4 §8 T4.1(e) — operator clears the cohort circuit-breaker.
 
     Per Mission H4 §0 item #12. Mirrors the C4
-    ``POST /api/voice/degraded/ack`` shape but routes through the
+    ``POST /api/engine/degraded/ack`` shape but routes through the
     governor's in-process state rather than the SQLite ack-store —
     the breach state is per-cohort + ephemeral (governor is process-
     local, restart wipes), not persistent like the voice-degraded acks.

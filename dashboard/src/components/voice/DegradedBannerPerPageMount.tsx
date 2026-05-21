@@ -20,7 +20,8 @@ export function DegradedBannerPerPageMount() {
   const { data } = useEngineDegradedPoller();
 
   // Mission C4 §Phase 3 §T3.7 — ack click handler. Mirrors the global
-  // mount; both invocations POST to the same /api/voice/degraded/ack.
+  // mount; both invocations POST to the same /api/engine/degraded/ack.
+  // (Mission B B-P0-1 2026-05-21: path realigned from `/api/voice/...`.)
   const handleAck = useCallback((ttlSec: number) => {
     void ackComposite(ttlSec).catch(() => {
       /* swallow — poll cycle re-syncs */

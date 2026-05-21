@@ -87,10 +87,14 @@ describe("ackComposite (Phase 3 §T3.7)", () => {
     mockApiPost.mockResolvedValue({ ok: true });
   });
 
-  it("POSTs to /api/voice/degraded/ack with composite reason", async () => {
+  it("POSTs to /api/engine/degraded/ack with composite reason", async () => {
+    // Mission B B-P0-1: route lives under /api/engine prefix (registered
+    // at `src/sovyx/dashboard/routes/engine_degraded.py:51,358`).
+    // Pre-fix the hook posted to /api/voice/... and the server returned
+    // 404; this mock-based assertion now mirrors the realigned literal.
     await ackComposite();
     expect(mockApiPost).toHaveBeenCalledWith(
-      "/api/voice/degraded/ack",
+      "/api/engine/degraded/ack",
       expect.objectContaining({ reason: "composite" }),
     );
   });
@@ -98,7 +102,7 @@ describe("ackComposite (Phase 3 §T3.7)", () => {
   it("passes default ttl_sec=3600 when no argument provided", async () => {
     await ackComposite();
     expect(mockApiPost).toHaveBeenCalledWith(
-      "/api/voice/degraded/ack",
+      "/api/engine/degraded/ack",
       expect.objectContaining({ ttl_sec: 3600 }),
     );
   });
@@ -106,7 +110,7 @@ describe("ackComposite (Phase 3 §T3.7)", () => {
   it("forwards explicit ttl_sec to the POST body", async () => {
     await ackComposite(7200);
     expect(mockApiPost).toHaveBeenCalledWith(
-      "/api/voice/degraded/ack",
+      "/api/engine/degraded/ack",
       expect.objectContaining({ ttl_sec: 7200 }),
     );
   });
