@@ -90,6 +90,7 @@ async def get_voice_status(registry: ServiceRegistry) -> dict[str, Any]:
             "last_ladder_complete_monotonic": None,
             "composite_axes": [],
             "composite_severity": None,
+            "composite_max_severity": None,
             "ack_at_monotonic": None,
             "ack_ttl_sec": None,
             "ack_operator_id": None,
@@ -97,21 +98,53 @@ async def get_voice_status(registry: ServiceRegistry) -> dict[str, Any]:
         },
     }
 
-    # Mission C4 §T1.7 — populate composite axes + severity from the
-    # process-wide EngineDegradedStore. Best-effort: a store
-    # unavailability cannot block the status endpoint (legacy clients
-    # depend on it for the non-degraded fields).
+    # Mission C4 §T1.7 + Mission D.1 §D-P0-1 — populate composite axes,
+    # composite_severity (count-tier OR hybrid per the
+    # composite_severity_by_max knob), AND the additive
+    # composite_max_severity field. Best-effort: a store unavailability
+    # cannot block the status endpoint (legacy clients depend on it for
+    # the non-degraded fields).
     try:
         from sovyx.dashboard.routes.engine_degraded import (
             _compute_composite_severity,
+            _compute_composite_severity_hybrid,
+            _max_per_axis_severity,
         )
         from sovyx.engine._degraded_store import get_default_degraded_store
 
-        distinct_axes = get_default_degraded_store().distinct_axes()
+        degraded_store = get_default_degraded_store()
+        entries = degraded_store.snapshot()
+        distinct_axes = sorted({e.axis for e in entries})
+        max_per_axis = _max_per_axis_severity(entries)
         status["degraded"]["composite_axes"] = distinct_axes
-        status["degraded"]["composite_severity"] = _compute_composite_severity(
-            len(distinct_axes),
-        )
+        status["degraded"]["composite_max_severity"] = max_per_axis
+
+        # Knob lookup is best-effort via the registry's EngineConfig
+        # handle when present (D.1-a LENIENT default: False → count-tier
+        # path matches pre-D.1 behavior).
+        by_max = False
+        try:
+            from sovyx.engine.config import EngineConfig
+
+            if registry.is_registered(EngineConfig):
+                engine_config = await registry.resolve(EngineConfig)
+                by_max = bool(
+                    engine_config.tuning.dashboard.composite_severity_by_max,
+                )
+        except Exception:  # noqa: BLE001 — knob lookup must never raise
+            logger.debug("c4_voice_status_composite_knob_lookup_failed")
+
+        if by_max:
+            status["degraded"]["composite_severity"] = (
+                _compute_composite_severity_hybrid(
+                    len(distinct_axes),
+                    max_per_axis,
+                )
+            )
+        else:
+            status["degraded"]["composite_severity"] = _compute_composite_severity(
+                len(distinct_axes),
+            )
     except Exception:  # noqa: BLE001 — observability only
         logger.debug("c4_voice_status_composite_axes_failed")
 

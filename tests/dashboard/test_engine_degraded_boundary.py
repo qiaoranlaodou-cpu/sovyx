@@ -21,7 +21,11 @@ from __future__ import annotations
 from sovyx.dashboard.routes.engine_degraded import (
     EngineDegradedResponse,
     _compute_composite_severity,
+    _compute_composite_severity_hybrid,
+    _max_per_axis_severity,
+    _normalize_severity,
 )
+from sovyx.engine._degraded_store import DegradedEntry
 from tests.dashboard._boundary_helpers import assert_boundary_accepts
 
 
@@ -573,3 +577,162 @@ class TestComputeCompositeSeverity:
 
     def test_many_axes_critical(self) -> None:
         assert _compute_composite_severity(8) == "critical"
+
+
+def _entry(axis: str, severity: str) -> DegradedEntry:
+    return DegradedEntry(
+        axis=axis,
+        reason=f"{axis}.test_reason",
+        severity=severity,
+        title_token=f"degraded.{axis}.test.title",
+        body_token=f"degraded.{axis}.test.body",
+    )
+
+
+class TestMaxPerAxisSeverity:
+    """Mission D.1 / D-P0-1 — additive composite_max_severity helper."""
+
+    def test_empty_returns_none(self) -> None:
+        assert _max_per_axis_severity([]) is None
+
+    def test_single_warn(self) -> None:
+        assert _max_per_axis_severity([_entry("voice", "warn")]) == "warn"
+
+    def test_single_error(self) -> None:
+        assert _max_per_axis_severity([_entry("llm", "error")]) == "error"
+
+    def test_single_critical(self) -> None:
+        assert _max_per_axis_severity([_entry("voice", "critical")]) == "critical"
+
+    def test_warning_normalized_to_warn(self) -> None:
+        # Sibling grammar drift (D.1 addendum) — boundary normalizes.
+        assert _max_per_axis_severity([_entry("engine_resources", "warning")]) == "warn"
+
+    def test_mixed_returns_max(self) -> None:
+        result = _max_per_axis_severity(
+            [
+                _entry("voice", "warn"),
+                _entry("llm", "critical"),
+                _entry("stt", "error"),
+            ],
+        )
+        assert result == "critical"
+
+    def test_unknown_value_ignored(self) -> None:
+        # Out-of-grammar severity must not inflate the composite.
+        assert _max_per_axis_severity([_entry("voice", "emergency")]) is None
+
+    def test_unknown_does_not_demote_known(self) -> None:
+        result = _max_per_axis_severity(
+            [
+                _entry("voice", "warn"),
+                _entry("llm", "emergency"),
+            ],
+        )
+        assert result == "warn"
+
+
+class TestNormalizeSeverity:
+    """Mission D.1 — defensive normalization at the composite boundary."""
+
+    def test_warn_passthrough(self) -> None:
+        assert _normalize_severity("warn") == "warn"
+
+    def test_warning_to_warn(self) -> None:
+        assert _normalize_severity("warning") == "warn"
+
+    def test_error_passthrough(self) -> None:
+        assert _normalize_severity("error") == "error"
+
+    def test_critical_passthrough(self) -> None:
+        assert _normalize_severity("critical") == "critical"
+
+    def test_none_passthrough(self) -> None:
+        assert _normalize_severity(None) is None
+
+    def test_unknown_returns_none(self) -> None:
+        assert _normalize_severity("emergency") is None
+        assert _normalize_severity("info") is None
+
+
+class TestComputeCompositeSeverityHybrid:
+    """Mission D.1 / D-P0-1 — amended ADR-D6 Hybrid rule.
+
+    composite = max(per-axis-max, count-tier) under
+    ``None < warn < error < critical`` ordering.
+    """
+
+    def test_zero_axes_none(self) -> None:
+        assert _compute_composite_severity_hybrid(0, None) is None
+
+    def test_one_axis_warn_returns_warn(self) -> None:
+        assert _compute_composite_severity_hybrid(1, "warn") == "warn"
+
+    def test_one_axis_critical_returns_critical(self) -> None:
+        """D-P0-1 smoking gun — single critical axis must NOT collapse to warn."""
+        assert _compute_composite_severity_hybrid(1, "critical") == "critical"
+
+    def test_one_axis_error_returns_error(self) -> None:
+        assert _compute_composite_severity_hybrid(1, "error") == "error"
+
+    def test_two_axes_both_warn_returns_error(self) -> None:
+        """Cumulative blast-radius preserved by count-tier component."""
+        assert _compute_composite_severity_hybrid(2, "warn") == "error"
+
+    def test_two_axes_one_critical_returns_critical(self) -> None:
+        assert _compute_composite_severity_hybrid(2, "critical") == "critical"
+
+    def test_three_axes_all_warn_returns_critical(self) -> None:
+        """Three-axis cognitive-load tier preserved from original ADR-D6."""
+        assert _compute_composite_severity_hybrid(3, "warn") == "critical"
+
+    def test_count_only_with_max_none_falls_back_to_count(self) -> None:
+        # Producer emitted only unknown severities — count still drives composite.
+        assert _compute_composite_severity_hybrid(2, None) == "error"
+
+    def test_warning_normalized_in_hybrid(self) -> None:
+        # Boundary normalization: producer "warning" must escalate properly.
+        assert _compute_composite_severity_hybrid(1, "warning") == "warn"
+
+
+class TestEngineDegradedResponseHybridAdditiveField:
+    """Mission D.1 / D-P0-1 — composite_max_severity additive emission."""
+
+    def test_field_round_trips_via_boundary(self) -> None:
+        response = assert_boundary_accepts(
+            EngineDegradedResponse,
+            helper_factory=lambda: {
+                "axes": [_voice_axis()],
+                "composite_severity": "warn",
+                "composite_axis_count": 1,
+                "composite_max_severity": "error",
+                "ack": {"acked": False},
+            },
+        )
+        assert response.composite_max_severity == "error"
+
+    def test_field_defaults_to_none_when_absent(self) -> None:
+        # Pre-D.1 producer payloads (missing the new field) must still parse.
+        response = assert_boundary_accepts(
+            EngineDegradedResponse,
+            helper_factory=lambda: {
+                "axes": [],
+                "composite_severity": None,
+                "composite_axis_count": 0,
+                "ack": {"acked": False},
+            },
+        )
+        assert response.composite_max_severity is None
+
+    def test_field_accepts_critical(self) -> None:
+        response = assert_boundary_accepts(
+            EngineDegradedResponse,
+            helper_factory=lambda: {
+                "axes": [_voice_axis()],
+                "composite_severity": "warn",
+                "composite_axis_count": 1,
+                "composite_max_severity": "critical",
+                "ack": {"acked": False},
+            },
+        )
+        assert response.composite_max_severity == "critical"

@@ -125,15 +125,78 @@ class EngineDegradedResponse(BaseModel):
     axes: list[DegradedAxisModel] = Field(default_factory=list)
     composite_severity: str | None = None
     composite_axis_count: int = 0
+    composite_max_severity: str | None = None
+    """Mission D.1 / D-P0-1 — max of per-entry ``DegradedEntry.severity``
+    across all active axes, under the canonical ordering
+    ``None < "warn" < "error" < "critical"``. Defensive: producer values
+    of ``"warning"`` (sibling grammar drift; out of D.1 scope) are
+    normalized to ``"warn"`` for this aggregation.
+
+    Emitted ALWAYS (additive; relies on ``extra="allow"``). Consumers
+    that want the truthful per-axis-max signal regardless of the
+    count-tier-based ``composite_severity`` field SHOULD read this.
+
+    When ``EngineConfig.tuning.dashboard.composite_severity_by_max=True``
+    (LENIENT shim — default False during D.1 staged adoption, target
+    default True at the PERCEIVED flip), ``composite_severity`` is
+    derived as ``max(composite_max_severity, count_tier_severity)`` (the
+    amended ADR-D6 Hybrid rule). When False, ``composite_severity``
+    remains pure count-based per the original ADR-D6 rule."""
     ack: AckStateModel = Field(default_factory=AckStateModel)
 
 
-def _compute_composite_severity(distinct_axis_count: int) -> str | None:
-    """Severity escalation per ADR-D6.
+_SEVERITY_ORDER: dict[str | None, int] = {
+    None: 0,
+    "warn": 1,
+    "error": 2,
+    "critical": 3,
+}
 
-    Kept as a free function (not an enum) so the producer-side
-    consumer at ``voice_status.get_voice_status`` can call it directly
-    without a circular import on the response model.
+
+def _normalize_severity(raw: str | None) -> str | None:
+    """Map producer severity strings to the canonical {warn,error,critical}.
+
+    Defensive bridge for the sibling per-entry grammar drift surfaced
+    in the Mission D.1 addendum (cohort governor + 13 voice sites emit
+    ``"warning"`` while the wire grammar accepts only
+    ``{"warn","error","critical"}``). Out-of-grammar values that do not
+    match any known tier map to ``None`` so a typo never inflates the
+    composite — the underlying producer-side grammar fix is a separate
+    follow-up mission per the D.1 scope freeze.
+    """
+    if raw == "warning":
+        return "warn"
+    if raw in _SEVERITY_ORDER:
+        return raw
+    return None
+
+
+def _max_per_axis_severity(entries: list[DegradedEntry]) -> str | None:
+    """Mission D.1 / D-P0-1 — return the highest per-entry severity.
+
+    Canonical ordering: ``None < "warn" < "error" < "critical"``. Returns
+    ``None`` when ``entries`` is empty OR when no entry carries a
+    recognizable severity. Producer values of ``"warning"`` are
+    normalized to ``"warn"`` (see :func:`_normalize_severity`).
+    """
+    current: str | None = None
+    current_rank = 0
+    for entry in entries:
+        candidate = _normalize_severity(entry.severity)
+        rank = _SEVERITY_ORDER.get(candidate, 0)
+        if rank > current_rank:
+            current = candidate
+            current_rank = rank
+    return current
+
+
+def _compute_composite_severity(distinct_axis_count: int) -> str | None:
+    """ADR-D6 original count-tier severity escalation (LENIENT default).
+
+    Mission D.1 retains this as the count-tier COMPONENT of the amended
+    Hybrid rule. Kept as a free function (not an enum) so the
+    producer-side consumer at ``voice_status.get_voice_status`` can
+    call it directly without a circular import on the response model.
     """
     if distinct_axis_count <= 0:
         return None
@@ -142,6 +205,58 @@ def _compute_composite_severity(distinct_axis_count: int) -> str | None:
     if distinct_axis_count == 2:
         return "error"
     return "critical"
+
+
+def _compute_composite_severity_hybrid(
+    distinct_axis_count: int,
+    max_per_axis: str | None,
+) -> str | None:
+    """ADR-D6 amended Hybrid rule (Mission D.1 / D-P0-1 closure).
+
+    Returns ``max(_compute_composite_severity(distinct_axis_count),
+    max_per_axis)`` under the canonical ordering
+    ``None < "warn" < "error" < "critical"``. Preserves BOTH the
+    cumulative-blast-radius signal (count-tier) AND truthful per-axis
+    urgency (max_per_axis). A single axis with per-entry
+    ``severity="critical"`` now resolves to ``"critical"`` instead of
+    being collapsed to ``"warn"`` by the count rule alone.
+
+    Active when ``EngineConfig.tuning.dashboard.composite_severity_by_max
+    =True``; until then ``_compute_composite_severity`` is the
+    authoritative emitter of ``composite_severity`` and
+    ``_max_per_axis_severity`` is emitted additively in the new
+    ``composite_max_severity`` field.
+    """
+    count_tier = _compute_composite_severity(distinct_axis_count)
+    normalized_max = _normalize_severity(max_per_axis)
+    if (
+        _SEVERITY_ORDER.get(normalized_max, 0)
+        > _SEVERITY_ORDER.get(count_tier, 0)
+    ):
+        return normalized_max
+    return count_tier
+
+
+def _composite_severity_by_max_enabled(request: Request | None) -> bool:
+    """Resolve the D.1 LENIENT knob from the app's engine config.
+
+    Defaults to False (count-based ADR-D6 rule) when the engine config
+    is unavailable — matches pre-D.1 behavior so the LENIENT shim is
+    safe to deploy without operator action.
+    """
+    if request is None:
+        return False
+    try:
+        engine_config = getattr(request.app.state, "engine_config", None)
+        if engine_config is None:
+            return False
+        tuning = getattr(engine_config, "tuning", None)
+        dashboard = getattr(tuning, "dashboard", None)
+        if dashboard is None:
+            return False
+        return bool(getattr(dashboard, "composite_severity_by_max", False))
+    except Exception:  # noqa: BLE001 — knob lookup must never raise
+        return False
 
 
 def _entry_to_axis_model(entry: DegradedEntry) -> DegradedAxisModel:
@@ -273,10 +388,23 @@ async def get_engine_degraded(request: Request) -> EngineDegradedResponse:
         except Exception:  # noqa: BLE001
             logger.debug("operator_acks_store_list_failed")
 
+    # Mission D.1 / D-P0-1 — composite_max_severity is ALWAYS emitted
+    # (additive). composite_severity follows the knob: count-tier when
+    # LENIENT (default), Hybrid when STRICT (post-flip).
+    max_per_axis = _max_per_axis_severity(entries)
+    if _composite_severity_by_max_enabled(request):
+        composite_severity = _compute_composite_severity_hybrid(
+            len(distinct_axes),
+            max_per_axis,
+        )
+    else:
+        composite_severity = _compute_composite_severity(len(distinct_axes))
+
     return EngineDegradedResponse(
         axes=axis_models,
-        composite_severity=_compute_composite_severity(len(distinct_axes)),
+        composite_severity=composite_severity,
         composite_axis_count=len(distinct_axes),
+        composite_max_severity=max_per_axis,
         ack=_aggregate_ack_state(axis_models, active_acks_by_key),
     )
 
@@ -472,5 +600,8 @@ __all__ = [
     "DegradedAxisModel",
     "EngineDegradedResponse",
     "_compute_composite_severity",
+    "_compute_composite_severity_hybrid",
+    "_max_per_axis_severity",
+    "_normalize_severity",
     "router",
 ]

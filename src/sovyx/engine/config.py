@@ -3055,6 +3055,28 @@ class DashboardTuningConfig(BaseSettings):
     )
     """Operator-action chip target — sovyx doctor dashboard reference."""
 
+    composite_severity_by_max: bool = Field(default=False)
+    """Mission D.1 / D-P0-1 — composite-severity aggregation rule selector.
+
+    False (default during LENIENT window v0.49.38..v0.55.0): preserves the
+    original ADR-D6 count-based rule (1 axis → "warn", 2 → "error",
+    3+ → "critical"). Per-entry `DegradedEntry.severity` is IGNORED by
+    the composite.
+
+    True (after PERCEIVED flip, target default v0.50.0): adopts the
+    amended ADR-D6 Hybrid rule:
+    ``composite = max(max(entry.severity), count_tier(distinct_axes))``.
+    A single axis with per-entry ``severity="critical"`` now paints the
+    banner red instead of yellow. The cumulative-blast-radius signal
+    (2 warn axes → error) is preserved by the count-tier component.
+
+    Toggle to False as an operator-side rollback if the visual shift
+    causes regression in dashboards or runbooks; the additive
+    ``composite_max_severity`` field is still emitted for downstream
+    consumers that want the per-axis-max signal regardless of the
+    composite_severity rule. Sunset v0.55.0 alongside the existing
+    legacy_alias dual-emit cluster (anti-pattern #49 / ADR-D14)."""
+
 
 class TuningConfig(BaseModel):
     """Aggregate tuning knobs for cognitive / brain / voice / llm subsystems.
