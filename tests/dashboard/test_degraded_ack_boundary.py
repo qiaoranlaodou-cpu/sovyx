@@ -95,21 +95,71 @@ def _seed_voice_axis() -> None:
     )
 
 
+def _ack_request_composite_payload() -> dict[str, object]:
+    """Minimal frontend POST body — composite-banner shorthand path."""
+    return {"reason": "composite"}
+
+
+def _ack_request_explicit_ttl_payload() -> dict[str, object]:
+    """Frontend POST body with canonical axis-reason + explicit ttl_sec."""
+    return {
+        "reason": "voice.failover_ladder_exhausted",
+        "ttl_sec": 7200,
+    }
+
+
+def _ack_request_metadata_payload() -> dict[str, object]:
+    """Frontend POST body with operator-supplied metadata block."""
+    return {
+        "reason": "composite",
+        "metadata": {"source": "operator", "tab_id": "abc123"},
+    }
+
+
+def _ack_request_future_field_payload() -> dict[str, object]:
+    """Forward-additive probe — unknown key must round-trip via extra=allow."""
+    return {
+        "reason": "composite",
+        "future_field": "tolerated",
+    }
+
+
+def _ack_response_success_payload() -> dict[str, object]:
+    """Mirror ``post_engine_degraded_ack`` success branch
+    (``engine_degraded.py:599``) — at least one ack recorded."""
+    return {
+        "ok": True,
+        "reasons_acked": ["voice.failover_ladder_exhausted"],
+        "acked_at_ts": 1700000000,
+        "ttl_sec": 3600,
+        "ttl_remaining_sec": 3600,
+    }
+
+
+def _ack_response_no_active_axes_payload() -> dict[str, object]:
+    """Mirror ``post_engine_degraded_ack`` no-active-axes branch
+    (``engine_degraded.py:578``) — ok=False + empty reasons_acked."""
+    return {
+        "ok": False,
+        "reasons_acked": [],
+        "acked_at_ts": 1700000000,
+        "ttl_sec": 3600,
+        "ttl_remaining_sec": 3600,
+    }
+
+
 class TestAckRequestBodyBoundary:
     def test_composite_reason_with_default_ttl(self) -> None:
         assert_boundary_accepts(
             AckRequestBody,
-            helper_factory=lambda: {"reason": "composite"},
+            helper_factory=_ack_request_composite_payload,
             field_assertions={"reason": "composite", "ttl_sec": None},
         )
 
     def test_explicit_ttl_round_trips(self) -> None:
         assert_boundary_accepts(
             AckRequestBody,
-            helper_factory=lambda: {
-                "reason": "voice.failover_ladder_exhausted",
-                "ttl_sec": 7200,
-            },
+            helper_factory=_ack_request_explicit_ttl_payload,
             field_assertions={
                 "reason": "voice.failover_ladder_exhausted",
                 "ttl_sec": 7200,
@@ -119,20 +169,14 @@ class TestAckRequestBodyBoundary:
     def test_metadata_round_trips(self) -> None:
         assert_boundary_accepts(
             AckRequestBody,
-            helper_factory=lambda: {
-                "reason": "composite",
-                "metadata": {"source": "operator", "tab_id": "abc123"},
-            },
+            helper_factory=_ack_request_metadata_payload,
         )
 
     def test_future_field_passes_through(self) -> None:
         """Forward-additive: future request fields land via extra-allow."""
         assert_boundary_accepts(
             AckRequestBody,
-            helper_factory=lambda: {
-                "reason": "composite",
-                "future_field": "tolerated",
-            },
+            helper_factory=_ack_request_future_field_payload,
             field_assertions={"reason": "composite"},
         )
 
@@ -141,13 +185,7 @@ class TestAckResponseBoundary:
     def test_success_shape(self) -> None:
         assert_boundary_accepts(
             AckResponse,
-            helper_factory=lambda: {
-                "ok": True,
-                "reasons_acked": ["voice.failover_ladder_exhausted"],
-                "acked_at_ts": 1700000000,
-                "ttl_sec": 3600,
-                "ttl_remaining_sec": 3600,
-            },
+            helper_factory=_ack_response_success_payload,
             field_assertions={
                 "ok": True,
                 "ttl_sec": 3600,
@@ -160,13 +198,7 @@ class TestAckResponseBoundary:
         ok=False so the frontend skips its optimistic dismiss."""
         assert_boundary_accepts(
             AckResponse,
-            helper_factory=lambda: {
-                "ok": False,
-                "reasons_acked": [],
-                "acked_at_ts": 1700000000,
-                "ttl_sec": 3600,
-                "ttl_remaining_sec": 3600,
-            },
+            helper_factory=_ack_response_no_active_axes_payload,
             field_assertions={"ok": False, "reasons_acked": []},
         )
 
