@@ -1943,6 +1943,42 @@ export const AckStateSchema = z
   })
   .passthrough();
 
+/* Mission C C-P0-4 / Phase C.4 — shared ErrorEnvelope SSoT.
+ *
+ * Mirrors :class:`sovyx.dashboard._error_envelope.ErrorEnvelope` so
+ * every dashboard route's 4xx/5xx body has the same typed shape
+ * (anti-pattern #57/#56 closure on the error half). Frontend
+ * ``apiFetch`` consumers branch on ``err.body.error_code`` instead of
+ * the opaque FastAPI ``HTTPException`` default.
+ *
+ * Forward-additive (`.passthrough()`); new error codes ship in
+ * CONCERT with the producer enum + the zod twin update.
+ */
+export const ErrorCodeSchema = z.enum([
+  "bad_request",
+  "unauthorized",
+  "forbidden",
+  "not_found",
+  "conflict",
+  "unprocessable",
+  "too_many_requests",
+  "internal",
+  "service_unavailable",
+  "gateway_timeout",
+  "engine_not_running",
+  "registry_unavailable",
+  "dependency_unavailable",
+]);
+
+export const ErrorEnvelopeSchema = z
+  .object({
+    error: z.string(),
+    error_code: ErrorCodeSchema,
+    detail: z.string().nullable().optional(),
+    retry_after_seconds: z.number().int().nonnegative().nullable().optional(),
+  })
+  .passthrough();
+
 export const EngineDegradedResponseSchema = z
   .object({
     axes: z.array(DegradedAxisSchema).optional().default([]),
