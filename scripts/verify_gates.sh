@@ -45,7 +45,7 @@ else
 fi
 
 GATE_NUM=0
-GATE_TOTAL=15
+GATE_TOTAL=16
 FAILURES=()
 
 ok() {
@@ -367,6 +367,33 @@ else
     # Non-zero exit — LENIENT phase, warn only; do NOT fail verify_gates.sh.
     # Phase 3 v0.54.0 STRICT promotion will replace this branch with `bad ...`.
     printf '%s⚠%s gate %d/%d — resource hygiene discipline LENIENT warn (Mission H4 v0.49.14; STRICT at v0.54.0); log: %s\n' \
+        "$YELLOW" "$RESET" "$GATE_NUM" "$GATE_TOTAL" "$LOG"
+fi
+
+# ── Gate 17: zod twin completeness (Mission C §C.0 + C.2) ───────────
+# Mission C Phase C.0-a LENIENT — warn-only locally; STRICT in publish.yml
+# post-build verify is NOT yet wired (Phase C.0-a foundation ship). Phase
+# 3 v0.53.x promotes this to STRICT in verify_gates.sh as well, per the
+# C.0 staged-adoption window. Pre-mission baseline: 12 violations across
+# the `ResourceCohortMetricsSchema` twin (the C-P0-1 NOMINATED #1
+# typed-view staleness). Phase C.2 closes those 12 in the same minor
+# cycle; once C.2 ships the baseline drops to 0 and the STRICT-flip is
+# safe.
+GATE_NUM=16
+LOG="$LOG_DIR/16-zod-twin-completeness.log"
+if uv run python scripts/dev/check_zod_twin_completeness.py >"$LOG" 2>&1; then
+    if grep -q "zod twin discipline: PASS" "$LOG"; then
+        ok "zod twin completeness — PASS"
+    else
+        # exit 0 but violations present (LENIENT report-only) — surface as warn
+        VIOLATIONS=$(grep -oE "[0-9]+ violation\(s\)" "$LOG" | head -1 || echo "0 violations")
+        printf '%s⚠%s gate %d/%d — zod twin completeness LENIENT warn: %s (Mission C v0.49.38; STRICT at v0.53.x); log: %s\n' \
+            "$YELLOW" "$RESET" "$GATE_NUM" "$GATE_TOTAL" "$VIOLATIONS" "$LOG"
+    fi
+else
+    # Non-zero exit — LENIENT phase, warn only; do NOT fail verify_gates.sh.
+    # Phase 3 v0.53.x STRICT promotion will replace this branch with `bad ...`.
+    printf '%s⚠%s gate %d/%d — zod twin completeness LENIENT warn (Mission C v0.49.38; STRICT at v0.53.x); log: %s\n' \
         "$YELLOW" "$RESET" "$GATE_NUM" "$GATE_TOTAL" "$LOG"
 fi
 
