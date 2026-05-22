@@ -6,8 +6,21 @@ from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, Request, Response
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel, ConfigDict
 
 from sovyx.dashboard.routes._deps import verify_token
+
+
+class StatusGenericResponse(BaseModel):
+    """Shared shape for /api/status* endpoints whose rich snapshot
+    payload varies by StatusCollector + DailyStatsRecorder versions
+    (Mission C C.4).
+
+    Top-level error field accommodates the 503 fallback path; the
+    rest is forward-additive via extra="allow"."""
+
+    model_config = ConfigDict(extra="allow")
+    error: str | None = None
 
 
 def _empty_stats_totals() -> dict[str, object]:
@@ -21,7 +34,7 @@ def _empty_stats_month() -> dict[str, object]:
 router = APIRouter(prefix="/api")
 
 
-@router.get("/status", dependencies=[Depends(verify_token)])
+@router.get("/status", dependencies=[Depends(verify_token)], response_model=StatusGenericResponse)
 async def get_status(request: Request) -> JSONResponse:
     """System status overview."""
     app = request.app
@@ -55,7 +68,9 @@ async def get_status(request: Request) -> JSONResponse:
     )
 
 
-@router.get("/stats/history", dependencies=[Depends(verify_token)])
+@router.get(
+    "/stats/history", dependencies=[Depends(verify_token)], response_model=StatusGenericResponse
+)
 async def stats_history(request: Request) -> JSONResponse:
     """Usage history — last N days with live data for today.
 
@@ -148,7 +163,9 @@ async def stats_history(request: Request) -> JSONResponse:
     return JSONResponse({"days": history, "totals": totals, "current_month": month})
 
 
-@router.get("/stats/breakdown", dependencies=[Depends(verify_token)])
+@router.get(
+    "/stats/breakdown", dependencies=[Depends(verify_token)], response_model=StatusGenericResponse
+)
 async def stats_breakdown(request: Request) -> JSONResponse:
     """Return today's cost breakdown by cognitive phase / provider / model.
 
@@ -207,7 +224,7 @@ async def stats_breakdown(request: Request) -> JSONResponse:
     )
 
 
-@router.get("/health", dependencies=[Depends(verify_token)])
+@router.get("/health", dependencies=[Depends(verify_token)], response_model=StatusGenericResponse)
 async def get_health(request: Request) -> JSONResponse:
     """Health check results."""
     from sovyx.observability.health import (
@@ -279,7 +296,9 @@ async def get_health(request: Request) -> JSONResponse:
 # ── Active alerts (Phase 11 Task 11.7) ──
 
 
-@router.get("/alerts/active", dependencies=[Depends(verify_token)])
+@router.get(
+    "/alerts/active", dependencies=[Depends(verify_token)], response_model=StatusGenericResponse
+)
 async def get_active_alerts(request: Request) -> JSONResponse:
     """Currently firing alerts.
 
@@ -345,7 +364,11 @@ async def get_active_alerts(request: Request) -> JSONResponse:
 # ── Cardinality budget snapshot (Phase 11+ Task 11+.2) ──
 
 
-@router.get("/observability/metrics/cardinality", dependencies=[Depends(verify_token)])
+@router.get(
+    "/observability/metrics/cardinality",
+    dependencies=[Depends(verify_token)],
+    response_model=StatusGenericResponse,
+)
 async def get_metrics_cardinality(request: Request) -> JSONResponse:
     """Top-N metrics by Prometheus series count + global budget posture.
 

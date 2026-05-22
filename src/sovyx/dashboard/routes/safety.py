@@ -6,6 +6,7 @@ import contextlib
 
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel, ConfigDict
 from starlette.status import HTTP_503_SERVICE_UNAVAILABLE
 
 from sovyx.dashboard.routes._deps import verify_token
@@ -13,7 +14,29 @@ from sovyx.dashboard.routes._deps import verify_token
 router = APIRouter(prefix="/api/safety", dependencies=[Depends(verify_token)])
 
 
-@router.get("/stats")
+class SafetyGenericResponse(BaseModel):
+    """Shared generic shape for safety endpoints whose rich payload
+    varies by mind config + guardrail catalog (Mission C C.4).
+
+    All routes under /api/safety pass through forward-additive
+    extra="allow" — typed-consumer reads the top-level keys it knows
+    about (counts, status, rules) and ignores the rest. A future
+    C-phase can narrow per route once mind-config shape stabilizes."""
+
+    model_config = ConfigDict(extra="allow")
+    error: str | None = None
+
+
+class SafetyRulesUpdateResponse(BaseModel):
+    """Response of `PUT /api/safety/rules` (Mission C C.4)."""
+
+    model_config = ConfigDict(extra="allow")
+    ok: bool
+    rules: list[dict[str, object]] | None = None
+    error: str | None = None
+
+
+@router.get("/stats", response_model=SafetyGenericResponse)
 async def get_safety_stats(request: Request) -> JSONResponse:
     """Safety audit trail stats — blocks by category, direction, recent events."""
     from sovyx.cognitive.safety_audit import get_audit_trail
@@ -113,7 +136,7 @@ async def get_safety_stats(request: Request) -> JSONResponse:
     )
 
 
-@router.get("/status")
+@router.get("/status", response_model=SafetyGenericResponse)
 async def get_safety_status(request: Request) -> JSONResponse:
     """Runtime safety status — what is ACTIVE right now."""
     from sovyx.cognitive.safety_patterns import (
@@ -180,7 +203,7 @@ async def get_safety_status(request: Request) -> JSONResponse:
     )
 
 
-@router.get("/history")
+@router.get("/history", response_model=SafetyGenericResponse)
 async def get_safety_history(
     request: Request,
     hours: int = 24,
@@ -213,7 +236,7 @@ async def get_safety_history(
         )
 
 
-@router.get("/rules")
+@router.get("/rules", response_model=SafetyGenericResponse)
 async def get_custom_rules(request: Request) -> JSONResponse:
     """Get current custom rules and banned topics."""
     mind_config = getattr(request.app.state, "mind_config", None)
@@ -239,7 +262,7 @@ async def get_custom_rules(request: Request) -> JSONResponse:
     )
 
 
-@router.put("/rules")
+@router.put("/rules", response_model=SafetyRulesUpdateResponse)
 async def update_custom_rules(request: Request) -> JSONResponse:
     """Update custom rules and/or banned topics."""
     from sovyx.mind.config import CustomRule
