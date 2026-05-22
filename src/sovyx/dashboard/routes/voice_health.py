@@ -20,12 +20,20 @@ from __future__ import annotations
 
 import asyncio
 import math
+import os
 import time
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal, cast
+from typing import TYPE_CHECKING, Annotated, Final, Literal, cast
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from pydantic import BaseModel, ConfigDict, Field, computed_field
+from pydantic import (
+    BaseModel,
+    BeforeValidator,
+    ConfigDict,
+    Field,
+    computed_field,
+    field_validator,
+)
 from starlette.status import (
     HTTP_404_NOT_FOUND,
     HTTP_409_CONFLICT,
@@ -55,6 +63,7 @@ from sovyx.voice.health._factory_integration import (
     resolve_combo_store_path,
 )
 from sovyx.voice.health._failover_history import get_default_failover_history
+from sovyx.voice.health._quarantine_reasons import QuarantineReason, is_lifecycle_tag
 
 if TYPE_CHECKING:
     from sovyx.engine.config import EngineConfig
@@ -96,6 +105,117 @@ def _safe_prob(value: float | None) -> float | None:
     if not math.isfinite(value):
         return None
     return max(0.0, min(1.0, value))
+
+
+# ── Mission C.1 § — QuarantineReason transport binding (LENIENT) ───────
+# Env-knob rollback (Layer 1) for Mission C.1 staged-adoption foundation.
+# C.1-a narrows ``QuarantineEntryModel.{reason,derived_reason,resolved_reason}``
+# to ``QuarantineReason | str`` so pydantic smart-mode coerces known
+# enum values to ``QuarantineReason`` instances while accepting H3
+# lifecycle tags (``"probe_pinned"`` / ``"probe_store"`` / …) and
+# legacy values via the ``str`` Union arm. The field validator below
+# emits a structured WARN whenever a value lands on the ``str`` arm
+# WITHOUT being a recognised lifecycle tag — that is the "neither
+# QuarantineReason nor lifecycle tag" drift surface anti-pattern #46
+# was authored against.
+#
+# Default behaviour is LENIENT (knob unset / "0" / "false"): the
+# validator passes unknown values through with WARN. The operator can
+# opt the boundary in to STRICT (raise :class:`ValueError` → pydantic
+# ``ValidationError`` → HTTP 500 at the API surface) by setting
+# ``SOVYX_TRANSPORT__QUARANTINE_REASON_STRICT=true`` before daemon
+# start. Phase 3 STRICT v0.53.0 (H3 cycle close) flips the default to
+# True; this knob then becomes the rollback escape.
+_QUARANTINE_REASON_STRICT_ENV: Final = "SOVYX_TRANSPORT__QUARANTINE_REASON_STRICT"
+
+
+def _quarantine_reason_strict() -> bool:
+    """Return True iff the operator opted in to STRICT boundary rejection.
+
+    Reads :data:`_QUARANTINE_REASON_STRICT_ENV` at call time so tests can
+    monkeypatch ``os.environ`` per-case. Accepts ``"1"``/``"true"``/
+    ``"yes"`` (case-insensitive) as True; anything else (including the
+    default unset state) returns False — the LENIENT v0.49.40+ default.
+    """
+    return os.environ.get(_QUARANTINE_REASON_STRICT_ENV, "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+    }
+
+
+def _coerce_quarantine_reason(value: object) -> object:
+    """Mission C.1 §C.1-a — BeforeValidator: coerce enum-value str to enum.
+
+    Pydantic v2 smart-mode Union picks ``str`` over :class:`QuarantineReason`
+    for plain string inputs because both arms validate the same value
+    and ``str`` is the wider base type. Run this BeforeValidator FIRST
+    to convert any string that matches a :class:`QuarantineReason` value
+    into the enum instance — pydantic then validates the result against
+    the Union and the :class:`QuarantineReason` arm wins. Non-matching
+    strings (lifecycle tags, drift values) fall through unchanged.
+    """
+    if isinstance(value, QuarantineReason):
+        return value
+    if isinstance(value, str):
+        try:
+            return QuarantineReason(value)
+        except ValueError:
+            return value
+    return value  # let pydantic raise for non-str non-enum types
+
+
+def _validate_quarantine_reason_field(value: QuarantineReason | str) -> QuarantineReason | str:
+    """Mission C.1 §C.1-a field-validator for ``reason`` family fields.
+
+    Accepts three classes of value:
+
+    1. :class:`QuarantineReason` instance (already coerced via pydantic
+       smart-mode Union narrowing) — passes through unchanged.
+    2. ``str`` matching a recognised H3 lifecycle tag
+       (``"probe_pinned"`` / ``"probe_store"`` / ``"probe_cascade"`` /
+       ``"factory_integration"`` / ``"kernel_invalidated_recheck"`` /
+       ``"probe"`` / ``"watchdog_recheck"`` per
+       :func:`sovyx.voice.health._quarantine_reasons.is_lifecycle_tag`)
+       — passes through unchanged.
+    3. ``str`` empty string (default for ``derived_reason`` /
+       ``resolved_reason``) — passes through unchanged.
+
+    Anything else is "drift" — neither a :class:`QuarantineReason` member
+    nor a known lifecycle tag. LENIENT default emits a structured WARN
+    + passes the value through. STRICT (via
+    :func:`_quarantine_reason_strict`) raises :class:`ValueError`,
+    surfacing the drift as a pydantic ``ValidationError`` at the
+    boundary so the dashboard sees an HTTP 500 instead of a silent
+    classification lie.
+    """
+    if isinstance(value, QuarantineReason):
+        return value
+    # pydantic smart-mode Union(QuarantineReason | str) lands enum-string
+    # values on the QuarantineReason branch automatically; reaching this
+    # point with a ``str`` means the value did NOT match an enum member.
+    if value == "":
+        return value
+    if is_lifecycle_tag(value):
+        return value
+    if _quarantine_reason_strict():
+        msg = (
+            f"quarantine reason {value!r} is neither a QuarantineReason member "
+            f"nor a known H3 lifecycle tag — see CLAUDE.md anti-pattern #46 + "
+            f"Mission C.1 §C.1-a (env knob {_QUARANTINE_REASON_STRICT_ENV})."
+        )
+        raise ValueError(msg)
+    logger.warning(
+        "voice_quarantine_reason_unrecognized",
+        reason=value,
+        strict=False,
+        anti_pattern="46",
+        mission="C.1",
+        # Operator action: investigate producer site that emitted this
+        # value; once classified, either add it to QuarantineReason (if
+        # terminal) or to _LIFECYCLE_TAGS (if lifecycle annotation).
+    )
+    return value
 
 
 # ── Pydantic models ─────────────────────────────────────────────────────
@@ -286,6 +406,23 @@ class QuarantineEntryModel(BaseModel):
     STRICT v0.53.0 promotes ``resolved_reason`` → ``reason`` and drops
     ``derived_reason``.
 
+    Mission C.1 §C.1-a — narrows ``reason`` / ``derived_reason`` /
+    ``resolved_reason`` from plain ``str`` to ``QuarantineReason | str``
+    Union. Pydantic smart-mode coerces enum-value strings
+    (``"apo_degraded"`` / ``"vad_frontend_dead"`` / …) to
+    :class:`QuarantineReason` instances at the boundary so typed
+    consumers (OpenAPI codegen, pydantic-typed Python clients) read
+    enum members. The ``str`` Union arm preserves the H3 LENIENT-window
+    backward-compat for lifecycle-tag values (``"probe_pinned"`` /
+    ``"probe_store"`` / …). The paired
+    :func:`_validate_quarantine_reason_field` validator surfaces drift
+    (neither enum nor lifecycle tag) as a structured WARN under LENIENT
+    default and as a :class:`ValidationError` when the operator opts in
+    via ``SOVYX_TRANSPORT__QUARANTINE_REASON_STRICT=true``. Phase 3
+    STRICT v0.53.0 H3 cycle close (Gate 14 STRICT flip) drops the
+    ``| str`` Union arm leaving the field strictly typed
+    :class:`QuarantineReason`.
+
     ``model_config`` ships ``extra="allow"`` per CLAUDE.md anti-pattern
     #40 — every QuarantineEntry field that ships downstream is forward-
     additive; future H3-sibling fields (e.g. composite-store metadata)
@@ -301,9 +438,20 @@ class QuarantineEntryModel(BaseModel):
     added_at_monotonic: float
     expires_at_monotonic: float
     seconds_until_expiry: float
-    reason: str
-    derived_reason: str = ""
-    resolved_reason: str = ""
+    reason: Annotated[QuarantineReason | str, BeforeValidator(_coerce_quarantine_reason)]
+    derived_reason: Annotated[
+        QuarantineReason | str, BeforeValidator(_coerce_quarantine_reason)
+    ] = ""
+    resolved_reason: Annotated[
+        QuarantineReason | str, BeforeValidator(_coerce_quarantine_reason)
+    ] = ""
+
+    _validate_reason = field_validator(
+        "reason",
+        "derived_reason",
+        "resolved_reason",
+        mode="after",
+    )(_validate_quarantine_reason_field)
 
     @computed_field  # type: ignore[prop-decorator]
     @property
@@ -315,8 +463,15 @@ class QuarantineEntryModel(BaseModel):
         :attr:`derived_reason` (Mission C1 LENIENT alias) →
         :attr:`reason` (legacy default). Phase 3 STRICT v0.53.0
         simplifies the body to ``return self.reason``.
+
+        Returns the underlying string value (via :class:`QuarantineReason`
+        being a :class:`StrEnum`, ``str(member)`` collapses to the enum
+        value); downstream JSON serialisation is unchanged.
         """
-        return self.resolved_reason or self.derived_reason or self.reason
+        resolved = str(self.resolved_reason) if self.resolved_reason else ""
+        derived = str(self.derived_reason) if self.derived_reason else ""
+        reason = str(self.reason) if self.reason else ""
+        return resolved or derived or reason
 
     @classmethod
     def from_domain(
