@@ -45,7 +45,7 @@ else
 fi
 
 GATE_NUM=0
-GATE_TOTAL=16
+GATE_TOTAL=17
 FAILURES=()
 
 ok() {
@@ -394,6 +394,29 @@ else
     # Non-zero exit — LENIENT phase, warn only; do NOT fail verify_gates.sh.
     # Phase 3 v0.53.x STRICT promotion will replace this branch with `bad ...`.
     printf '%s⚠%s gate %d/%d — zod twin completeness LENIENT warn (Mission C v0.49.38; STRICT at v0.53.x); log: %s\n' \
+        "$YELLOW" "$RESET" "$GATE_NUM" "$GATE_TOTAL" "$LOG"
+fi
+
+# ── Gate 18: response_model presence (Mission C §C.0) ───────────────
+# Mission C Phase C.0-b LENIENT — warn-only locally; STRICT in
+# publish.yml post-build verify is NOT yet wired. Phase C.4 progressively
+# adds response_model= to the missing routes by subsystem; once that
+# body work completes, the v0.53.x cut promotes this to STRICT.
+# Pre-mission baseline: ~69 violations across 26 route files (Mission C
+# audit Gate 18 §17). LENIENT prevents NEW additions to the backlog
+# while the body work is sequenced.
+GATE_NUM=17
+LOG="$LOG_DIR/17-response-model-presence.log"
+if uv run python scripts/dev/check_response_model_presence.py >"$LOG" 2>&1; then
+    if grep -q "response_model discipline: PASS" "$LOG"; then
+        ok "response_model presence — PASS"
+    else
+        VIOLATIONS=$(grep -oE "[0-9]+ violation\(s\)" "$LOG" | head -1 || echo "0 violations")
+        printf '%s⚠%s gate %d/%d — response_model presence LENIENT warn: %s (Mission C v0.49.38; STRICT at v0.53.x); log: %s\n' \
+            "$YELLOW" "$RESET" "$GATE_NUM" "$GATE_TOTAL" "$VIOLATIONS" "$LOG"
+    fi
+else
+    printf '%s⚠%s gate %d/%d — response_model presence LENIENT warn (Mission C v0.49.38; STRICT at v0.53.x); log: %s\n' \
         "$YELLOW" "$RESET" "$GATE_NUM" "$GATE_TOTAL" "$LOG"
 fi
 
