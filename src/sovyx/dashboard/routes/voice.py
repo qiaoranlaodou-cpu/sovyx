@@ -306,8 +306,12 @@ class VoiceStatusDegraded(BaseModel):
     """
 
     composite_severity: str | None = None
-    """Aggregate severity computed per ADR-D6: 1 axis = ``"warn"``,
-    2 axes = ``"error"``, 3+ axes OR governor exhausted = ``"critical"``.
+    """Aggregate severity per the amended ADR-D6 Hybrid rule (Mission
+    D.1 / D-P0-1, 2026-05-21):
+    ``max(max(entry.severity), count_tier(distinct_axes))`` under the
+    ordering ``None < "warn" < "error" < "critical"``. Pure count-tier
+    rollback when
+    ``EngineConfig.tuning.dashboard.composite_severity_by_max=False``.
     ``None`` when no axis is degraded.
 
     Mission C4 §T1.5 — drives the banner palette + escalation animation.

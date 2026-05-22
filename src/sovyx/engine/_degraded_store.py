@@ -99,13 +99,19 @@ class DegradedEntry:
     Frozen + slotted so the store can safely return references in
     snapshots without consumers mutating the canonical state.
 
-    Severity is per-entry rather than per-axis because (a) a single
-    axis MAY have multiple distinct degraded reasons live at the same
-    time (e.g. a future LLM axis with both ``no_llm_provider`` and
-    ``ollama_unreachable`` — distinct remediation paths), and
-    (b) the composite endpoint computes the AGGREGATE severity by
-    counting distinct ``axis`` values per ADR-D6 (1=warn, 2=error,
-    3+=critical) rather than by per-entry severity.
+    Severity is per-entry because (a) a single axis MAY have multiple
+    distinct degraded reasons live at the same time (e.g. a future
+    LLM axis with both ``no_llm_provider`` and ``ollama_unreachable``
+    — distinct remediation paths), and (b) the composite endpoint
+    AGGREGATES per-entry severity into the operator-facing
+    ``composite_severity`` per the amended ADR-D6 Hybrid rule
+    (Mission D.1 / D-P0-1, 2026-05-21):
+    ``composite = max(max(entry.severity), count_tier(distinct_axes))``
+    under the ordering ``None < "warn" < "error" < "critical"``. A
+    single axis emitting ``severity="critical"`` therefore propagates
+    to the composite banner as ``"critical"`` rather than being
+    collapsed to ``"warn"`` by the count-tier alone. See
+    :func:`sovyx.dashboard.routes.engine_degraded._compute_composite_severity_hybrid`.
     """
 
     axis: str

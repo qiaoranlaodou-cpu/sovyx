@@ -6,7 +6,128 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ## [Unreleased]
 
-(none — every shipped delta documented in tagged sections below)
+**Mission D.1 closure of D-P0-1 from the 2026-05-21 Mission D
+forensic audit at `docs-internal/MISSION-D-FORENSIC-AUDIT-2026-05-21.md` /
+`MISSION-D-FINDINGS-REGISTER-2026-05-21.md` /
+`MISSION-D-REMEDIATION-PLAN-2026-05-21.md`. Three commits land the
+TRANSPORT → TYPED-CONSUMER → PERCEIVED truth layers separately per
+Mission D §1.4 discipline.**
+
+### Fixed
+
+**D-P0-1 — Composite severity color lie (OPERATIONAL SEVERITY
+CORRUPTION).** The pre-D.1 `_compute_composite_severity()` derived
+the dashboard banner severity from `len(distinct_axes)` ALONE,
+ignoring per-entry `DegradedEntry.severity`. Three producers already
+emitted `severity="critical"` for SINGLE-axis conditions:
+
+- `src/sovyx/engine/_llm_dispatch.py:116` — `no_provider_configured`.
+- `src/sovyx/voice/pipeline/_heartbeat_mixin.py:731` — auto-recovery
+  governor exhausted.
+- `src/sovyx/dashboard/server.py:720` — dashboard bundle missing.
+
+Each landed as truthful CRITICAL in the EngineDegradedStore; the
+count rule returned `"warn"`; the banner painted YELLOW; operators
+deferred critical events. ADR-D6 §4.6 (`MISSION-c4-degraded-mode-
+banner-2026-05-17.md`) amended to the Hybrid rule:
+
+```
+composite_severity = max(max(entry.severity), count_tier(distinct_axes))
+```
+
+under `None < "warn" < "error" < "critical"` ordering. A single
+critical-severity axis now paints the banner RED; the
+cumulative-blast-radius signal (2 warn axes → error, 3 → critical)
+is preserved by the count-tier component.
+
+**Operator-visible visual shift:** any deployment that previously
+saw a yellow banner for a single LLM `no_provider_configured`, voice
+`auto_recovery_exhausted`, or dashboard `bundle_missing` event now
+sees a red banner. Operator runbooks / Grafana dashboards / SRE
+training keyed off "yellow = single subsystem" should be updated.
+
+**Rollback knob:** set
+`SOVYX_TUNING__DASHBOARD__COMPOSITE_SEVERITY_BY_MAX=false` to restore
+the pre-D.1 count-tier-only rule. Sunset v0.55.0 alongside the
+existing legacy_alias dual-emit cluster (anti-pattern #49 /
+ADR-D14); after sunset the knob is removed.
+
+**Additive field:** `composite_max_severity: str | None` is now
+emitted alongside `composite_severity` in both
+`GET /api/engine/degraded` and `GET /api/voice/status` (via
+`VoiceStatusDegraded.composite_max_severity`). Downstream consumers
+that want the raw per-axis-max signal independently of the
+composite_severity rule can read it. The dashboard banner does NOT
+consume the new field (to avoid double-aggregation that would drop
+the count-tier signal).
+
+**CLI parity:** `sovyx doctor voice`'s degraded-banner surface now
+imports the composite-severity helpers from
+`src/sovyx/dashboard/routes/engine_degraded` (the SSoT) instead of
+re-implementing the count-tier rule inline. Closes anti-pattern
+#52/#53 drift risk — there is now ONE authoritative
+composite-severity computation site for the entire process.
+
+### Changed
+
+- `src/sovyx/engine/config.py`:
+  `DashboardTuningConfig.composite_severity_by_max: bool` knob added
+  (default True since v0.50.0; LENIENT False during D.1-a/D.1-b
+  staged-adoption commits).
+- `src/sovyx/dashboard/routes/engine_degraded.py`:
+  `EngineDegradedResponse.composite_max_severity: str | None` field;
+  new helpers `_normalize_severity`, `_max_per_axis_severity`,
+  `_compute_composite_severity_hybrid`. Module docstring amended to
+  describe the Hybrid rule.
+- `src/sovyx/dashboard/voice_status.py`: mirrors the additive
+  emission on `VoiceStatusDegraded.composite_max_severity` and the
+  knob-gated `composite_severity` computation.
+- `src/sovyx/dashboard/routes/voice.py`:
+  `VoiceStatusDegraded.composite_severity` field docstring amended.
+- `src/sovyx/engine/_degraded_store.py`: `DegradedEntry` docstring
+  amended (the anti-statement contrasting per-entry severity with
+  the count rule is replaced with the amended Hybrid rule).
+- `src/sovyx/cli/commands/doctor.py`: SSoT consolidation
+  (`_doctor_composite_severity_by_max_enabled` helper +
+  `_render_voice_degraded_banner_surface` imports composite helpers
+  from the dashboard route).
+- `dashboard/src/types/schemas.ts`:
+  `EngineDegradedResponseSchema.composite_max_severity` zod field
+  (optional + nullable + enum).
+- `dashboard/src/components/voice/DegradedBanner.tsx`: docstring
+  amendment describing the new resolution semantics; consumer reads
+  `composite_severity` (which carries the Hybrid result server-side).
+- `docs/modules/voice-capture-health.md`: composite-severity table +
+  rule description amended.
+- `docs/modules/dashboard-distribution-integrity.md`: composite
+  severity narrative amended.
+- `docs-internal/missions/MISSION-c4-degraded-mode-banner-2026-05-17.md
+  §4.6`: ADR-D6 amendment notice appended.
+- `docs-internal/OPERATOR-VALIDATION-BACKLOG-2026.md`: V-D1-1..V-D1-3
+  rows added for the operator's smoke-test of the new banner colors
+  (rollback knob, smoking-gun scenarios, cumulative-warn case).
+
+### Tests
+
+- NEW `tests/regression/test_d_p0_1_severity_color_truth_replay.py`
+  pins the 3 smoking-gun scenarios + 10-scenario adversarial matrix
+  + the rollback-knob path.
+- NEW `dashboard/src/types/schemas.test.ts ::
+  EngineDegradedResponseSchema (Mission D.1)` block — 8 tests
+  closing the prior coverage gap surfaced by the audit.
+- Existing 49-test boundary cohort
+  (`tests/dashboard/test_engine_degraded_boundary.py`) extended with
+  19 new tests for `_max_per_axis_severity`, `_normalize_severity`,
+  `_compute_composite_severity_hybrid`, and additive-field
+  round-trips.
+- All 3378 pre-D.1 dashboard/integration/regression tests + 137
+  dashboard vitest tests continue passing — under the amended rule,
+  every Category-A and Category-B assertion in the test cohort
+  produces the same outcome (the Hybrid rule changes the composite
+  ONLY for single-axis severity-≥-error cases, which the existing
+  test fixtures did not encode).
+
+## [0.49.37] — 2026-05-21
 
 ## [0.49.37] — 2026-05-21
 

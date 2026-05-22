@@ -14,6 +14,16 @@
  * - ``error`` → red (``--svx-color-error``)
  * - ``critical`` → red + pulse animation
  *
+ * Severity resolution (Mission D.1 / D-P0-1, 2026-05-21): the banner
+ * reads ``payload.composite_severity`` which already carries the
+ * amended ADR-D6 Hybrid result (``max(per-axis-max, count-tier)``)
+ * when the server-side ``composite_severity_by_max`` knob is True
+ * (default since v0.50.0). The additive ``composite_max_severity``
+ * field is emitted for downstream non-banner consumers (external
+ * monitoring) that want the raw per-axis-max signal; the banner does
+ * NOT consume it to avoid double-aggregation that would drop the
+ * count-tier blast-radius signal.
+ *
  * Action chips are operator-actionable next-steps emitted by the
  * server-side store producers. The banner does NOT decide what
  * actions are appropriate — that responsibility lives at the
@@ -87,6 +97,14 @@ interface DegradedBannerProps {
 }
 
 function _resolveSeverity(payload: EngineDegradedPayload): keyof typeof SEVERITY_PALETTE {
+  // Mission D.1 / D-P0-1 — composite_severity carries the amended
+  // ADR-D6 Hybrid result (max of per-axis-max and count-tier) when
+  // the server-side composite_severity_by_max knob is True (default
+  // since v0.50.0). Reading composite_severity alone is correct under
+  // both LENIENT (count-tier only) and STRICT (Hybrid) modes; the
+  // additive composite_max_severity field exists for downstream
+  // consumers that want the raw per-axis-max signal independently
+  // (e.g. external monitoring), NOT for the banner palette.
   const s = payload.composite_severity;
   if (s === "warn" || s === "error" || s === "critical") return s;
   return "warn";

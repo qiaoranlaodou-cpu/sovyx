@@ -135,11 +135,9 @@ async def get_voice_status(registry: ServiceRegistry) -> dict[str, Any]:
             logger.debug("c4_voice_status_composite_knob_lookup_failed")
 
         if by_max:
-            status["degraded"]["composite_severity"] = (
-                _compute_composite_severity_hybrid(
-                    len(distinct_axes),
-                    max_per_axis,
-                )
+            status["degraded"]["composite_severity"] = _compute_composite_severity_hybrid(
+                len(distinct_axes),
+                max_per_axis,
             )
         else:
             status["degraded"]["composite_severity"] = _compute_composite_severity(

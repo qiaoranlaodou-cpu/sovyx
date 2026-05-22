@@ -397,14 +397,48 @@ to understand a degraded session.
 
 The response composes whatever the cross-axis
 :class:`sovyx.engine._degraded_store.EngineDegradedStore` ledger
-holds. Severity escalates per ADR-D6 (mission spec §4.6):
+holds. Severity escalates per the amended ADR-D6 Hybrid rule (Mission
+D.1 / D-P0-1, 2026-05-21):
 
-| Distinct axis count | ``composite_severity`` | Banner palette |
+```
+composite_severity = max(
+    max(entry.severity for entry in store),
+    count_tier(distinct_axes),
+)
+```
+
+under ``None < "warn" < "error" < "critical"`` ordering, where
+``count_tier`` = 1 → "warn", 2 → "error", 3+ → "critical".
+
+| State | ``composite_severity`` | Banner palette |
 |---|---|---|
-| 0 | `None` | banner hidden |
-| 1 | `warn` | `--svx-color-warning` (yellow) |
-| 2 | `error` | `--svx-color-error` (red) |
-| 3+ | `critical` | `--svx-color-error` + `animate-pulse` |
+| 0 axes | `None` | banner hidden |
+| 1 axis, max=warn | `warn` | `--svx-color-warning` (yellow) |
+| 1 axis, max=error | `error` | `--svx-color-error` (red) |
+| 1 axis, max=critical | `critical` | red + `animate-pulse` |
+| 2 axes, max=warn | `error` | red (cumulative blast radius) |
+| 2 axes, max≥error | per max | red / red+pulse |
+| 3+ axes (any max) | `critical` | red + `animate-pulse` |
+
+The amended rule preserves both ADR-D6's original cumulative-blast-
+radius signal (count-tier) AND truthful per-axis urgency (max). A
+single producer emitting ``severity="critical"`` on a single axis
+(e.g. ``no_provider_configured``, ``auto_recovery_exhausted``,
+``bundle_missing``) now paints the banner red instead of being
+collapsed to yellow by the pre-D.1 count-tier-only rule.
+
+The additive ``composite_max_severity`` field carries the raw
+per-axis-max signal independently of ``composite_severity``. The
+banner does NOT consume it (to avoid double-aggregation that would
+drop the count-tier signal); it exists for external monitoring or
+runbook tooling that wants the two signals separately.
+
+**Rollback:** set
+``SOVYX_TUNING__DASHBOARD__COMPOSITE_SEVERITY_BY_MAX=false`` to
+restore the pre-D.1 pure count-tier rule. Sunset v0.55.0 alongside
+the existing legacy_alias dual-emit cluster (anti-pattern #49 /
+ADR-D14); after sunset the knob is removed and Hybrid is the only
+path.
 
 The voice-axis entry recorded by the failover-ladder-exhausted path
 is CLEARED by the same path on the next `verdict=succeeded`. LLM +

@@ -36,10 +36,15 @@ StrEnum at `sovyx.dashboard._integrity`):
 | `STATIC_DIR_MISSING` | The `static/` directory itself is absent | `critical` |
 | `LEGACY_INDEX_HTML_NO_ASSETS` | `index.html` exists but the `assets/` directory is missing or empty | `critical` |
 
-The composite banner combines all axes' severities per ADR-D6
-(1 axis = warn / 2 = error / 3+ = critical), so a partial dashboard
-plus an exhausted voice ladder plus a coerced STT compounds to a
-red-pulse critical banner with operator-action chips for each axis.
+The composite banner combines all axes' severities per the amended
+ADR-D6 Hybrid rule (Mission D.1 / D-P0-1, 2026-05-21):
+``composite = max(max(per-axis severity), count_tier(distinct_axes))``
+under ``None < warn < error < critical`` ordering. A partial
+dashboard plus an exhausted voice ladder plus a coerced STT
+compounds to a red-pulse critical banner (3 axes → count-tier
+critical) with operator-action chips for each axis. A
+``STATIC_DIR_MISSING`` verdict on its own paints red — the
+per-axis-max ``critical`` propagates regardless of count.
 
 ## Operator playbooks
 

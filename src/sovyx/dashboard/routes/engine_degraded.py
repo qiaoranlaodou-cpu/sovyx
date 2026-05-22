@@ -11,13 +11,29 @@ Operators no longer need to correlate `bootstrap.py:735`
 composite endpoint surfaces all three (and any future degraded axis)
 in one payload + drives the global dashboard banner.
 
-Severity escalation per ADR-D6:
+Severity escalation per ADR-D6 (amended 2026-05-21 by Mission D.1 /
+D-P0-1):
+
+``composite_severity = max(max(entry.severity), count_tier(distinct_axes))``
+under the canonical ordering ``None < "warn" < "error" < "critical"``,
+where:
 
 * 0 axes → ``composite_severity = None`` (banner hidden).
-* 1 axis  → ``"warn"``.
-* 2 axes → ``"error"``.
-* 3+ axes OR auto-restart governor exhausted (Phase 2 §T2.2) →
-  ``"critical"``.
+* ``count_tier`` = 1 → "warn", 2 → "error", 3+ → "critical" (the
+  original ADR-D6 cumulative-blast-radius rule).
+* ``max(entry.severity)`` = highest per-axis ``DegradedEntry.severity``
+  emitted by producers (see :func:`_max_per_axis_severity`).
+
+A single axis with per-entry ``severity="critical"`` now paints the
+banner red instead of yellow. The "auto-restart governor exhausted"
+critical-escalation branch from the original ADR-D6 §4.6 is implemented
+de-facto: the governor at ``voice/pipeline/_heartbeat_mixin.py:731``
+records a ``severity="critical"`` entry on exhaustion, which the
+Hybrid rule then propagates through the per-axis-max component.
+
+The amendment is gated by
+``EngineConfig.tuning.dashboard.composite_severity_by_max`` (default
+True since v0.50.0; sunset rollback knob in v0.55.0 cluster).
 
 Anti-pattern compliance:
 
@@ -229,34 +245,48 @@ def _compute_composite_severity_hybrid(
     """
     count_tier = _compute_composite_severity(distinct_axis_count)
     normalized_max = _normalize_severity(max_per_axis)
-    if (
-        _SEVERITY_ORDER.get(normalized_max, 0)
-        > _SEVERITY_ORDER.get(count_tier, 0)
-    ):
+    if _SEVERITY_ORDER.get(normalized_max, 0) > _SEVERITY_ORDER.get(count_tier, 0):
         return normalized_max
     return count_tier
 
 
 def _composite_severity_by_max_enabled(request: Request | None) -> bool:
-    """Resolve the D.1 LENIENT knob from the app's engine config.
+    """Resolve the D.1 knob (D-P0-1 amended ADR-D6 Hybrid rule).
 
-    Defaults to False (count-based ADR-D6 rule) when the engine config
-    is unavailable — matches pre-D.1 behavior so the LENIENT shim is
-    safe to deploy without operator action.
+    Resolution order:
+
+    1. ``request.app.state.engine_config`` (authoritative — the
+       lifecycle-attached config; mirrors the operator's deployment
+       env exactly).
+    2. Fresh :class:`EngineConfig` instantiation — reads
+       ``SOVYX_TUNING__DASHBOARD__COMPOSITE_SEVERITY_BY_MAX`` from env
+       and falls back to the Field default (True since v0.50.0). This
+       path keeps lightweight test fixtures + non-lifecycle
+       embeddings honoring the knob's actual default without forcing
+       each test to populate ``app.state.engine_config``.
+    3. On any failure (defensive): True — matches the Field default;
+       prevents a knob-resolution glitch from silently reverting the
+       D.1 PERCEIVED flip to the pre-D.1 count-tier rule.
     """
-    if request is None:
-        return False
+    if request is not None:
+        try:
+            engine_config = getattr(request.app.state, "engine_config", None)
+            if engine_config is not None:
+                tuning = getattr(engine_config, "tuning", None)
+                dashboard = getattr(tuning, "dashboard", None)
+                if dashboard is not None:
+                    return bool(
+                        getattr(dashboard, "composite_severity_by_max", True),
+                    )
+        except Exception:  # noqa: BLE001 — fall through to fresh config
+            logger.debug("engine_config_state_lookup_failed")
     try:
-        engine_config = getattr(request.app.state, "engine_config", None)
-        if engine_config is None:
-            return False
-        tuning = getattr(engine_config, "tuning", None)
-        dashboard = getattr(tuning, "dashboard", None)
-        if dashboard is None:
-            return False
-        return bool(getattr(dashboard, "composite_severity_by_max", False))
+        from sovyx.engine.config import EngineConfig
+
+        config = EngineConfig()
+        return bool(config.tuning.dashboard.composite_severity_by_max)
     except Exception:  # noqa: BLE001 — knob lookup must never raise
-        return False
+        return True
 
 
 def _entry_to_axis_model(entry: DegradedEntry) -> DegradedAxisModel:

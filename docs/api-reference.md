@@ -49,7 +49,7 @@ Every response carries `X-Request-Id`. Include it when reporting bugs.
 | GET    | `/api/status`             | Daemon version, uptime, and mind summary.                |
 | GET    | `/api/stats/history`      | Time-series of engine stats for dashboard charts.        |
 | GET    | `/api/health`             | Aggregate health of registered subsystems.               |
-| GET    | `/api/engine/degraded`    | Composite cross-axis degraded snapshot (voice + LLM + STT + dashboard + future axes) with per-axis severity / title token / body token / action chips. Severity escalation: 1 axis=`warn`, 2=`error`, 3+=`critical`. Mission C4 §T1.6 + Mission C5 §T2.3 (dashboard axis). |
+| GET    | `/api/engine/degraded`    | Composite cross-axis degraded snapshot (voice + LLM + STT + dashboard + future axes) with per-axis severity / title token / body token / action chips. Severity escalation (amended ADR-D6 Hybrid rule per Mission D.1 / D-P0-1, 2026-05-21): `composite_severity = max(max(per-axis severity), count_tier(distinct_axes))` under `None < warn < error < critical`. Additive `composite_max_severity` field carries the raw per-axis-max signal. Mission C4 §T1.6 + Mission C5 §T2.3 (dashboard axis) + Mission D.1 (composite rule). |
 | GET    | `/metrics`                | Prometheus exposition (no auth — bind to loopback only). |
 
 ### Conversations
@@ -352,13 +352,31 @@ beginning with `/api/` or `/ws` bypass the fallback.
 ## `/api/engine/degraded` — composite axis taxonomy
 
 The composite endpoint surfaces every operator-actionable degraded
-subsystem in a single payload. Severity escalates by distinct axis count
-(1 = `warn`, 2 = `error`, 3+ = `critical`). Each axis entry carries an
-i18n `title_token` + `body_token`, an `action_chips` array of
-operator-actionable next steps, and a free-form `metadata` map for
-axis-specific context. The schema is forward-additive (Pydantic
-`extra="allow"` + zod `.passthrough()`) — new axes ship without a
-route migration.
+subsystem in a single payload. Severity escalates per the amended
+ADR-D6 Hybrid rule (Mission D.1 / D-P0-1, 2026-05-21):
+
+```
+composite_severity = max(
+    max(entry.severity for entry in store),   # per-axis truthful urgency
+    count_tier(distinct_axes),                 # cumulative blast radius
+)
+```
+
+under `None < warn < error < critical` ordering, where `count_tier` =
+1 → `warn`, 2 → `error`, 3+ → `critical`. A single axis with per-entry
+`severity="critical"` (e.g. `no_provider_configured`,
+`auto_recovery_exhausted`, `bundle_missing`) paints the banner red
+instead of yellow. The additive `composite_max_severity` field carries
+the raw per-axis-max signal independently for downstream consumers
+that want it without the count-tier component. Rollback knob:
+`SOVYX_TUNING__DASHBOARD__COMPOSITE_SEVERITY_BY_MAX=false` restores the
+pre-D.1 count-tier-only rule (sunset v0.55.0).
+
+Each axis entry carries an i18n `title_token` + `body_token`, an
+`action_chips` array of operator-actionable next steps, and a
+free-form `metadata` map for axis-specific context. The schema is
+forward-additive (Pydantic `extra="allow"` + zod `.passthrough()`) —
+new axes ship without a route migration.
 
 | `axis` | `reason` values | Severity | Producer | Mission |
 |---|---|---|---|---|
