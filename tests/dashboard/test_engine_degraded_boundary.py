@@ -18,6 +18,9 @@ Forward-additive (``model_config = {"extra": "allow"}``) is preserved
 
 from __future__ import annotations
 
+from functools import partial
+from typing import Any
+
 from sovyx.dashboard.routes.engine_degraded import (
     EngineDegradedResponse,
     _compute_composite_severity,
@@ -36,6 +39,34 @@ def _empty_payload() -> dict[str, object]:
         "composite_axis_count": 0,
         "ack": {"acked": False},
     }
+
+
+def _response_payload(
+    *,
+    axes: list[dict[str, Any]],
+    composite_severity: str | None,
+    composite_axis_count: int,
+    ack: dict[str, Any] | None = None,
+    extra: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Mirror ``get_engine_degraded`` emit shape — the route builds
+    ``EngineDegradedResponse(axes=..., composite_severity=...,
+    composite_axis_count=..., ack=...)`` (see
+    ``engine_degraded.py:519+``). ``ack`` defaults to the un-acked
+    shape (``{"acked": False}``) the producer emits for fresh state;
+    ``extra`` carries forward-additive keys (Phase 2 governor state,
+    D.1 ``composite_max_severity``, future ack fields) without
+    forking the helper.
+    """
+    payload: dict[str, Any] = {
+        "axes": axes,
+        "composite_severity": composite_severity,
+        "composite_axis_count": composite_axis_count,
+        "ack": ack if ack is not None else {"acked": False},
+    }
+    if extra:
+        payload.update(extra)
+    return payload
 
 
 def _voice_axis() -> dict[str, object]:
@@ -132,12 +163,12 @@ class TestEngineDegradedResponseBoundary:
     def test_single_voice_axis_warn_round_trips(self) -> None:
         response = assert_boundary_accepts(
             EngineDegradedResponse,
-            helper_factory=lambda: {
-                "axes": [_voice_axis()],
-                "composite_severity": "warn",
-                "composite_axis_count": 1,
-                "ack": {"acked": False},
-            },
+            helper_factory=partial(
+                _response_payload,
+                axes=[_voice_axis()],
+                composite_severity="warn",
+                composite_axis_count=1,
+            ),
             field_assertions={
                 "composite_severity": "warn",
                 "composite_axis_count": 1,
@@ -149,12 +180,12 @@ class TestEngineDegradedResponseBoundary:
     def test_two_axis_error_round_trips(self) -> None:
         response = assert_boundary_accepts(
             EngineDegradedResponse,
-            helper_factory=lambda: {
-                "axes": [_voice_axis(), _llm_axis()],
-                "composite_severity": "error",
-                "composite_axis_count": 2,
-                "ack": {"acked": False},
-            },
+            helper_factory=partial(
+                _response_payload,
+                axes=[_voice_axis(), _llm_axis()],
+                composite_severity="error",
+                composite_axis_count=2,
+            ),
             field_assertions={
                 "composite_severity": "error",
                 "composite_axis_count": 2,
@@ -167,12 +198,12 @@ class TestEngineDegradedResponseBoundary:
         operator-session composite. Severity escalates to critical."""
         response = assert_boundary_accepts(
             EngineDegradedResponse,
-            helper_factory=lambda: {
-                "axes": [_voice_axis(), _llm_axis(), _stt_axis()],
-                "composite_severity": "critical",
-                "composite_axis_count": 3,
-                "ack": {"acked": False},
-            },
+            helper_factory=partial(
+                _response_payload,
+                axes=[_voice_axis(), _llm_axis(), _stt_axis()],
+                composite_severity="critical",
+                composite_axis_count=3,
+            ),
             field_assertions={
                 "composite_severity": "critical",
                 "composite_axis_count": 3,
@@ -185,18 +216,19 @@ class TestEngineDegradedResponseBoundary:
         Phase 1 doesn't write to it. Forward-additive contract."""
         response = assert_boundary_accepts(
             EngineDegradedResponse,
-            helper_factory=lambda: {
-                "axes": [_voice_axis()],
-                "composite_severity": "warn",
-                "composite_axis_count": 1,
-                "ack": {
+            helper_factory=partial(
+                _response_payload,
+                axes=[_voice_axis()],
+                composite_severity="warn",
+                composite_axis_count=1,
+                ack={
                     "acked": True,
                     "acked_at_ts": 1700000000,
                     "ttl_sec": 3600,
                     "ttl_remaining_sec": 3540,
                     "operator_id": "op-hash-123",
                 },
-            },
+            ),
         )
         assert response.ack.acked is True
         assert response.ack.ttl_remaining_sec == 3540
@@ -252,12 +284,12 @@ class TestEngineDegradedC6ReasonTaxonomy:
         axis = _llm_axis_with_reason("no_provider_configured", "critical")
         response = assert_boundary_accepts(
             EngineDegradedResponse,
-            helper_factory=lambda: {
-                "axes": [axis],
-                "composite_severity": "warn",
-                "composite_axis_count": 1,
-                "ack": {"acked": False},
-            },
+            helper_factory=partial(
+                _response_payload,
+                axes=[axis],
+                composite_severity="warn",
+                composite_axis_count=1,
+            ),
         )
         assert response.axes[0].reason == "no_provider_configured"
 
@@ -265,12 +297,12 @@ class TestEngineDegradedC6ReasonTaxonomy:
         axis = _llm_axis_with_reason("ollama_unreachable", "error")
         response = assert_boundary_accepts(
             EngineDegradedResponse,
-            helper_factory=lambda: {
-                "axes": [axis],
-                "composite_severity": "warn",
-                "composite_axis_count": 1,
-                "ack": {"acked": False},
-            },
+            helper_factory=partial(
+                _response_payload,
+                axes=[axis],
+                composite_severity="warn",
+                composite_axis_count=1,
+            ),
         )
         assert response.axes[0].reason == "ollama_unreachable"
 
@@ -278,12 +310,12 @@ class TestEngineDegradedC6ReasonTaxonomy:
         axis = _llm_axis_with_reason("ollama_no_models", "warn")
         response = assert_boundary_accepts(
             EngineDegradedResponse,
-            helper_factory=lambda: {
-                "axes": [axis],
-                "composite_severity": "warn",
-                "composite_axis_count": 1,
-                "ack": {"acked": False},
-            },
+            helper_factory=partial(
+                _response_payload,
+                axes=[axis],
+                composite_severity="warn",
+                composite_axis_count=1,
+            ),
         )
         assert response.axes[0].reason == "ollama_no_models"
 
@@ -303,12 +335,12 @@ class TestEngineDegradedC6ReasonTaxonomy:
         )
         response = assert_boundary_accepts(
             EngineDegradedResponse,
-            helper_factory=lambda: {
-                "axes": [axis],
-                "composite_severity": "warn",
-                "composite_axis_count": 1,
-                "ack": {"acked": False},
-            },
+            helper_factory=partial(
+                _response_payload,
+                axes=[axis],
+                composite_severity="warn",
+                composite_axis_count=1,
+            ),
         )
         assert response.axes[0].reason == "cloud_key_invalid"
         assert response.axes[0].metadata["invalid_providers"] == [
@@ -320,12 +352,12 @@ class TestEngineDegradedC6ReasonTaxonomy:
         axis = _llm_axis_with_reason("all_providers_unhealthy", "error")
         response = assert_boundary_accepts(
             EngineDegradedResponse,
-            helper_factory=lambda: {
-                "axes": [axis],
-                "composite_severity": "warn",
-                "composite_axis_count": 1,
-                "ack": {"acked": False},
-            },
+            helper_factory=partial(
+                _response_payload,
+                axes=[axis],
+                composite_severity="warn",
+                composite_axis_count=1,
+            ),
         )
         assert response.axes[0].reason == "all_providers_unhealthy"
 
@@ -333,12 +365,12 @@ class TestEngineDegradedC6ReasonTaxonomy:
         axis = _llm_axis_with_reason("default_model_unavailable", "error")
         response = assert_boundary_accepts(
             EngineDegradedResponse,
-            helper_factory=lambda: {
-                "axes": [axis],
-                "composite_severity": "warn",
-                "composite_axis_count": 1,
-                "ack": {"acked": False},
-            },
+            helper_factory=partial(
+                _response_payload,
+                axes=[axis],
+                composite_severity="warn",
+                composite_axis_count=1,
+            ),
         )
         assert response.axes[0].reason == "default_model_unavailable"
 
@@ -359,12 +391,12 @@ class TestEngineDegradedC6ReasonTaxonomy:
         )
         response = assert_boundary_accepts(
             EngineDegradedResponse,
-            helper_factory=lambda: {
-                "axes": [axis],
-                "composite_severity": "warn",
-                "composite_axis_count": 1,
-                "ack": {"acked": False},
-            },
+            helper_factory=partial(
+                _response_payload,
+                axes=[axis],
+                composite_severity="warn",
+                composite_axis_count=1,
+            ),
         )
         assert response.axes[0].reason == "partial_health"
         assert response.axes[0].metadata["healthy_providers"] == ["anthropic"]
@@ -387,12 +419,12 @@ class TestEngineDegradedC6ReasonTaxonomy:
         }
         response = assert_boundary_accepts(
             EngineDegradedResponse,
-            helper_factory=lambda: {
-                "axes": [future_axis],
-                "composite_severity": "warn",
-                "composite_axis_count": 1,
-                "ack": {"acked": False},
-            },
+            helper_factory=partial(
+                _response_payload,
+                axes=[future_axis],
+                composite_severity="warn",
+                composite_axis_count=1,
+            ),
         )
         assert response.axes[0].axis == "brain"
 
@@ -401,16 +433,18 @@ class TestEngineDegradedC6ReasonTaxonomy:
         additive."""
         assert_boundary_accepts(
             EngineDegradedResponse,
-            helper_factory=lambda: {
-                "axes": [],
-                "composite_severity": None,
-                "composite_axis_count": 0,
-                "ack": {"acked": False},
-                "phase2_governor_state": {
-                    "auto_restart_count": 0,
-                    "max_retries": 3,
+            helper_factory=partial(
+                _response_payload,
+                axes=[],
+                composite_severity=None,
+                composite_axis_count=0,
+                extra={
+                    "phase2_governor_state": {
+                        "auto_restart_count": 0,
+                        "max_retries": 3,
+                    },
                 },
-            },
+            ),
         )
 
     def test_c5_dashboard_axis_bundle_partial_round_trips(self) -> None:
@@ -456,12 +490,12 @@ class TestEngineDegradedC6ReasonTaxonomy:
         }
         response = assert_boundary_accepts(
             EngineDegradedResponse,
-            helper_factory=lambda: {
-                "axes": [dashboard_axis],
-                "composite_severity": "error",
-                "composite_axis_count": 1,
-                "ack": {"acked": False},
-            },
+            helper_factory=partial(
+                _response_payload,
+                axes=[dashboard_axis],
+                composite_severity="error",
+                composite_axis_count=1,
+            ),
         )
         assert response.axes[0].axis == "dashboard"
         assert response.axes[0].reason == "bundle_partial"
@@ -502,12 +536,12 @@ class TestEngineDegradedC6ReasonTaxonomy:
         }
         response = assert_boundary_accepts(
             EngineDegradedResponse,
-            helper_factory=lambda: {
-                "axes": [dashboard_axis],
-                "composite_severity": "critical",
-                "composite_axis_count": 1,
-                "ack": {"acked": False},
-            },
+            helper_factory=partial(
+                _response_payload,
+                axes=[dashboard_axis],
+                composite_severity="critical",
+                composite_axis_count=1,
+            ),
         )
         assert response.axes[0].severity == "critical"
         assert response.axes[0].metadata["verdict"] == "static_dir_missing"
@@ -543,12 +577,12 @@ class TestEngineDegradedC6ReasonTaxonomy:
         }
         response = assert_boundary_accepts(
             EngineDegradedResponse,
-            helper_factory=lambda: {
-                "axes": [voice_axis, dashboard_axis],
-                "composite_severity": "error",
-                "composite_axis_count": 2,
-                "ack": {"acked": False},
-            },
+            helper_factory=partial(
+                _response_payload,
+                axes=[voice_axis, dashboard_axis],
+                composite_severity="error",
+                composite_axis_count=2,
+            ),
         )
         axes_by_axis = {axis.axis for axis in response.axes}
         assert axes_by_axis == {"voice", "dashboard"}
@@ -701,13 +735,13 @@ class TestEngineDegradedResponseHybridAdditiveField:
     def test_field_round_trips_via_boundary(self) -> None:
         response = assert_boundary_accepts(
             EngineDegradedResponse,
-            helper_factory=lambda: {
-                "axes": [_voice_axis()],
-                "composite_severity": "warn",
-                "composite_axis_count": 1,
-                "composite_max_severity": "error",
-                "ack": {"acked": False},
-            },
+            helper_factory=partial(
+                _response_payload,
+                axes=[_voice_axis()],
+                composite_severity="warn",
+                composite_axis_count=1,
+                extra={"composite_max_severity": "error"},
+            ),
         )
         assert response.composite_max_severity == "error"
 
@@ -715,24 +749,24 @@ class TestEngineDegradedResponseHybridAdditiveField:
         # Pre-D.1 producer payloads (missing the new field) must still parse.
         response = assert_boundary_accepts(
             EngineDegradedResponse,
-            helper_factory=lambda: {
-                "axes": [],
-                "composite_severity": None,
-                "composite_axis_count": 0,
-                "ack": {"acked": False},
-            },
+            helper_factory=partial(
+                _response_payload,
+                axes=[],
+                composite_severity=None,
+                composite_axis_count=0,
+            ),
         )
         assert response.composite_max_severity is None
 
     def test_field_accepts_critical(self) -> None:
         response = assert_boundary_accepts(
             EngineDegradedResponse,
-            helper_factory=lambda: {
-                "axes": [_voice_axis()],
-                "composite_severity": "warn",
-                "composite_axis_count": 1,
-                "composite_max_severity": "critical",
-                "ack": {"acked": False},
-            },
+            helper_factory=partial(
+                _response_payload,
+                axes=[_voice_axis()],
+                composite_severity="warn",
+                composite_axis_count=1,
+                extra={"composite_max_severity": "critical"},
+            ),
         )
         assert response.composite_max_severity == "critical"
