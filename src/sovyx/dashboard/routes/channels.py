@@ -7,6 +7,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel, ConfigDict
 
 from sovyx.dashboard.routes._deps import verify_token
 from sovyx.observability.logging import get_logger
@@ -16,7 +17,38 @@ logger = get_logger(__name__)
 router = APIRouter(prefix="/api/channels", dependencies=[Depends(verify_token)])
 
 
-@router.get("")
+class ChannelStatusModel(BaseModel):
+    """One entry in `GET /api/channels` channels list (Mission C C.4)."""
+
+    model_config = ConfigDict(extra="allow")
+    name: str
+    type: str
+    connected: bool
+
+
+class ChannelsListResponse(BaseModel):
+    """Response of `GET /api/channels` (Mission C C.4)."""
+
+    model_config = ConfigDict(extra="allow")
+    channels: list[ChannelStatusModel] = []
+
+
+class TelegramSetupResponse(BaseModel):
+    """Response of `POST /api/channels/telegram/setup` (Mission C C.4).
+
+    On success (`ok=True`) carries bot_username + bot_name +
+    requires_restart=True. On failure (`ok=False`) carries `error`.
+    Forward-additive via ``extra="allow"`` (anti-pattern #40)."""
+
+    model_config = ConfigDict(extra="allow")
+    ok: bool
+    bot_username: str | None = None
+    bot_name: str | None = None
+    requires_restart: bool | None = None
+    error: str | None = None
+
+
+@router.get("", response_model=ChannelsListResponse)
 async def channels(request: Request) -> JSONResponse:
     """Return active channel status.
 
@@ -69,7 +101,7 @@ async def channels(request: Request) -> JSONResponse:
     return JSONResponse({"channels": channel_list})
 
 
-@router.post("/telegram/setup")
+@router.post("/telegram/setup", response_model=TelegramSetupResponse)
 async def setup_telegram(request: Request) -> JSONResponse:
     """Validate a Telegram bot token and persist it for next restart.
 

@@ -17,7 +17,7 @@ from collections import deque
 
 from fastapi import APIRouter, Depends
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from sovyx.dashboard.routes._deps import verify_token
 from sovyx.observability.logging import get_logger
@@ -49,6 +49,18 @@ def _allow() -> bool:
     return True
 
 
+class FrontendErrorAckResponse(BaseModel):
+    """Response of `POST /api/telemetry/frontend-error` (Mission C C.4).
+
+    Always returns 200; `dropped` distinguishes rate-limited reports
+    from accepted ones. The frontend ErrorBoundary uses this to know
+    whether the crash made it into the log stream."""
+
+    model_config = ConfigDict(extra="allow")
+    ok: bool
+    dropped: bool
+
+
 class FrontendError(BaseModel):
     """Error payload sent by the dashboard's ErrorBoundary."""
 
@@ -64,7 +76,7 @@ class FrontendError(BaseModel):
     boundary: str | None = Field(default=None, max_length=200)
 
 
-@router.post("/frontend-error")
+@router.post("/frontend-error", response_model=FrontendErrorAckResponse)
 async def report_frontend_error(payload: FrontendError) -> JSONResponse:
     """Record a frontend render error at WARNING level.
 

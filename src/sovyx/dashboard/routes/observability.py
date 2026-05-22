@@ -44,6 +44,7 @@ from typing import TYPE_CHECKING, Any, cast
 
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel, ConfigDict
 
 from sovyx.dashboard.routes._deps import verify_token
 from sovyx.observability.logging import get_logger
@@ -54,6 +55,28 @@ if TYPE_CHECKING:
 logger = get_logger(__name__)
 
 router = APIRouter(prefix="/api/observability")
+
+
+class ObservabilityHealthResponse(BaseModel):
+    """Response of `GET /api/observability/health` (Mission C C.4).
+
+    Mirrors §27.2 meta-monitoring snapshot. Every field is optional
+    because the route is best-effort: a broken sub-component degrades
+    to ``None``/``False`` rather than 500-ing.
+
+    Forward-additive via ``extra="allow"`` (anti-pattern #40) so
+    future §27.x telemetry can extend the contract."""
+
+    model_config = ConfigDict(extra="allow")
+    queue_depth_pct: float | None = None
+    dropped_60s: int | None = None
+    handler_errors_60s: int | None = None
+    fts5_lag_ms_p99: float | None = None
+    tamper_chain_intact: bool | None = None
+    tracing_exporter_state: str | None = None
+    active_features: list[str] | None = None
+    schema_version: str | None = None
+    self_check_passed: bool | None = None
 
 # ── Self-check thresholds (mirror §27.1) ──────────────────────────
 _QUEUE_DEPTH_PCT_FAIL: float = 0.80
@@ -225,7 +248,11 @@ def _evaluate_self_check(
     return tracing_exporter_state != "failed"
 
 
-@router.get("/health", dependencies=[Depends(verify_token)])
+@router.get(
+    "/health",
+    dependencies=[Depends(verify_token)],
+    response_model=ObservabilityHealthResponse,
+)
 async def get_observability_health(request: Request) -> JSONResponse:
     """Meta-monitoring snapshot for the observability stack itself.
 

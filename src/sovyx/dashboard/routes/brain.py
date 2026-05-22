@@ -4,13 +4,46 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel, ConfigDict
 
 from sovyx.dashboard.routes._deps import verify_token
 
 router = APIRouter(prefix="/api", dependencies=[Depends(verify_token)])
 
 
-@router.get("/brain/graph")
+class BrainGraphResponse(BaseModel):
+    """Response of `GET /api/brain/graph` (Mission C C.4).
+
+    Node + link shapes vary by graph layout; typed as opaque dicts
+    for forward-additive evolution. Forward-additive via
+    ``extra="allow"`` (anti-pattern #40)."""
+
+    model_config = ConfigDict(extra="allow")
+    nodes: list[dict[str, object]] = []
+    links: list[dict[str, object]] = []
+
+
+class BrainSearchResponse(BaseModel):
+    """Response of `GET /api/brain/search` (Mission C C.4)."""
+
+    model_config = ConfigDict(extra="allow")
+    results: list[dict[str, object]] = []
+    query: str = ""
+
+
+class BrainVectorSearchResponse(BaseModel):
+    """Response of `GET /api/brain/search/vector` (Mission C C.4).
+
+    ``vector_available`` distinguishes the no-sqlite-vec fallback
+    from a real zero-result match."""
+
+    model_config = ConfigDict(extra="allow")
+    results: list[dict[str, object]] = []
+    query: str = ""
+    vector_available: bool | None = None
+
+
+@router.get("/brain/graph", response_model=BrainGraphResponse)
 async def get_brain_graph(
     request: Request,
     limit: int = Query(default=200, ge=0, le=1000),
@@ -25,7 +58,7 @@ async def get_brain_graph(
     return JSONResponse({"nodes": [], "links": []})
 
 
-@router.get("/brain/search")
+@router.get("/brain/search", response_model=BrainSearchResponse)
 async def brain_search(
     request: Request,
     q: str = Query(default="", max_length=500),
@@ -41,7 +74,7 @@ async def brain_search(
     return JSONResponse({"results": [], "query": q})
 
 
-@router.get("/brain/search/vector")
+@router.get("/brain/search/vector", response_model=BrainVectorSearchResponse)
 async def brain_search_vector(
     request: Request,
     q: str = Query(default="", max_length=500),
