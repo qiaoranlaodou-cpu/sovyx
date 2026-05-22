@@ -1858,7 +1858,7 @@ const VoiceStatusHardwareSchema = z.object({
  * future C4 banner-UX fields (last_error_class, ack_at_monotonic)
  * land without a route schema migration.
  */
-const VoiceStatusDegradedSchema = z
+export const VoiceStatusDegradedSchema = z
   .object({
     degraded: z.boolean().optional().default(false),
     reason: z.string().nullable().optional(),

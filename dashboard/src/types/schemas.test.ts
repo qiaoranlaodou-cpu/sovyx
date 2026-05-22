@@ -20,6 +20,7 @@ import {
   TrainingJobSummarySchema,
   VoiceBypassTierStatusResponseSchema,
   VoiceRestartHistoryResponseSchema,
+  VoiceStatusDegradedSchema,
   WakeWordPerMindStatusResponseSchema,
   WakeWordPerMindStatusSchema,
   WakeWordToggleRequestSchema,
@@ -1678,6 +1679,317 @@ describe("ResourceCohortMetricsSchema (Mission C C-P0-1)", () => {
     expect(result.success).toBe(true);
     if (result.success) {
       expect(result.data.cohorts["to_thread.pool_size_at_last_dispatch"]).toBe(8);
+    }
+  });
+});
+
+// Mission C C-P0-11 / Phase C.6 §3 — pin VoiceStatusDegradedSchema
+// at the typed-consumer boundary. The schema is consumed via
+// VoiceStatusResponseSchema.shape.degraded; pinning the inner schema
+// directly catches reason / composite_severity / ack_* drift at the
+// TS layer rather than just the producer's pydantic boundary
+// (test_voice_status_degraded_boundary.py covers the producer side).
+describe("VoiceStatusDegradedSchema (Mission C C-P0-11)", () => {
+  it("accepts the empty object and applies defaults (pre-ladder fresh-boot shape)", () => {
+    const result = VoiceStatusDegradedSchema.safeParse({});
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.degraded).toBe(false);
+      expect(result.data.reason).toBeUndefined();
+      expect(result.data.candidates_tried).toBe(0);
+      expect(result.data.candidates_unreachable).toEqual([]);
+      expect(result.data.last_ladder_complete_monotonic).toBeUndefined();
+    }
+  });
+
+  it("accepts the exhausted-ladder shape (reason + unreachable list populated)", () => {
+    const payload = {
+      degraded: true,
+      reason: "failover_ladder_exhausted",
+      candidates_tried: 3,
+      candidates_unreachable: [
+        "hd-audio-generic-sn6180-hw10",
+        "pipewire-virtual-source-idx7",
+        "os-default-idx8",
+      ],
+      last_ladder_complete_monotonic: 12345.678,
+    };
+    const result = VoiceStatusDegradedSchema.safeParse(payload);
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.degraded).toBe(true);
+      expect(result.data.reason).toBe("failover_ladder_exhausted");
+      expect(result.data.candidates_tried).toBe(3);
+      expect(result.data.candidates_unreachable).toHaveLength(3);
+      expect(result.data.last_ladder_complete_monotonic).toBe(12345.678);
+    }
+  });
+
+  it("accepts Mission C4 composite fields (multi-axis warn)", () => {
+    const payload = {
+      degraded: false,
+      composite_axes: ["voice"],
+      composite_severity: "warn",
+    };
+    const result = VoiceStatusDegradedSchema.safeParse(payload);
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.composite_axes).toEqual(["voice"]);
+      expect(result.data.composite_severity).toBe("warn");
+    }
+  });
+
+  it("accepts Mission C4 composite fields (3-axis critical)", () => {
+    const payload = {
+      composite_axes: ["llm", "stt", "voice"],
+      composite_severity: "critical",
+    };
+    const result = VoiceStatusDegradedSchema.safeParse(payload);
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.composite_severity).toBe("critical");
+      expect(result.data.composite_axes).toEqual(["llm", "stt", "voice"]);
+    }
+  });
+
+  it("accepts Mission C4 composite_severity=null (empty axes)", () => {
+    const payload = {
+      composite_axes: [],
+      composite_severity: null,
+    };
+    const result = VoiceStatusDegradedSchema.safeParse(payload);
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.composite_severity).toBeNull();
+    }
+  });
+
+  it("accepts Mission C5 dashboard axis in composite (error tier)", () => {
+    const payload = {
+      composite_axes: ["dashboard", "voice"],
+      composite_severity: "error",
+    };
+    const result = VoiceStatusDegradedSchema.safeParse(payload);
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.composite_axes).toContain("dashboard");
+      expect(result.data.composite_severity).toBe("error");
+    }
+  });
+
+  it("accepts Phase 3 ack fields fully populated", () => {
+    const payload = {
+      ack_at_monotonic: 12345.6,
+      ack_ttl_sec: 3600,
+      ack_operator_id: "abc123",
+      last_resurfaced_monotonic: 99999.9,
+    };
+    const result = VoiceStatusDegradedSchema.safeParse(payload);
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.ack_at_monotonic).toBe(12345.6);
+      expect(result.data.ack_ttl_sec).toBe(3600);
+      expect(result.data.ack_operator_id).toBe("abc123");
+      expect(result.data.last_resurfaced_monotonic).toBe(99999.9);
+    }
+  });
+
+  it("accepts Phase 3 ack fields as explicit nulls (pre-ack state)", () => {
+    const payload = {
+      ack_at_monotonic: null,
+      ack_ttl_sec: null,
+      ack_operator_id: null,
+      last_resurfaced_monotonic: null,
+    };
+    const result = VoiceStatusDegradedSchema.safeParse(payload);
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.ack_at_monotonic).toBeNull();
+      expect(result.data.ack_ttl_sec).toBeNull();
+    }
+  });
+
+  it("rejects composite_severity = unknown literal", () => {
+    const payload = {
+      composite_severity: "emergency",
+    };
+    const result = VoiceStatusDegradedSchema.safeParse(payload);
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects composite_severity = warning (sibling grammar drift)", () => {
+    // Mirrors the EngineDegradedResponseSchema test — wire grammar
+    // accepts only the canonical {warn,error,critical} triple; the
+    // producer-side _normalize_severity coerces "warning" before the
+    // wire so consumers never see it.
+    const payload = {
+      composite_severity: "warning",
+    };
+    const result = VoiceStatusDegradedSchema.safeParse(payload);
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects negative candidates_tried", () => {
+    const payload = {
+      candidates_tried: -1,
+    };
+    const result = VoiceStatusDegradedSchema.safeParse(payload);
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects candidates_tried as a string", () => {
+    const payload = {
+      candidates_tried: "two",
+    };
+    const result = VoiceStatusDegradedSchema.safeParse(payload);
+    expect(result.success).toBe(false);
+  });
+
+  it("passthrough tolerates a forward-additive C4 banner-UX field", () => {
+    const payload = {
+      degraded: true,
+      reason: "failover_ladder_exhausted",
+      // Forward-additive: future fields land via passthrough() so the
+      // wire schema does not require a migration each tag.
+      future_c4_banner_dismissed: true,
+      future_c4_telemetry_id: "abc-123",
+    };
+    const result = VoiceStatusDegradedSchema.safeParse(payload);
+    expect(result.success).toBe(true);
+  });
+});
+
+// Mission C C-P0-11 / Phase C.6 §3 — pin EngineResourcesResponseSchema
+// at the typed-consumer boundary. Augments the single embed-test
+// already living inside the ResourceCohortMetricsSchema describe with
+// dedicated coverage for the wrapper's four mandatory fields
+// (observed_at_unix, cohorts, canonical_field_count, legacy_alias_count)
+// + passthrough + invalid-shape rejection. Producer side covered by
+// tests/integration/dashboard/test_engine_resources_boundary.py.
+describe("EngineResourcesResponseSchema (Mission C C-P0-11)", () => {
+  it("accepts the fully populated shape with rich cohort metrics", () => {
+    const payload = {
+      observed_at_unix: 1779410000,
+      cohorts: {
+        "process.open_files_status": "ok",
+        "process.connections_status": "ok",
+        "to_thread.pool_size_at_last_dispatch": 8,
+        "to_thread.queue_depth_at_last_dispatch": 2,
+        "to_thread.max_workers_at_last_dispatch": 16,
+        "asyncio.not_done_count": 4,
+        "asyncio.awaiting_count": 3,
+        "lock_dict.total_cardinality": 12,
+        "onnx.session_count": 4,
+        "tracemalloc.is_tracing": true,
+        "exception_cohort.cumulative_retained_bytes_since_start": 1024,
+      },
+      canonical_field_count: 33,
+      legacy_alias_count: 9,
+    };
+    const result = EngineResourcesResponseSchema.safeParse(payload);
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.observed_at_unix).toBe(1779410000);
+      expect(result.data.canonical_field_count).toBe(33);
+      expect(result.data.legacy_alias_count).toBe(9);
+      expect(result.data.cohorts["onnx.session_count"]).toBe(4);
+    }
+  });
+
+  it("accepts an empty cohorts object (fresh-boot / pre-instrumentation)", () => {
+    const payload = {
+      observed_at_unix: 1779410000,
+      cohorts: {},
+      canonical_field_count: 0,
+      legacy_alias_count: 0,
+    };
+    const result = EngineResourcesResponseSchema.safeParse(payload);
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.cohorts).toEqual({});
+      expect(result.data.canonical_field_count).toBe(0);
+    }
+  });
+
+  it("rejects missing observed_at_unix (required field)", () => {
+    const payload = {
+      cohorts: {},
+      canonical_field_count: 0,
+      legacy_alias_count: 0,
+    };
+    const result = EngineResourcesResponseSchema.safeParse(payload);
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects missing cohorts (required field)", () => {
+    const payload = {
+      observed_at_unix: 1779410000,
+      canonical_field_count: 0,
+      legacy_alias_count: 0,
+    };
+    const result = EngineResourcesResponseSchema.safeParse(payload);
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects negative canonical_field_count", () => {
+    const payload = {
+      observed_at_unix: 1779410000,
+      cohorts: {},
+      canonical_field_count: -1,
+      legacy_alias_count: 0,
+    };
+    const result = EngineResourcesResponseSchema.safeParse(payload);
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects non-integer canonical_field_count", () => {
+    const payload = {
+      observed_at_unix: 1779410000,
+      cohorts: {},
+      canonical_field_count: 3.5,
+      legacy_alias_count: 0,
+    };
+    const result = EngineResourcesResponseSchema.safeParse(payload);
+    expect(result.success).toBe(false);
+  });
+
+  it("passthrough tolerates a forward-additive H4 Phase 1.E governor field", () => {
+    // Phase 1.E plan: add cohort-governor budget verdicts + heap-snapshot
+    // manifests forward-additively (per the schema docstring at
+    // schemas.ts:2017). The wrapper MUST accept the new top-level key
+    // without a schema migration.
+    const payload = {
+      observed_at_unix: 1779410000,
+      cohorts: {},
+      canonical_field_count: 0,
+      legacy_alias_count: 0,
+      governor_verdicts: { engine_resources: "HEALTHY" },
+      heap_snapshot_manifest: { path: "/tmp/heap.json", size_kb: 4096 },
+    };
+    const result = EngineResourcesResponseSchema.safeParse(payload);
+    expect(result.success).toBe(true);
+  });
+
+  it("preserves typed access to ResourceCohortMetricsSchema canonicals after parse", () => {
+    // Pre-C.6 §3 these were typed but lived behind the embed-test
+    // inside the ResourceCohortMetricsSchema describe; this asserts
+    // the same typed-read pattern at the wrapper level.
+    const payload = {
+      observed_at_unix: 1779410000,
+      cohorts: {
+        "to_thread.pool_size_at_last_dispatch": 7,
+        "exception_cohort.window_retained_bytes": 128,
+        "lock_dict.instance_count": 2,
+      },
+      canonical_field_count: 3,
+      legacy_alias_count: 0,
+    };
+    const result = EngineResourcesResponseSchema.safeParse(payload);
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.cohorts["to_thread.pool_size_at_last_dispatch"]).toBe(7);
+      expect(result.data.cohorts["exception_cohort.window_retained_bytes"]).toBe(128);
+      expect(result.data.cohorts["lock_dict.instance_count"]).toBe(2);
     }
   });
 });
