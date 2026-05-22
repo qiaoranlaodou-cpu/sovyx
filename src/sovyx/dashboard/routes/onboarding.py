@@ -7,6 +7,7 @@ import os
 
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel, ConfigDict
 
 from sovyx.cli._provider_setup_shared import (
     create_provider as _create_provider_impl,
@@ -30,6 +31,28 @@ logger = get_logger(__name__)
 
 router = APIRouter(prefix="/api/onboarding", dependencies=[Depends(verify_token)])
 
+
+class OnboardingStateResponse(BaseModel):
+    """Response of `GET /api/onboarding/state` (Mission C C.4).
+
+    Onboarding state shape varies by wizard step + mind config;
+    typed as opaque via extra="allow"."""
+
+    model_config = ConfigDict(extra="allow")
+    error: str | None = None
+
+
+class OnboardingActionResponse(BaseModel):
+    """Shared response of `POST /api/onboarding/{provider,personality,
+    channel/telegram,complete}` (Mission C C.4). Carries the wizard
+    step verdict."""
+
+    model_config = ConfigDict(extra="allow")
+    ok: bool
+    error: str | None = None
+    detail: str | None = None
+
+
 _ENV_VAR_MAP: dict[str, str] = {
     "anthropic": "ANTHROPIC_API_KEY",
     "openai": "OPENAI_API_KEY",
@@ -43,7 +66,7 @@ _ENV_VAR_MAP: dict[str, str] = {
 }
 
 
-@router.get("/state")
+@router.get("/state", response_model=OnboardingStateResponse)
 async def get_onboarding_state(request: Request) -> JSONResponse:
     """Return onboarding progress for the active mind.
 
@@ -99,7 +122,7 @@ async def get_onboarding_state(request: Request) -> JSONResponse:
     )
 
 
-@router.post("/provider")
+@router.post("/provider", response_model=OnboardingActionResponse)
 async def configure_provider(request: Request) -> JSONResponse:
     """Validate API key, persist, and hot-register in LLM router."""
     try:
@@ -186,7 +209,7 @@ async def configure_provider(request: Request) -> JSONResponse:
     return await _apply_provider(request, router_svc, provider_name, model)
 
 
-@router.post("/personality")
+@router.post("/personality", response_model=OnboardingActionResponse)
 async def configure_personality(request: Request) -> JSONResponse:
     """Save personality preset or custom values to mind.yaml.
 
@@ -275,7 +298,7 @@ async def configure_personality(request: Request) -> JSONResponse:
     return JSONResponse({"ok": True})
 
 
-@router.post("/channel/telegram")
+@router.post("/channel/telegram", response_model=OnboardingActionResponse)
 async def setup_telegram_channel(request: Request) -> JSONResponse:
     """Validate Telegram bot token, hot-start channel, persist for next boot."""
     import httpx  # noqa: PLC0415
@@ -341,7 +364,7 @@ async def setup_telegram_channel(request: Request) -> JSONResponse:
     )
 
 
-@router.post("/complete")
+@router.post("/complete", response_model=OnboardingActionResponse)
 async def complete_onboarding(request: Request) -> JSONResponse:
     """Mark onboarding as complete.
 

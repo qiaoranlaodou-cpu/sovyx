@@ -865,6 +865,7 @@ class WizardTelemetryCompletion(BaseModel):
     exit_step: str = Field(description="Step the wizard was on at exit.")
 
 
+# c-allowlist: response_model_skip reason=204 No Content — no response body
 @router.post("/telemetry", status_code=204)
 async def emit_wizard_telemetry(
     request: Request,

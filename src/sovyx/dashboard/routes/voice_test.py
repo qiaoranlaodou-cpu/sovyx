@@ -266,6 +266,7 @@ class _MeteredSender(WSSender):
 @router.get(
     "/devices",
     dependencies=[Depends(verify_token)],
+    response_model=DevicesResponse,
 )
 async def list_devices(request: Request) -> JSONResponse:
     """Enumerate input + output devices available on the host."""
@@ -425,6 +426,7 @@ async def websocket_input_meter(
 @router.post(
     "/output",
     dependencies=[Depends(verify_token)],
+    response_model=TestOutputJob,
 )
 async def start_output_test(request: Request, body: TestOutputRequest) -> JSONResponse:
     """Queue a TTS synth+play job and return a poll token."""
@@ -557,6 +559,7 @@ async def start_output_test(request: Request, body: TestOutputRequest) -> JSONRe
 @router.get(
     "/output/{job_id}",
     dependencies=[Depends(verify_token)],
+    response_model=TestOutputResult,
 )
 async def get_output_result(request: Request, job_id: str) -> JSONResponse:
     """Return the final result of a TTS test playback job."""
