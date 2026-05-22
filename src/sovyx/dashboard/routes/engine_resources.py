@@ -319,6 +319,7 @@ def _diagnostics_dir() -> Path:
     return Path.home() / ".sovyx" / "diagnostics"
 
 
+# c-allowlist: response_model_skip reason=Persisted tracemalloc snapshot JSON — shape varies by snapshot vintage
 @router.get("/resources/heap-snapshot/{timestamp}")
 async def get_heap_snapshot(timestamp: int) -> dict[str, object]:
     """Mission H4 §0 item #11 — serve a persisted heap-snapshot JSON.
@@ -353,6 +354,7 @@ async def get_heap_snapshot(timestamp: int) -> dict[str, object]:
         raise HTTPException(status_code=500, detail="heap-snapshot file unreadable") from exc
 
 
+# c-allowlist: response_model_skip reason=Persisted thread-dump text wrapped in {text: <body>} — opaque file contents
 @router.get("/resources/thread-snapshot/{timestamp}")
 async def get_thread_snapshot(timestamp: int) -> dict[str, str]:
     """Mission H4 §0 item — serve a persisted thread-snapshot text file.

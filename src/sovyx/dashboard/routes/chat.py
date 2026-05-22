@@ -127,6 +127,7 @@ async def chat(request: Request) -> JSONResponse:
     return JSONResponse(result)
 
 
+# c-allowlist: response_model_skip reason=SSE StreamingResponse — text/event-stream body, not JSON
 @router.post("/chat/stream")
 async def chat_stream(request: Request) -> StreamingResponse:
     """SSE streaming chat — tokens arrive as they are generated.

@@ -27,6 +27,7 @@ _IMPORT_CHUNK_BYTES = 1 * 1024 * 1024  # 1 MiB streaming read chunk size.
 router = APIRouter(prefix="/api", dependencies=[Depends(verify_token)])
 
 
+# c-allowlist: response_model_skip reason=ZIP file download — StreamingResponse with Content-Disposition
 @router.get("/export")
 async def export_mind_endpoint(request: Request) -> Response:
     """Export the active mind as a .sovyx-mind ZIP archive download.

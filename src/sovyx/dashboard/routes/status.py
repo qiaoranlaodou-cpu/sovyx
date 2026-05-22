@@ -387,6 +387,7 @@ async def get_metrics_cardinality(request: Request) -> JSONResponse:
 metrics_router = APIRouter()
 
 
+# c-allowlist: response_model_skip reason=Prometheus exposition text/plain — not JSON
 @metrics_router.get("/metrics")
 async def prometheus_metrics(request: Request) -> Response:
     """Prometheus scrape endpoint — OpenMetrics text format.
