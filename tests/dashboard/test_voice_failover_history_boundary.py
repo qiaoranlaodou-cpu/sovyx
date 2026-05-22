@@ -9,6 +9,8 @@ that closed the ``VoiceStatusResponse.capture.input_device`` regression).
 
 from __future__ import annotations
 
+from functools import partial
+
 from sovyx.dashboard.routes.voice_health import (
     FailoverHistoryEntryModel,
     FailoverHistoryResponse,
@@ -58,6 +60,25 @@ def _entry_dict(
     }
 
 
+def _response_payload(
+    *,
+    entries: list[dict[str, object]],
+    extra: dict[str, object] | None = None,
+) -> dict[str, object]:
+    """Mirror ``get_voice_failover_history`` emit shape
+    (``voice_health.py:717``) — ``FailoverHistoryResponse(entries=...,
+    ring_capacity=history.capacity)``. ``ring_capacity`` is the
+    runtime-bound ``VoiceTuningConfig.failover_history_ring_capacity``
+    (default 32 — see ``FailoverHistoryResponse`` docstring at
+    ``voice_health.py:411``). ``extra`` exists so forward-additive
+    probes can layer unknown keys without forking the helper.
+    """
+    payload: dict[str, object] = {"entries": entries, "ring_capacity": 32}
+    if extra:
+        payload.update(extra)
+    return payload
+
+
 class TestFailoverHistoryResponseRoundTrip:
     """Pin the ``FailoverHistoryResponse.model_validate(...)`` boundary."""
 
@@ -65,10 +86,7 @@ class TestFailoverHistoryResponseRoundTrip:
         """Fresh-boot state — no ladder has yet run."""
         assert_boundary_accepts(
             FailoverHistoryResponse,
-            helper_factory=lambda: {
-                "entries": [],
-                "ring_capacity": 32,
-            },
+            helper_factory=partial(_response_payload, entries=[]),
             field_assertions={"ring_capacity": 32},
         )
 
@@ -78,10 +96,7 @@ class TestFailoverHistoryResponseRoundTrip:
         entry = _entry_dict(candidates=[candidate])
         assert_boundary_accepts(
             FailoverHistoryResponse,
-            helper_factory=lambda: {
-                "entries": [entry],
-                "ring_capacity": 32,
-            },
+            helper_factory=partial(_response_payload, entries=[entry]),
         )
 
     def test_exhausted_multi_candidate_round_trip(self) -> None:
@@ -111,10 +126,7 @@ class TestFailoverHistoryResponseRoundTrip:
         entry = _entry_dict(verdict="exhausted", candidates=candidates)
         validated = assert_boundary_accepts(
             FailoverHistoryResponse,
-            helper_factory=lambda: {
-                "entries": [entry],
-                "ring_capacity": 32,
-            },
+            helper_factory=partial(_response_payload, entries=[entry]),
         )
         # field_assertions doesn't support list-indexed paths; assert
         # directly on the validated instance.
@@ -134,10 +146,7 @@ class TestFailoverHistoryResponseRoundTrip:
         entry = _entry_dict(candidates=[skipped, good])
         validated = assert_boundary_accepts(
             FailoverHistoryResponse,
-            helper_factory=lambda: {
-                "entries": [entry],
-                "ring_capacity": 32,
-            },
+            helper_factory=partial(_response_payload, entries=[entry]),
         )
         assert validated.entries[0].candidates[0].skipped_reason == "probe_cache_unopenable"
 
@@ -156,10 +165,7 @@ class TestFailoverHistoryResponseRoundTrip:
         entry["succeeded_index"] = None
         assert_boundary_accepts(
             FailoverHistoryResponse,
-            helper_factory=lambda: {
-                "entries": [entry],
-                "ring_capacity": 32,
-            },
+            helper_factory=partial(_response_payload, entries=[entry]),
         )
 
     def test_extra_keys_pass_through(self) -> None:
@@ -172,11 +178,11 @@ class TestFailoverHistoryResponseRoundTrip:
         entry["future_entry_field"] = 99
         assert_boundary_accepts(
             FailoverHistoryResponse,
-            helper_factory=lambda: {
-                "entries": [entry],
-                "ring_capacity": 32,
-                "future_response_field": True,
-            },
+            helper_factory=partial(
+                _response_payload,
+                entries=[entry],
+                extra={"future_response_field": True},
+            ),
         )
 
 
