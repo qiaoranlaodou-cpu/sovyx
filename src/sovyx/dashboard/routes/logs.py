@@ -38,10 +38,76 @@ from typing import Literal
 
 from fastapi import APIRouter, Depends, Path, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel, ConfigDict
 
 from sovyx.dashboard.routes._deps import verify_token
 
 router = APIRouter(prefix="/api", dependencies=[Depends(verify_token)])
+
+
+class LogsListResponse(BaseModel):
+    """Response of `GET /api/logs` (Mission C C.4)."""
+
+    model_config = ConfigDict(extra="allow")
+    entries: list[dict[str, object]] = []
+
+
+class LogsSearchFiltersModel(BaseModel):
+    """Filter echo block in `GET /api/logs/search` response."""
+
+    model_config = ConfigDict(extra="allow")
+    level: str | None = None
+    logger: str | None = None
+    saga_id: str | None = None
+    since: str | None = None
+    until: str | None = None
+
+
+class LogsSearchResponse(BaseModel):
+    """Response of `GET /api/logs/search` (Mission C C.4)."""
+
+    model_config = ConfigDict(extra="allow")
+    query: str | None = None
+    filters: LogsSearchFiltersModel | None = None
+    count: int | None = None
+    entries: list[dict[str, object]] = []
+    error: str | None = None
+    fallback: str | None = None
+
+
+class SagaEntriesResponse(BaseModel):
+    """Response of `GET /api/logs/sagas/{saga_id}` (Mission C C.4)."""
+
+    model_config = ConfigDict(extra="allow")
+    saga_id: str
+    entries: list[dict[str, object]] = []
+
+
+class SagaStoryResponse(BaseModel):
+    """Response of `GET /api/logs/sagas/{saga_id}/story` (Mission C C.4)."""
+
+    model_config = ConfigDict(extra="allow")
+    saga_id: str
+    story: str | None = None
+    locale: str | None = None
+    error: str | None = None
+
+
+class SagaCausalityResponse(BaseModel):
+    """Response of `GET /api/logs/sagas/{saga_id}/causality` (Mission C C.4)."""
+
+    model_config = ConfigDict(extra="allow")
+    saga_id: str
+    edges: list[dict[str, object]] = []
+
+
+class LogsAnomaliesResponse(BaseModel):
+    """Response of `GET /api/logs/anomalies` (Mission C C.4)."""
+
+    model_config = ConfigDict(extra="allow")
+    count: int = 0
+    entries: list[dict[str, object]] = []
+
 
 # A WebSocket router separately because Depends() on WS routes was
 # only properly wired in newer FastAPI versions; we re-apply
@@ -52,7 +118,7 @@ ws_router = APIRouter(prefix="/api")
 # ── Legacy file-scan endpoints (Phase 2 contract) ──────────────────
 
 
-@router.get("/logs")
+@router.get("/logs", response_model=LogsListResponse)
 async def get_logs(
     request: Request,
     level: str | None = None,
@@ -84,7 +150,7 @@ async def get_logs(
 # ── FTS5 search ────────────────────────────────────────────────────
 
 
-@router.get("/logs/search")
+@router.get("/logs/search", response_model=LogsSearchResponse)
 async def search_logs(
     request: Request,
     q: str = Query(default=""),
@@ -139,7 +205,7 @@ async def search_logs(
 # ── Saga endpoints ─────────────────────────────────────────────────
 
 
-@router.get("/logs/sagas/{saga_id}")
+@router.get("/logs/sagas/{saga_id}", response_model=SagaEntriesResponse)
 async def get_saga(
     request: Request,
     saga_id: str = Path(min_length=1, max_length=64),
@@ -168,7 +234,7 @@ async def get_saga(
     return JSONResponse({"saga_id": saga_id, "entries": entries})
 
 
-@router.get("/logs/sagas/{saga_id}/story")
+@router.get("/logs/sagas/{saga_id}/story", response_model=SagaStoryResponse)
 async def get_saga_story(
     request: Request,
     saga_id: str = Path(min_length=1, max_length=64),
@@ -194,7 +260,7 @@ async def get_saga_story(
     return JSONResponse({"saga_id": saga_id, "story": story, "locale": locale})
 
 
-@router.get("/logs/sagas/{saga_id}/causality")
+@router.get("/logs/sagas/{saga_id}/causality", response_model=SagaCausalityResponse)
 async def get_saga_causality(
     request: Request,
     saga_id: str = Path(min_length=1, max_length=64),
@@ -229,7 +295,7 @@ async def get_saga_causality(
 # ── Anomalies ──────────────────────────────────────────────────────
 
 
-@router.get("/logs/anomalies")
+@router.get("/logs/anomalies", response_model=LogsAnomaliesResponse)
 async def get_anomalies(
     request: Request,
     limit: int = Query(default=100, ge=1, le=500),
