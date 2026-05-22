@@ -167,22 +167,50 @@ class TestEngineResourcesBoundaryRoundTrip:
 
         Pre-A.1.P3 this test enforced ``active_workers == pool_size`` as
         a CONTRACT (the alias-trap pattern catalogued in anti-pattern
-        #48). The equality assertion is removed. The field stays typed
-        in the pydantic model so the LENIENT shim travels through the
-        boundary cleanly during the v0.55.0 sunset window, but the test
-        only verifies that the boundary accepts the legacy key — not
-        that the value matches any specific source.
+        #48). The equality assertion was deleted as remediation,
+        producing the F-FAL-5 falsifiability gap (Mission C C-P1-13).
+
+        Mission C Phase C.10 restores the contract assertion via the
+        snapshotter's actual emission path: the LENIENT shim is sourced
+        from ``to_thread.pool_size_at_last_dispatch`` per ADR-D15 (and
+        the shim-of-shim recursion in ADR-D16). Equality with the
+        canonical is the literal alias contract; mismatch indicates a
+        wrong-source emission that would silently corrupt every
+        operator dashboard keyed on the legacy identifier.
+
+        Sunset target: v0.55.0 (ADR-D15 + ADR-D16). The cross-version
+        forcing function lives in
+        ``tests/regression/test_lenient_sunset_assertions.py``; this
+        test pins the LENIENT-window value contract.
         """
         s1 = _FakeSession()
         register_onnx_session(label="brain.embedding", session=s1)
         fields = get_default_resource_registry().snapshot_fields()
         # The snapshotter (NOT snapshot_fields()) adds the LENIENT shim,
         # so to exercise the boundary end-to-end we synthesize the shim
-        # here matching the snapshotter contract.
-        pool_size = fields.get("to_thread.pool_size")
-        if isinstance(pool_size, int):
-            fields["to_thread.active_workers"] = pool_size
+        # here matching the snapshotter contract at
+        # ``observability/resources.py:539`` — the shim sources from
+        # ``to_thread.pool_size_at_last_dispatch`` (the canonical fresh
+        # field per ADR-D16, NOT the legacy ``to_thread.pool_size``
+        # which itself is a separate LENIENT shim per ADR-D16).
+        pool_size_at_last_dispatch = fields.get("to_thread.pool_size_at_last_dispatch")
+        if isinstance(pool_size_at_last_dispatch, int):
+            fields["to_thread.active_workers"] = pool_size_at_last_dispatch
         cohorts = ResourceCohortMetrics.model_validate(fields)
-        # Field stays typed during LENIENT.
+        # Field stays typed during LENIENT (Phase C.10 §C-P1-13 closure).
         assert hasattr(cohorts, "to_thread_active_workers")
         assert "to_thread.active_workers" not in (cohorts.__pydantic_extra__ or {})
+        # Mission C Phase C.10 restored contract assertion: the shim
+        # value MUST equal the canonical it aliases. Any drift here
+        # means the snapshotter's emission path sources the legacy key
+        # from a wrong producer (the F-FAL-5 hazard).
+        if isinstance(pool_size_at_last_dispatch, int):
+            assert cohorts.to_thread_active_workers == pool_size_at_last_dispatch, (
+                f"LENIENT shim 'to_thread.active_workers' value drifted "
+                f"from canonical 'to_thread.pool_size_at_last_dispatch': "
+                f"shim={cohorts.to_thread_active_workers!r} vs canonical="
+                f"{pool_size_at_last_dispatch!r}. See ADR-D15 + ADR-D16; "
+                f"the LENIENT alias is sourced literally from the "
+                f"canonical and divergence indicates a wrong-source "
+                f"emission (anti-pattern #51 / F-FAL-5)."
+            )
