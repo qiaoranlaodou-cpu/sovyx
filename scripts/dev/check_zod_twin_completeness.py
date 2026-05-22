@@ -112,6 +112,22 @@ _REGISTRY: Final[tuple[_RegistryEntry, ...]] = (
         zod_export_name="EngineDegradedResponseSchema",
         label="C4 composite degraded banner",
     ),
+    # Mission C.1 §C.1-b — quarantine reason transport binding pair.
+    # The pydantic model carries ``reason`` / ``derived_reason`` /
+    # ``resolved_reason`` as ``QuarantineReason | str`` Union with a
+    # BeforeValidator coercion; the zod twin uses
+    # ``QuarantineReasonSchema.or(z.string())`` LENIENT mirror. This
+    # registry entry closes the Mission C.6 §3 ``QuarantineEntryModel``
+    # deferred row by handing Gate 17 a mechanical drift detector for
+    # any future pydantic/zod field addition that lands asymmetrically.
+    # Phase 3 STRICT v0.53.0 H3 cycle close drops the ``derived_reason``
+    # field on the pydantic side; the registry passes through with the
+    # surviving field set.
+    _RegistryEntry(
+        pydantic_dotted_path=("sovyx.dashboard.routes.voice_health.QuarantineEntryModel"),
+        zod_export_name="VoiceHealthQuarantineEntrySchema",
+        label="C.1 quarantine reason transport (#46 typed-consumer mirror)",
+    ),
 )
 
 

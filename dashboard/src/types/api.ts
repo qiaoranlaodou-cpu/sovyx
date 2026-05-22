@@ -1185,6 +1185,25 @@ export interface VoiceHealthSnapshotResponse {
 }
 
 /**
+ * Mission C.1 §C.1-b — TYPED-CONSUMER mirror of the pydantic
+ * `sovyx.voice.health._quarantine_reasons.QuarantineReason` SSoT.
+ * The literal members enumerated here MUST stay in lockstep with the
+ * pydantic SSoT — Gate 14 (producer side) + the `schemas.test.ts`
+ * SSoT-parity test (typed-consumer side) catch drift. Phase 3 STRICT
+ * v0.53.0 narrows `VoiceHealthQuarantineEntry.reason` to this type
+ * only (drops the `| string` union arm).
+ */
+export type QuarantineReason =
+  | "apo_degraded"
+  | "vad_frontend_dead"
+  | "format_mismatch"
+  | "driver_silent"
+  | "capture_dead"
+  | "kernel_invalidated"
+  | "watchdog_recheck"
+  | "unclassified";
+
+/**
  * One endpoint in the §4.4.7 kernel-invalidated quarantine.
  *
  * Mirrors `sovyx.voice.health._quarantine.QuarantineEntry` + the derived
@@ -1198,7 +1217,15 @@ export interface VoiceHealthQuarantineEntry {
   added_at_monotonic: number;
   expires_at_monotonic: number;
   seconds_until_expiry: number;
-  reason: string;
+  /**
+   * Mission C.1 §C.1-b — TRANSPORT view narrows to {@link QuarantineReason}
+   * while the `| string` Union arm preserves the H3 LENIENT-window
+   * backward-compat for lifecycle-tag literals (`"probe_pinned"` /
+   * `"probe_store"` / …). Phase 3 STRICT v0.53.0 drops the `| string`
+   * tail. Frontends should read {@link QuarantineReason} branches with
+   * exhaustive `switch` / `assert_never`-style discipline.
+   */
+  reason: QuarantineReason | string;
   /**
    * Mission C1 §T2.2 — verdict-driven reason class (LENIENT alias).
    * Optional during the LENIENT v0.44.x cycle: pre-mission entries
@@ -1207,7 +1234,7 @@ export interface VoiceHealthQuarantineEntry {
    * `reason` (both promoted into a single canonical `reason` field
    * carrying the SSoT-resolved value).
    */
-  derived_reason?: string;
+  derived_reason?: QuarantineReason | string;
   /**
    * Mission H3 §T2.8 + ADR-D2 — canonical SSoT-resolved value
    * populated by `resolve_reason_from_verdict()` /
@@ -1218,7 +1245,7 @@ export interface VoiceHealthQuarantineEntry {
    * field (and `derived_reason`) — the canonical value lives on
    * `reason`.
    */
-  resolved_reason?: string;
+  resolved_reason?: QuarantineReason | string;
   /**
    * Mission H3 §T2.8 — pydantic computed property. The canonical
    * field-chain fallback (`resolved_reason or derived_reason or
@@ -1226,7 +1253,7 @@ export interface VoiceHealthQuarantineEntry {
    * dashboard builds that haven't picked up the computed field apply
    * the fallback chain themselves.
    */
-  effective_reason?: string;
+  effective_reason?: QuarantineReason | string;
 }
 
 /** GET /api/voice/health/quarantine response. */

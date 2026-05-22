@@ -10,6 +10,7 @@ import {
   ForgetMindResponseSchema,
   OnboardingCompleteResponseSchema,
   PruneRetentionResponseSchema,
+  QuarantineReasonSchema,
   ResourceCohortMetricsSchema,
   StartTrainingRequestSchema,
   StartTrainingResponseSchema,
@@ -19,6 +20,7 @@ import {
   TrainingJobStreamMessageSchema,
   TrainingJobSummarySchema,
   VoiceBypassTierStatusResponseSchema,
+  VoiceHealthQuarantineEntrySchema,
   VoiceRestartHistoryResponseSchema,
   VoiceStatusDegradedSchema,
   WakeWordPerMindStatusResponseSchema,
@@ -1991,5 +1993,156 @@ describe("EngineResourcesResponseSchema (Mission C C-P0-11)", () => {
       expect(result.data.cohorts["exception_cohort.window_retained_bytes"]).toBe(128);
       expect(result.data.cohorts["lock_dict.instance_count"]).toBe(2);
     }
+  });
+});
+
+// ── Mission C.1 §C.1-b — QuarantineReason typed-consumer parity ─────────
+
+describe("QuarantineReasonSchema (Mission C.1)", () => {
+  // SSoT enum members — MUST stay in lockstep with the pydantic SSoT at
+  // ``src/sovyx/voice/health/_quarantine_reasons.py::QuarantineReason``.
+  // Adding a member on the pydantic side without extending this list
+  // means the typed view silently drops the new value into the
+  // ``.or(z.string())`` LENIENT arm. The list is sorted by declaration
+  // order in the pydantic StrEnum to make drift visually obvious.
+  const SSOT_MEMBERS = [
+    "apo_degraded",
+    "vad_frontend_dead",
+    "format_mismatch",
+    "driver_silent",
+    "capture_dead",
+    "kernel_invalidated",
+    "watchdog_recheck",
+    "unclassified",
+  ] as const;
+
+  it("accepts every QuarantineReason SSoT member", () => {
+    for (const member of SSOT_MEMBERS) {
+      expect(QuarantineReasonSchema.parse(member)).toBe(member);
+    }
+  });
+
+  it("rejects unknown values (strict enum behavior)", () => {
+    expect(() => QuarantineReasonSchema.parse("not_a_reason")).toThrow();
+    // Lifecycle tags (handled by the ``.or(z.string())`` Union arm on
+    // VoiceHealthQuarantineEntrySchema, NOT here) are NOT accepted by
+    // the raw enum schema — that's the whole point of the Union split.
+    expect(() => QuarantineReasonSchema.parse("probe_pinned")).toThrow();
+    expect(() => QuarantineReasonSchema.parse("probe_store")).toThrow();
+  });
+
+  it("enumerates exactly the SSoT members (drift detection)", () => {
+    // zod ``z.enum`` exposes its options array; compare against the
+    // SSOT_MEMBERS literal to surface drift between the test pin and
+    // the schema declaration.
+    expect(QuarantineReasonSchema.options).toEqual(SSOT_MEMBERS);
+  });
+});
+
+describe("VoiceHealthQuarantineEntrySchema (Mission C.1)", () => {
+  // Build a fully-populated entry with the Mission H3 triple-field
+  // ``reason`` / ``derived_reason`` / ``resolved_reason`` chain. Tests
+  // override specific fields to exercise the LENIENT-Union semantics
+  // without re-declaring the whole shape.
+  const entryDefaults = () => ({
+    endpoint_guid: "{c1-b}",
+    device_friendly_name: "Mic (C.1-b)",
+    device_interface_name: "",
+    host_api: "WASAPI",
+    added_at_monotonic: 0,
+    expires_at_monotonic: 60,
+    seconds_until_expiry: 60,
+    reason: "apo_degraded",
+    derived_reason: "apo_degraded",
+    resolved_reason: "apo_degraded",
+    effective_reason: "apo_degraded",
+  });
+
+  it("accepts every QuarantineReason SSoT member as reason", () => {
+    const members = [
+      "apo_degraded",
+      "vad_frontend_dead",
+      "format_mismatch",
+      "driver_silent",
+      "capture_dead",
+      "kernel_invalidated",
+      "watchdog_recheck",
+      "unclassified",
+    ] as const;
+    for (const member of members) {
+      const result = VoiceHealthQuarantineEntrySchema.safeParse({
+        ...entryDefaults(),
+        reason: member,
+        derived_reason: member,
+        resolved_reason: member,
+        effective_reason: member,
+      });
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.reason).toBe(member);
+        expect(result.data.derived_reason).toBe(member);
+        expect(result.data.resolved_reason).toBe(member);
+        expect(result.data.effective_reason).toBe(member);
+      }
+    }
+  });
+
+  it("accepts H3 lifecycle tags via the LENIENT Union string arm", () => {
+    const lifecycleTags = [
+      "probe",
+      "probe_pinned",
+      "probe_store",
+      "probe_cascade",
+      "factory_integration",
+      "kernel_invalidated_recheck",
+    ] as const;
+    for (const tag of lifecycleTags) {
+      const result = VoiceHealthQuarantineEntrySchema.safeParse({
+        ...entryDefaults(),
+        reason: tag,
+      });
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.reason).toBe(tag);
+      }
+    }
+  });
+
+  it("accepts unknown drift values via the LENIENT Union string arm", () => {
+    // Mission C.1-a pydantic side surfaces these as a structured WARN.
+    // Mission C.1-b zod side accepts them so the dashboard does not
+    // safeParse-fail on a backend drift — the WARN telemetry is the
+    // signal, not a parse rejection. Phase 3 STRICT v0.53.0 drops the
+    // ``.or(z.string())`` arm; safeParse will fail then.
+    const result = VoiceHealthQuarantineEntrySchema.safeParse({
+      ...entryDefaults(),
+      reason: "totally_unrecognised_value",
+    });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.reason).toBe("totally_unrecognised_value");
+    }
+  });
+
+  it("allows empty derived_reason / resolved_reason (LENIENT triple-field window)", () => {
+    const result = VoiceHealthQuarantineEntrySchema.safeParse({
+      ...entryDefaults(),
+      derived_reason: "",
+      resolved_reason: "",
+    });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.derived_reason).toBe("");
+      expect(result.data.resolved_reason).toBe("");
+    }
+  });
+
+  it("preserves extra fields via .passthrough() (anti-pattern #40)", () => {
+    const result = VoiceHealthQuarantineEntrySchema.safeParse({
+      ...entryDefaults(),
+      "voice.platform": "linux",
+      "voice.bypass_family": "alsa_capture_chain",
+    });
+    expect(result.success).toBe(true);
   });
 });
