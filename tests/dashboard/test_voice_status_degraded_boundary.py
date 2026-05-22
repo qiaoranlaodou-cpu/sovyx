@@ -17,6 +17,8 @@ C4 banner-UX field MUST NOT break the round-trip.
 
 from __future__ import annotations
 
+from functools import partial
+
 from sovyx.dashboard.routes.voice import VoiceStatusDegraded, VoiceStatusResponse
 from tests.dashboard._boundary_helpers import assert_boundary_accepts
 
@@ -62,7 +64,8 @@ class TestVoiceStatusDegradedBoundaryRoundTrip:
         """Post-ladder-exhaustion — reason + unreachable list populated."""
         assert_boundary_accepts(
             VoiceStatusResponse,
-            helper_factory=lambda: _baseline_status_shape(
+            helper_factory=partial(
+                _baseline_status_shape,
                 degraded=True,
                 reason="failover_ladder_exhausted",
                 candidates_tried=3,
@@ -102,7 +105,8 @@ class TestVoiceStatusDegradedBoundaryRoundTrip:
         """
         assert_boundary_accepts(
             VoiceStatusResponse,
-            helper_factory=lambda: _baseline_status_shape(
+            helper_factory=partial(
+                _baseline_status_shape,
                 future_c4_field="banner_dismissed",
                 future_c4_timestamp=99999.0,
             ),
@@ -117,7 +121,8 @@ class TestVoiceStatusDegradedBoundaryRoundTrip:
         """
         response = assert_boundary_accepts(
             VoiceStatusResponse,
-            helper_factory=lambda: _baseline_status_shape(
+            helper_factory=partial(
+                _baseline_status_shape,
                 composite_axes=["llm", "stt", "voice"],
                 composite_severity="critical",
             ),
@@ -131,7 +136,8 @@ class TestVoiceStatusDegradedBoundaryRoundTrip:
         """Mission C4 §T1.5 — single-axis case yields severity=warn."""
         response = assert_boundary_accepts(
             VoiceStatusResponse,
-            helper_factory=lambda: _baseline_status_shape(
+            helper_factory=partial(
+                _baseline_status_shape,
                 composite_axes=["voice"],
                 composite_severity="warn",
             ),
@@ -143,7 +149,8 @@ class TestVoiceStatusDegradedBoundaryRoundTrip:
         """Mission C4 §T1.5 — empty composite_axes yields severity=None."""
         response = assert_boundary_accepts(
             VoiceStatusResponse,
-            helper_factory=lambda: _baseline_status_shape(
+            helper_factory=partial(
+                _baseline_status_shape,
                 composite_axes=[],
                 composite_severity=None,
             ),
@@ -161,7 +168,8 @@ class TestVoiceStatusDegradedBoundaryRoundTrip:
         """
         response = assert_boundary_accepts(
             VoiceStatusResponse,
-            helper_factory=lambda: _baseline_status_shape(
+            helper_factory=partial(
+                _baseline_status_shape,
                 composite_axes=["dashboard"],
                 composite_severity="warn",
             ),
@@ -178,7 +186,8 @@ class TestVoiceStatusDegradedBoundaryRoundTrip:
         SHA + the C5 boot-scan dashboard verdict)."""
         response = assert_boundary_accepts(
             VoiceStatusResponse,
-            helper_factory=lambda: _baseline_status_shape(
+            helper_factory=partial(
+                _baseline_status_shape,
                 composite_axes=["dashboard", "voice"],
                 composite_severity="error",
             ),
@@ -192,7 +201,8 @@ class TestVoiceStatusDegradedBoundaryRoundTrip:
         voice/llm/stt cohort without breaking the severity tiering."""
         response = assert_boundary_accepts(
             VoiceStatusResponse,
-            helper_factory=lambda: _baseline_status_shape(
+            helper_factory=partial(
+                _baseline_status_shape,
                 composite_axes=["dashboard", "llm", "voice"],
                 composite_severity="critical",
             ),
@@ -205,7 +215,8 @@ class TestVoiceStatusDegradedBoundaryRoundTrip:
         until first operator ack)."""
         response = assert_boundary_accepts(
             VoiceStatusResponse,
-            helper_factory=lambda: _baseline_status_shape(
+            helper_factory=partial(
+                _baseline_status_shape,
                 ack_at_monotonic=12345.6,
                 ack_ttl_sec=3600,
                 ack_operator_id="abc123",
