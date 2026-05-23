@@ -496,12 +496,17 @@ async def bootstrap(
                 # Mission B B-P0-3 — propagate the auto-clear feature
                 # flag through from_tuning so the governor's HEALTHY-tick
                 # state machine is gated by the operator override.
+                # Mission OX-1.B — also propagate the causal-chain flag
+                # so the additive ``axis.cleared`` emission at the
+                # HEALTHY-edge clear path is gated by the operator
+                # override (default False per `feedback_staged_adoption`).
                 governor = ResourceCohortGovernor.from_tuning(
                     engine_config.observability.tuning,
                     enabled=True,
                     auto_clear_enabled=(
                         engine_config.observability.features.cohort_axis_auto_clear
                     ),
+                    causal_chain_enabled=engine_config.ox1.causal_chain_enabled,
                 )
                 import sovyx.observability._resource_cohort_governor as _governor_mod
 

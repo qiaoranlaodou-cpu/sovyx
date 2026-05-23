@@ -3342,6 +3342,17 @@ class OX1Config(BaseSettings):
     every envelope per OTel semconv). When True, ``grep engine_session_id``
     in ``sovyx.log`` groups all entries from the same boot."""
 
+    causal_chain_enabled: bool = False
+    """Mission OX-1.B — emit a structured ``axis.cleared`` log line at
+    the cohort governor's HEALTHY-edge clear path
+    (:func:`sovyx.observability._resource_cohort_governor._clear_axis_entry_for_reason`).
+    Sibling to the existing ``engine.resources.cohort_auto_cleared``
+    event; the new event carries the canonical ``axis`` / ``reason`` /
+    ``source`` triple consumed by the read-only causal-join helper.
+    Single emission site per OX-1 doc §15; voice/llm/dashboard clear
+    callers stay silent at this phase. Default False per
+    ``feedback_staged_adoption``."""
+
 
 class EngineConfig(BaseSettings):
     """Global Sovyx daemon configuration.

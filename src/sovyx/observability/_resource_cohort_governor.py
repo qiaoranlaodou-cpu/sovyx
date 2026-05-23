@@ -256,6 +256,14 @@ class ResourceCohortGovernor:
     # restores v0.49.36 stuck-banner behavior).
     clear_threshold: int = 3
     auto_clear_enabled: bool = True
+    # Mission OX-1.B — gate the additive ``axis.cleared`` emission at
+    # :func:`_clear_axis_entry_for_reason` on the HEALTHY-edge clear
+    # path. Sibling-additive to the existing ``engine.resources.cohort_auto_cleared``
+    # INFO; the new event carries the canonical ``axis``/``reason``/
+    # ``source`` triple consumed by the read-only causal-join helper.
+    # Default False per ``feedback_staged_adoption``; flipped on via
+    # ``SOVYX_OX1__CAUSAL_CHAIN_ENABLED=true``.
+    causal_chain_enabled: bool = False
     _rss_history: deque[tuple[float, int]] = field(
         default_factory=lambda: deque(maxlen=_OBSERVATION_RING_MAX),
     )
@@ -289,6 +297,7 @@ class ResourceCohortGovernor:
         *,
         enabled: bool = True,
         auto_clear_enabled: bool = True,
+        causal_chain_enabled: bool = False,
     ) -> ResourceCohortGovernor:
         """Build a governor from operator-tunable knobs.
 
@@ -310,6 +319,7 @@ class ResourceCohortGovernor:
             breaker_window_s=tuning.cohort_breaker_window_s,
             clear_threshold=tuning.cohort_clear_consecutive_healthy_threshold,
             auto_clear_enabled=auto_clear_enabled,
+            causal_chain_enabled=causal_chain_enabled,
         )
 
     # ── Circuit-breaker (Phase 1.D §8 T4.1 (e) + §11 ADR-D14) ──
@@ -767,6 +777,25 @@ def _clear_axis_entry_for_reason(axis: CohortAxis) -> None:
                 ),
             },
         )
+        # Mission OX-1.B — emit the canonical ``axis.cleared`` event
+        # carrying the (axis, reason, source) triple consumed by the
+        # read-only causal-join helper. Sibling-additive to the
+        # ``engine.resources.cohort_auto_cleared`` event above; that
+        # event uses cohort-namespaced field names for backward
+        # compatibility with H4 dashboard consumers, while ``axis.cleared``
+        # uses the axis vocabulary that DegradedEntry.axis already
+        # speaks. Gated by ``EngineConfig.ox1.causal_chain_enabled``
+        # (default False) — when disabled the emission is silent.
+        # Single emission site per OX-1 doc §15; voice failover / llm
+        # dispatch / dashboard clear paths intentionally stay silent
+        # at this phase (no scope widening).
+        if get_default_resource_cohort_governor().causal_chain_enabled:
+            logger.info(
+                "axis.cleared",
+                axis="engine_resources",
+                reason=reason,
+                source="resource_cohort_governor",
+            )
     # Mission B B-P1-15 — DEFERRED FROM B.1.P3 SCOPE:
     #
     # Closing the B-P1-15 "stale ack suppresses re-degradation" pathway
