@@ -541,6 +541,13 @@ class VoiceCatalogResponse(BaseModel):
     supported_languages: list[str] = Field(default_factory=list)
     by_language: dict[str, list[VoiceCatalogEntry]] = Field(default_factory=dict)
     recommended_per_language: dict[str, str] = Field(default_factory=dict)
+    # Mission LIVE-2 Phase 4 — the STT (Moonshine) supported-language set,
+    # distinct from the TTS ``supported_languages`` (Kokoro) above. Lets
+    # the setup/onboarding UI disclose truthfully that a chosen companion
+    # language (e.g. pt-BR) works for the LLM + TTS voice but will fall
+    # back to English for speech recognition. Additive/LENIENT: older
+    # dashboards ignore it.
+    stt_supported_languages: list[str] = Field(default_factory=list)
 
 
 _DownloadStatus = Literal["running", "done", "error"]
@@ -1514,6 +1521,7 @@ async def list_voice_catalog() -> VoiceCatalogResponse:
     filtering — because the catalog is 54 entries total and static
     across a release. Fetching once at wizard mount is cheap.
     """
+    from sovyx.voice.stt import MOONSHINE_SUPPORTED_LANGUAGES
     from sovyx.voice.voice_catalog import (
         SUPPORTED_LANGUAGES,
         all_voices,
@@ -1541,6 +1549,7 @@ async def list_voice_catalog() -> VoiceCatalogResponse:
         supported_languages=sorted(SUPPORTED_LANGUAGES),
         by_language=by_language,
         recommended_per_language=recommended_per_language,
+        stt_supported_languages=sorted(MOONSHINE_SUPPORTED_LANGUAGES),
     )
 
 

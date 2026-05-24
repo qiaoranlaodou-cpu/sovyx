@@ -672,6 +672,10 @@ export const VoiceCatalogResponseSchema = z.object({
   supported_languages: z.array(z.string()),
   by_language: z.record(z.string(), z.array(VoiceCatalogEntrySchema)),
   recommended_per_language: z.record(z.string(), z.string()),
+  // Mission LIVE-2 Phase 4 — STT (Moonshine) supported languages, distinct
+  // from the TTS `supported_languages` above. `.default([])` keeps older
+  // daemons that don't emit the field parseable (LENIENT additive).
+  stt_supported_languages: z.array(z.string()).default([]),
 });
 
 // ── Voice capture integrity diagnostics ──

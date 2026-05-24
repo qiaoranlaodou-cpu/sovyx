@@ -124,3 +124,34 @@ class TestFactoryDegradedStoreSttCoerced:
         assert set(entry.metadata["engine_supported_languages"]) == set(
             MOONSHINE_SUPPORTED_LANGUAGES,
         )
+
+    def test_pt_br_region_variant_coerced_to_en(self) -> None:
+        """LIVE-2 Phase 4 — pt-BR normalises to 'pt', which Moonshine still
+        does not support, so it falls through to the truthful coercion path
+        (it is NOT rescued by region stripping)."""
+        from sovyx.voice.factory import _validate
+
+        stt_patch, cfg_patch = _patch_moonshine_stubs()
+        with stt_patch, cfg_patch:
+            _validate._create_stt(language="pt-BR")
+
+        entries = get_default_degraded_store().snapshot()
+        assert len(entries) == 1
+        assert entries[0].axis == "stt"
+        assert entries[0].metadata["requested_language"] == "pt-br"
+        assert entries[0].metadata["coerced_language"] == "en"
+
+    def test_en_us_region_variant_wires_without_coercion(self) -> None:
+        """LIVE-2 Phase 4 — region stripping resolves 'en-US' to the
+        supported 'en' model, so NO degraded entry is recorded. Guards the
+        prior bug where any region-tagged code mis-coerced to English with
+        a (false) 'language unsupported' banner."""
+        from sovyx.voice.factory import _validate
+
+        stt_patch, cfg_patch = _patch_moonshine_stubs()
+        with stt_patch, cfg_patch:
+            stt = _validate._create_stt(language="en-US")
+
+        assert get_default_degraded_store().snapshot() == []
+        # The wired config carries the region-stripped base code.
+        assert stt.config == {"language": "en"}

@@ -267,6 +267,29 @@ MOONSHINE_SUPPORTED_LANGUAGES: frozenset[str] = frozenset(
 )
 
 
+def normalize_stt_language(code: str) -> str:
+    """Normalise a UI/config language tag to a Moonshine base code.
+
+    Lower-cases and strips any BCP-47 / POSIX region subtag, so ``en-US``
+    and ``en_US`` both resolve to ``en``. Region stripping is safe because
+    Moonshine ships region-less models (the catalog is base codes only).
+
+    Mission LIVE-2 Phase 4 — this is the SSoT for STT language
+    classification, shared by the factory wiring and the ``/voices``
+    catalog surface so the dashboard and backend agree on which languages
+    speech recognition can honour. Region stripping does NOT add support
+    for an absent base language: ``pt-BR`` normalises to ``pt``, which is
+    still not a Moonshine model, so Portuguese remains STT-unsupported
+    (it falls back to English transcription with a truthful banner).
+    """
+    return code.strip().lower().replace("_", "-").split("-", 1)[0]
+
+
+def is_supported_stt_language(code: str) -> bool:
+    """True if Moonshine ships an STT model for ``code`` (region-stripped)."""
+    return normalize_stt_language(code) in MOONSHINE_SUPPORTED_LANGUAGES
+
+
 # ---------------------------------------------------------------------------
 # Public types
 # ---------------------------------------------------------------------------

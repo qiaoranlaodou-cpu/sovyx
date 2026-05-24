@@ -922,6 +922,10 @@ export interface VoiceCatalogResponse {
   supported_languages: string[];
   by_language: Record<string, VoiceCatalogEntry[]>;
   recommended_per_language: Record<string, string>;
+  // Mission LIVE-2 Phase 4 — STT (Moonshine) supported languages, distinct
+  // from the TTS `supported_languages`. Lets setup disclose that a chosen
+  // companion language falls back to English for speech recognition.
+  stt_supported_languages: string[];
 }
 
 // ── Voice capture integrity diagnostics ──

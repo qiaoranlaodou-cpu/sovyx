@@ -315,6 +315,21 @@ class TestConfigurePersonality:
         assert resp.status_code == 200  # noqa: PLR2004
         assert app.state.mind_config.language == "pt"
 
+    def test_stt_unsupported_companion_language_is_allowed(self, client: TestClient, app) -> None:
+        """LIVE-2 Phase 4 policy — a companion language with no Moonshine
+        STT model (pt / pt-BR) must NOT be rejected: it drives the LLM
+        conversation + TTS voice, and STT falls back to English with a
+        truthful disclosure. Onboarding accepts and persists it verbatim;
+        it is never hard-blocked or silently coerced at write time.
+        """
+        for lang in ("pt", "pt-BR"):
+            resp = client.post(
+                "/api/onboarding/personality",
+                json={"language": lang},
+            )
+            assert resp.status_code == 200, f"{lang} should be accepted"  # noqa: PLR2004
+            assert app.state.mind_config.language == lang
+
     def test_companion_name_update(self, client: TestClient, app) -> None:
         resp = client.post(
             "/api/onboarding/personality",

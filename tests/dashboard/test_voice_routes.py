@@ -1503,7 +1503,27 @@ class TestVoicesCatalogEndpoint:
             "supported_languages",
             "by_language",
             "recommended_per_language",
+            "stt_supported_languages",
         }
+
+    def test_stt_supported_languages_matches_moonshine_ssot(
+        self,
+        client: TestClient,
+    ) -> None:
+        """LIVE-2 Phase 4 — the catalog exposes the STT (Moonshine) set
+        distinctly from the TTS set, so the dashboard can disclose that a
+        chosen companion language falls back to English for recognition.
+        """
+        from sovyx.voice.stt import MOONSHINE_SUPPORTED_LANGUAGES
+
+        body = client.get("/api/voice/voices").json()
+        stt_langs = body["stt_supported_languages"]
+        assert stt_langs == sorted(MOONSHINE_SUPPORTED_LANGUAGES)
+        # Portuguese is a TTS language but NOT an STT language — the two
+        # sets must differ exactly here.
+        assert "pt-br" in body["supported_languages"]
+        assert "pt" not in stt_langs
+        assert "pt-br" not in stt_langs
 
     def test_supported_languages_sorted_and_non_empty(
         self,

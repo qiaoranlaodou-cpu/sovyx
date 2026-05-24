@@ -70,6 +70,8 @@
     },
     "companionNameLabel": "Companion name",
     "languageLabel": "Language",
+    "sttFallbackTitle": "Speech recognition doesn't support {{language}} yet",
+    "sttFallbackBody": "Your companion will chat and speak in {{language}}, but spoken input will be understood in English — the speech-recognition engine has no {{language}} model. Text chat and the spoken voice are unaffected.",
     "userNameLabel": "Your name (optional)",
     "userNamePlaceholder": "How should it address you?",
     "skipForNow": "Skip for now",

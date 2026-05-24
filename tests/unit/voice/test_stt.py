@@ -35,6 +35,8 @@ from sovyx.voice.stt import (
     _compute_compression_ratio,
     _is_hallucination,
     _normalise_for_stoplist,
+    is_supported_stt_language,
+    normalize_stt_language,
 )
 
 # ---------------------------------------------------------------------------
@@ -1410,3 +1412,47 @@ class TestSTTChaosWireUp:
             await stt.transcribe(np.zeros(16_000, dtype=np.float32))
 
         assert (VoiceStage.STT, StageEventKind.DROP, "transcribe_timeout") in recorded
+
+
+class TestSttLanguageSsoT:
+    """LIVE-2 Phase 4 — SSoT STT-language normalisation + classification.
+
+    These helpers are the single source the factory wiring and the
+    /voices catalog share so the dashboard and backend agree on which
+    languages speech recognition can honour.
+    """
+
+    @pytest.mark.parametrize(
+        ("raw", "expected"),
+        [
+            ("en", "en"),
+            ("EN", "en"),
+            ("en-US", "en"),
+            ("en_us", "en"),
+            ("pt-BR", "pt"),
+            ("pt_BR", "pt"),
+            ("  ZH-cn ", "zh"),
+        ],
+    )
+    def test_normalize_strips_region_and_lowercases(self, raw: str, expected: str) -> None:
+        assert normalize_stt_language(raw) == expected
+
+    @pytest.mark.parametrize("code", ["en", "es", "ja", "ko", "zh", "ar", "uk", "vi"])
+    def test_supported_base_languages(self, code: str) -> None:
+        assert is_supported_stt_language(code) is True
+
+    @pytest.mark.parametrize("code", ["en-US", "es-ES", "zh-CN"])
+    def test_supported_with_region_subtag(self, code: str) -> None:
+        """Region-tagged variants of supported base languages resolve True."""
+        assert is_supported_stt_language(code) is True
+
+    @pytest.mark.parametrize("code", ["pt", "pt-BR", "pt_BR", "fr", "de", "it", "ru"])
+    def test_portuguese_and_other_absent_languages_unsupported(self, code: str) -> None:
+        """pt / pt-BR are NOT rescued by region stripping — Moonshine ships
+        no Portuguese model, so they remain STT-unsupported (truthful
+        English fallback applies)."""
+        assert is_supported_stt_language(code) is False
+
+    def test_classifier_consistent_with_constant(self) -> None:
+        for base in MOONSHINE_SUPPORTED_LANGUAGES:
+            assert is_supported_stt_language(base) is True

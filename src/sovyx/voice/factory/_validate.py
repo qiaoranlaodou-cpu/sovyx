@@ -526,18 +526,25 @@ def _create_stt(language: str = "en") -> Any:  # noqa: ANN401
         MOONSHINE_SUPPORTED_LANGUAGES,
         MoonshineConfig,
         MoonshineSTT,
+        normalize_stt_language,
     )
 
     requested = (language or "en").strip().lower()
-    if requested in MOONSHINE_SUPPORTED_LANGUAGES:
+    # LIVE-2 Phase 4 — region-strip via the SSoT normaliser so 'en-US'
+    # resolves to the supported 'en' model instead of mis-coercing to
+    # English-with-a-degraded-banner. Region stripping does not rescue an
+    # absent base language: 'pt-BR' → 'pt' is still unsupported and falls
+    # through to the truthful coercion path below.
+    normalized = normalize_stt_language(requested)
+    if normalized in MOONSHINE_SUPPORTED_LANGUAGES:
         logger.info(
             "voice.factory.stt_language_wired",
             **{
-                "voice.language": requested,
+                "voice.language": normalized,
                 "voice.engine": "moonshine",
             },
         )
-        return MoonshineSTT(config=MoonshineConfig(language=requested))
+        return MoonshineSTT(config=MoonshineConfig(language=normalized))
 
     logger.warning(
         "voice.factory.stt_language_unsupported",

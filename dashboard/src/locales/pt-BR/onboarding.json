@@ -70,6 +70,8 @@
     },
     "companionNameLabel": "Nome do companheiro",
     "languageLabel": "Idioma",
+    "sttFallbackTitle": "O reconhecimento de fala ainda não oferece suporte a {{language}}",
+    "sttFallbackBody": "Seu companheiro vai conversar e falar em {{language}}, mas a entrada falada será entendida em inglês — o motor de reconhecimento de fala não tem um modelo para {{language}}. O chat de texto e a voz falada não são afetados.",
     "userNameLabel": "Seu nome (opcional)",
     "userNamePlaceholder": "Como deve se dirigir a você?",
     "skipForNow": "Pular por enquanto",

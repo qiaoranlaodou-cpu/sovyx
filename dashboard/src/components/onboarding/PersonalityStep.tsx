@@ -1,9 +1,10 @@
 import { useCallback, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { LoaderIcon } from "lucide-react";
+import { InfoIcon, LoaderIcon } from "lucide-react";
 import { api } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
+import { useVoiceCatalog } from "@/hooks/use-voice-catalog";
 
 /**
  * Personality preset IDs. Names + descriptions come from the i18n
@@ -49,6 +50,20 @@ export function PersonalityStep({ mindName, onConfigured, onSkip }: PersonalityS
   );
   const [userName, setUserName] = useState("");
   const [saving, setSaving] = useState(false);
+
+  // Mission LIVE-2 Phase 4 — companion language is allowed regardless of
+  // STT support (it drives the LLM conversation + TTS voice). But when the
+  // chosen language has no Moonshine STT model (e.g. Português), disclose
+  // truthfully that speech recognition will fall back to English. The set
+  // is read from the backend SSoT via /api/voice/voices so the UI never
+  // hardcodes a copy that could drift.
+  const { catalog } = useVoiceCatalog();
+  const baseLang = language.trim().toLowerCase().split("-")[0] ?? "";
+  const sttSupported = catalog?.stt_supported_languages ?? [];
+  const sttFallback =
+    catalog != null && sttSupported.length > 0 && !sttSupported.includes(baseLang);
+  const selectedNativeLabel =
+    LANGUAGE_OPTIONS.find((opt) => opt.code === language)?.nativeLabel ?? language;
 
   const handleContinue = useCallback(async () => {
     setSaving(true);
@@ -144,6 +159,26 @@ export function PersonalityStep({ mindName, onConfigured, onSkip }: PersonalityS
           />
         </div>
       </div>
+
+      {/* Mission LIVE-2 Phase 4 — truthful STT-fallback disclosure. The
+          companion language is accepted as-is for the LLM + spoken voice;
+          this notice only clarifies that speech recognition will use
+          English when the chosen language has no Moonshine STT model. */}
+      {sttFallback && (
+        <div
+          role="status"
+          data-testid="stt-fallback-disclosure"
+          className="flex items-start gap-2 rounded-[var(--svx-radius-md)] border border-amber-500/40 bg-amber-500/10 p-3 text-xs text-[var(--svx-color-text-secondary)]"
+        >
+          <InfoIcon className="mt-0.5 size-4 shrink-0 text-amber-500" />
+          <div className="space-y-1">
+            <p className="font-medium text-[var(--svx-color-text-primary)]">
+              {t("personality.sttFallbackTitle", { language: selectedNativeLabel })}
+            </p>
+            <p>{t("personality.sttFallbackBody", { language: selectedNativeLabel })}</p>
+          </div>
+        </div>
+      )}
 
       {/* Actions */}
       <div className="flex items-center justify-between">
