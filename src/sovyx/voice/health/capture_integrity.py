@@ -1343,7 +1343,10 @@ class CaptureIntegrityCoordinator:
                             make_action_chip(
                                 "degraded.voice.quarantine.action.viewLogs",
                                 "navigate",
-                                "/voice/logs",
+                                # LIVE-1 Bug B — canonical logs route is the
+                                # top-level `/logs` (router.tsx); `/voice/logs`
+                                # was never registered and SPA-404'd.
+                                "/logs",
                             ),
                         ),
                         metadata={

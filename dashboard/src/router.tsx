@@ -149,6 +149,28 @@ export const router = createBrowserRouter([
           </PageWrapper>
         ),
       },
+      // LIVE-1 Bug B — server-emitted degraded-banner navigate chips target
+      // `/settings/providers` (LLM no-provider chips, engine/_llm_dispatch.py)
+      // and `/settings/voice` (STT language-coerce chip, voice/factory/_validate.py).
+      // Provider + voice/TTS config already live inside SettingsPage, so these
+      // deep-link paths render the same page instead of falling through to the
+      // `*` NotFound route (the prior SPA-404). No redesign — same component.
+      {
+        path: "settings/providers",
+        element: (
+          <PageWrapper name="settings" fallback={<SettingsSkeleton />}>
+            <SettingsPage />
+          </PageWrapper>
+        ),
+      },
+      {
+        path: "settings/voice",
+        element: (
+          <PageWrapper name="settings" fallback={<SettingsSkeleton />}>
+            <SettingsPage />
+          </PageWrapper>
+        ),
+      },
       {
         path: "plugins",
         element: (
