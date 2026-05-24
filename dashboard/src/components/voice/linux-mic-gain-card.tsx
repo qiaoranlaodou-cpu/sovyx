@@ -50,6 +50,11 @@ export function LinuxMicGainCard() {
   const { t } = useTranslation(["voice"]);
   const [diag, setDiag] = useState<LinuxMixerDiagnosticsResponse | null>(null);
   const [loading, setLoading] = useState(true);
+  // LIVE-2 P0-3: track fetch failure explicitly. Without this, a failed
+  // diagnostics fetch left ``diag === null`` and the render fell through
+  // to the green "no saturation detected" branch — an affirmative false
+  // health claim asserting the mic gain is safe when nothing was checked.
+  const [loadError, setLoadError] = useState(false);
   const [applying, setApplying] = useState(false);
   // v1.3 L0-4 — once the reset applied successfully, surface the
   // inline persistence hint so a technical user can optionally run
@@ -65,9 +70,11 @@ export function LinuxMicGainCard() {
         { signal, schema: LinuxMixerDiagnosticsResponseSchema },
       );
       setDiag(data);
+      setLoadError(false);
     } catch (err) {
       if (isAbortError(err)) return;
       setDiag(null);
+      setLoadError(true);
     } finally {
       setLoading(false);
     }
@@ -140,6 +147,27 @@ export function LinuxMicGainCard() {
           <Loader2Icon className="size-3 animate-spin" />
           {t("voice:linuxMicGain.checking")}
         </p>
+      ) : loadError ? (
+        // LIVE-2 P0-3: diagnostics fetch failed — render an explicit
+        // "couldn't check" state. Must NOT fall through to the green
+        // "no saturation" branch, which would falsely assert the mic
+        // gain is safe when nothing was actually verified.
+        <div
+          className="mt-3 rounded-[var(--svx-radius-md)] border border-amber-500/40 bg-amber-500/10 p-3"
+          data-testid="linux-mic-gain-check-unavailable"
+        >
+          <div className="flex items-start gap-2">
+            <AlertTriangleIcon className="mt-0.5 size-4 shrink-0 text-amber-500" />
+            <div className="flex-1 space-y-1">
+              <p className="text-xs font-medium text-[var(--svx-color-text-primary)]">
+                {t("voice:linuxMicGain.checkUnavailableTitle")}
+              </p>
+              <p className="text-xs text-[var(--svx-color-text-secondary)]">
+                {t("voice:linuxMicGain.checkUnavailableBody")}
+              </p>
+            </div>
+          </div>
+        </div>
       ) : amixerMissing ? (
         <div
           className="mt-3 rounded-[var(--svx-radius-md)] border border-amber-500/40 bg-amber-500/10 p-3"

@@ -135,7 +135,9 @@ describe("VoiceQualityPanel", () => {
     await waitFor(() => {
       expect(screen.getByText(/SNR-proxy mode/i)).toBeInTheDocument();
     });
-    expect(screen.getByText(/sovyx\[dnsmos\]/i)).toBeInTheDocument();
+    // LIVE-2 P1-5: the install hint must name the real extra
+    // (``voice-quality``), not the non-existent ``dnsmos`` extra.
+    expect(screen.getByText(/sovyx\[voice-quality\]/i)).toBeInTheDocument();
   });
 
   it("shows DNSMOS direct-mode badge when extras installed", async () => {

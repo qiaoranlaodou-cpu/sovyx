@@ -130,12 +130,21 @@ class TestGetVoiceStatus:
 
     @pytest.mark.asyncio()
     async def test_stt_engine_detected(self, mock_registry: MagicMock) -> None:
-        """STT engine name and model are read from registry."""
-        from sovyx.voice.stt import MoonshineSTT, STTEngine, STTState
+        """STT engine name and model are read from the real config.
+
+        LIVE-2 P1-1 regression: uses a REAL ``MoonshineConfig`` rather
+        than an attribute-accepting ``MagicMock``. The prior test set
+        ``config.model_name`` on a MagicMock, which silently accepts any
+        attribute and so passed against the buggy producer (AP #33). The
+        configured model identity lives on ``model_size`` — reading the
+        old ``model_name`` field yields None even when STT is running.
+        """
+        from sovyx.voice.stt import MoonshineConfig, MoonshineSTT, STTEngine, STTState
 
         mock_stt = MagicMock(spec=MoonshineSTT, name="MoonshineSTT")
-        mock_stt.config = MagicMock()
-        mock_stt.config.model_name = "moonshine-tiny"
+        # Distinct from the "tiny" default so the assertion proves the
+        # real configured value is surfaced, not a coincidental default.
+        mock_stt.config = MoonshineConfig(model_size="small")
         mock_stt.state = STTState.READY
 
         def is_reg(cls: type) -> bool:
@@ -147,17 +156,21 @@ class TestGetVoiceStatus:
         status = await get_voice_status(mock_registry)
 
         assert status["stt"]["engine"] is not None  # type(mock).__name__ in test env
-        assert status["stt"]["model"] == "moonshine-tiny"
+        assert status["stt"]["model"] == "small"
         assert status["stt"]["state"] == "ready"
 
     @pytest.mark.asyncio()
     async def test_tts_engine_detected(self, mock_registry: MagicMock) -> None:
-        """TTS engine name and init state are read from registry."""
-        from sovyx.voice.tts_piper import PiperTTS, TTSEngine
+        """TTS engine name, model, and init state are read from the real config.
+
+        LIVE-2 P1-2 regression: REAL ``PiperConfig``. The model identity
+        lives on ``voice``; the prior ``model_path`` read yielded None
+        even with TTS initialized (and the old MagicMock test masked it).
+        """
+        from sovyx.voice.tts_piper import PiperConfig, PiperTTS, TTSEngine
 
         mock_tts = MagicMock(spec=PiperTTS, name="PiperTTS")
-        mock_tts.config = MagicMock()
-        mock_tts.config.model_path = "/models/piper/en.onnx"
+        mock_tts.config = PiperConfig(voice="en_US-lessac-medium")
         mock_tts.is_initialized = True
 
         def is_reg(cls: type) -> bool:
@@ -170,7 +183,32 @@ class TestGetVoiceStatus:
 
         assert status["tts"]["engine"] is not None  # type(mock).__name__ in test env
         assert status["tts"]["initialized"] is True
-        assert "en.onnx" in status["tts"]["model"]
+        assert status["tts"]["model"] == "en_US-lessac-medium"
+
+    @pytest.mark.asyncio()
+    async def test_tts_kokoro_model_from_voice(self, mock_registry: MagicMock) -> None:
+        """Kokoro TTS model identity also reads from ``KokoroConfig.voice``.
+
+        LIVE-2 P1-2: the producer resolves the abstract ``TTSEngine``, so
+        the fix must hold for Kokoro as well as Piper. Both configs expose
+        the model identity on ``voice``.
+        """
+        from sovyx.voice.tts_kokoro import KokoroConfig, KokoroTTS
+        from sovyx.voice.tts_piper import TTSEngine
+
+        mock_tts = MagicMock(spec=KokoroTTS, name="KokoroTTS")
+        mock_tts.config = KokoroConfig(voice="am_adam")
+        mock_tts.is_initialized = True
+
+        def is_reg(cls: type) -> bool:
+            return cls is TTSEngine
+
+        mock_registry.is_registered = is_reg
+        mock_registry.resolve = AsyncMock(return_value=mock_tts)
+
+        status = await get_voice_status(mock_registry)
+
+        assert status["tts"]["model"] == "am_adam"
 
     @pytest.mark.asyncio()
     async def test_vad_detected(self, mock_registry: MagicMock) -> None:

@@ -199,6 +199,24 @@ describe("LinuxMicGainCard", () => {
     expect(screen.getByText(/sudo alsactl store/)).toBeInTheDocument();
   });
 
+  it("shows a couldn't-check state (NOT green) when the diagnostics fetch fails", async () => {
+    // LIVE-2 P0-3 regression: a failed diagnostics fetch must not fall
+    // through to the green "no saturation detected" branch, which would
+    // falsely assert the mic gain is safe when nothing was verified.
+    // A non-retryable 400 fails fast (the api layer only retries
+    // 429/503/5xx), so the component settles in the catch branch without
+    // the exponential-backoff delay a network rejection would incur.
+    mockFetch.mockResolvedValue(jsonResponse({ detail: "bad request" }, 400));
+    render(<LinuxMicGainCard />);
+    await waitFor(() => {
+      expect(
+        screen.getByTestId("linux-mic-gain-check-unavailable"),
+      ).toBeInTheDocument();
+    });
+    // The reassuring green message must be absent.
+    expect(screen.queryByText(/within a safe range/i)).toBeNull();
+  });
+
   it("toasts error on POST failure", async () => {
     mockFetch
       .mockResolvedValueOnce(jsonResponse(saturatingPayload()))

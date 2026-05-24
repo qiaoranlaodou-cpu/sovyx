@@ -1377,11 +1377,17 @@ async def get_voice_quality_snapshot(
     # DNSMOS extras presence — probe the lazy loader without
     # raising. The extras flag drives the dashboard's "MOS shown
     # is SNR-proxy" disclaimer.
+    #
+    # LIVE-2 P1-4: the importable package is ``speechmos`` (the
+    # estimator does ``from speechmos import dnsmos``), shipped via the
+    # ``voice-quality`` extra. The prior ``find_spec("dnsmos")`` looked
+    # for a non-existent top-level package, so the flag was permanently
+    # False even with the extras installed.
     dnsmos_installed = False
     try:
         import importlib.util
 
-        dnsmos_installed = importlib.util.find_spec("dnsmos") is not None
+        dnsmos_installed = importlib.util.find_spec("speechmos") is not None
     except Exception:  # noqa: BLE001 — probe is observability-only
         dnsmos_installed = False
 

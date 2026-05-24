@@ -15,6 +15,8 @@
     "title": "Ganho de entrada do microfone (Linux)",
     "checking": "Verificando mixer ALSA...",
     "noIssues": "O ganho do mixer ALSA está em uma faixa segura — nenhuma saturação detectada.",
+    "checkUnavailableTitle": "Não foi possível verificar o ganho do microfone",
+    "checkUnavailableBody": "O diagnóstico do mixer ALSA falhou ao carregar. Isso NÃO é um atestado de saúde — o ganho do microfone não foi verificado. Tente novamente ou consulte os logs do daemon.",
     "alertTitle": "O ganho pré-ADC está saturando o microfone",
     "alertBody": "Um ou mais controles de captura ALSA estão fixados próximos ao máximo. Cada pico de fala inteligível clipa o ADC e a detecção de voz falhará. Redefina o mixer para restaurar um nível de captura seguro.",
     "cardBoost": "boost agregado +{{boost}} dB — controles: {{controls}}",
@@ -708,7 +710,7 @@
       "scaleHint": "Escala MOS: 1.0 (ruim) — 4.5 (excelente). Limite aceitável Skype/Zoom é ≥ 3.5; abaixo de 3.0 é \"ruim\" segundo ITU-T P.800.",
       "proxyDisclaimerTitle": "Modo SNR-proxy (extras DNSMOS não instalados)",
       "proxyDisclaimerBody": "O Sovyx vem sem os extras opcionais ``dnsmos`` porque o pacote é grande + a build no Windows é instável. Até você instalá-los, a leitura de MOS acima é uma estimativa derivada de SNR, NÃO uma inferência real de DNN DNSMOS. Para ativar DNSMOS verdadeiro:",
-      "proxyDisclaimerStep1": "<0>pip install \"sovyx[dnsmos]\"</0> (ou equivalente do seu gerenciador de pacotes).",
+      "proxyDisclaimerStep1": "<0>pip install \"sovyx[voice-quality]\"</0> (ou equivalente do seu gerenciador de pacotes).",
       "proxyDisclaimerStep2": "Reinicie o daemon. O endpoint vira ``dnsmos_extras_installed`` para ``true`` no próximo poll e este aviso desaparece.",
       "proxyDisclaimerStep3": "A sequência de wire-up DNSMOS T4.23-T4.30 (heartbeat p50/p95, limites de alerta 3.5 / 3.0, bucketing, drift) é gateada pelo operador para manter o caminho SNR-proxy simples para quem não se importa com MOS baseado em DNN.",
       "dnsmosLiveBadge": "Extras DNSMOS detectados — leitura é inferência DNN ao vivo."

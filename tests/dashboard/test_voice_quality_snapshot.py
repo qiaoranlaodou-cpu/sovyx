@@ -164,3 +164,38 @@ class TestDnsmosFlag:
     def test_dnsmos_flag_present_and_boolean(self, client: TestClient) -> None:
         data = client.get("/api/voice/quality-snapshot").json()
         assert isinstance(data["dnsmos_extras_installed"], bool)
+
+    def test_probe_targets_speechmos_package(
+        self, client: TestClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """LIVE-2 P1-4: the probe must check ``speechmos`` (the real
+        importable package shipped via the ``voice-quality`` extra), not
+        the non-existent top-level ``dnsmos`` module.
+
+        Fake ``find_spec`` returns a spec only for ``speechmos`` → the
+        flag must be True, proving the producer probes the right name.
+        """
+        import importlib.util
+
+        def fake_find_spec(name: str, *args: object, **kwargs: object) -> object | None:
+            return object() if name == "speechmos" else None
+
+        monkeypatch.setattr(importlib.util, "find_spec", fake_find_spec)
+        data = client.get("/api/voice/quality-snapshot").json()
+        assert data["dnsmos_extras_installed"] is True
+
+    def test_probe_does_not_target_legacy_dnsmos_name(
+        self, client: TestClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """LIVE-2 P1-4: presence of a bogus top-level ``dnsmos`` module
+        must NOT flip the flag — only ``speechmos`` counts. Locks the fix
+        against a regression back to the wrong module name.
+        """
+        import importlib.util
+
+        def fake_find_spec(name: str, *args: object, **kwargs: object) -> object | None:
+            return object() if name == "dnsmos" else None
+
+        monkeypatch.setattr(importlib.util, "find_spec", fake_find_spec)
+        data = client.get("/api/voice/quality-snapshot").json()
+        assert data["dnsmos_extras_installed"] is False

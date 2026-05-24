@@ -214,7 +214,12 @@ async def get_voice_status(registry: ServiceRegistry) -> dict[str, Any]:
             status["stt"]["engine"] = type(stt).__name__
             if hasattr(stt, "config"):
                 cfg = stt.config
-                status["stt"]["model"] = getattr(cfg, "model_name", None)
+                # LIVE-2 P1-1: the configured model identity lives on
+                # ``MoonshineConfig.model_size`` (tiny/small/medium). The
+                # prior ``model_name`` read targeted a field that never
+                # existed on any STT config, so ``model`` was always None
+                # even with STT fully running.
+                status["stt"]["model"] = getattr(cfg, "model_size", None)
             if hasattr(stt, "state"):
                 status["stt"]["state"] = stt.state.name.lower()
     except Exception:  # noqa: BLE001
@@ -229,7 +234,13 @@ async def get_voice_status(registry: ServiceRegistry) -> dict[str, Any]:
             status["tts"]["engine"] = type(tts).__name__
             if hasattr(tts, "config"):
                 cfg = tts.config
-                model = getattr(cfg, "model_path", None)
+                # LIVE-2 P1-2: both ``PiperConfig`` and ``KokoroConfig``
+                # carry the configured model identity on ``voice`` (e.g.
+                # ``en_US-lessac-medium`` / ``af_bella``). The prior
+                # ``model_path`` read targeted a field that exists on
+                # neither config — only as an init-time local — so
+                # ``model`` was always None even with TTS initialized.
+                model = getattr(cfg, "voice", None)
                 status["tts"]["model"] = str(model) if model is not None else None
             if hasattr(tts, "is_initialized"):
                 status["tts"]["initialized"] = tts.is_initialized
