@@ -44,10 +44,17 @@ vi.mock("@/hooks/use-engine-degraded-poller", () => ({
 
 const VOICE_STATUS = {
   pipeline: { running: true, state: "idle", latency_ms: 42 },
-  stt: { engine: "MoonshineSTT", model: "moonshine-tiny", state: "ready" },
-  tts: { engine: "PiperTTS", model: "en_US-lessac-medium", initialized: true },
-  wake_word: { enabled: true, phrase: "hey sovyx" },
-  vad: { enabled: true },
+  // LIVE-2 P0-1: health is the real readiness signal; the VAD/Wake status
+  // dots are driven by health === "healthy", not by registration.
+  stt: { engine: "MoonshineSTT", model: "moonshine-tiny", state: "ready", health: "healthy" },
+  tts: {
+    engine: "PiperTTS",
+    model: "en_US-lessac-medium",
+    initialized: true,
+    health: "healthy",
+  },
+  wake_word: { enabled: true, phrase: "hey sovyx", health: "healthy" },
+  vad: { enabled: true, health: "healthy" },
   wyoming: { connected: false, endpoint: null },
   hardware: { tier: "PI5", ram_mb: 4096 },
 };
@@ -338,6 +345,57 @@ describe("VoicePage", () => {
     });
     const inactiveDots = screen.getAllByTestId("status-inactive");
     expect(inactiveDots.length).toBeGreaterThanOrEqual(1); // wyoming
+  });
+
+  // ── LIVE-2 Phase 3 (P0-1) — health, not mere registration ──
+
+  function setupMockWithStatus(statusOverride: Record<string, unknown>) {
+    mockGet.mockImplementation((path: string) => {
+      if (path === "/api/voice/status")
+        return Promise.resolve({ ...VOICE_STATUS, ...statusOverride });
+      if (path === "/api/voice/models") return Promise.resolve(VOICE_MODELS);
+      if (path === "/api/voice/linux-mixer-diagnostics")
+        return Promise.resolve({
+          platform_supported: false,
+          amixer_available: false,
+          snapshots: [],
+          aggregated_boost_db_ceiling: 18,
+          saturation_ratio_ceiling: 0.5,
+          reset_enabled_by_default: true,
+        });
+      if (path === "/api/voice/wake-word/status")
+        return Promise.resolve({ minds: [] });
+      return Promise.reject(new Error("unknown path"));
+    });
+  }
+
+  it("does NOT render a healthy green dot for a registered-but-failed VAD", async () => {
+    // The registration flag (enabled) is still true, but health=failed.
+    // The presence-only lie would have shown a green dot; truthful health
+    // must show a "Failed" badge and leave VAD's dot inactive.
+    setupMockWithStatus({
+      vad: { enabled: true, health: "failed" },
+    });
+    render(<VoicePage />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId("health-failed")).toBeInTheDocument();
+    });
+    // Only pipeline (running) + wake word (healthy) are green — NOT vad.
+    expect(screen.getAllByTestId("status-active")).toHaveLength(2);
+  });
+
+  it("surfaces a degraded badge for a registered-but-uninitialized STT", async () => {
+    setupMockWithStatus({
+      stt: { engine: "MoonshineSTT", model: "tiny", state: "uninitialized", health: "degraded" },
+    });
+    render(<VoicePage />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId("health-degraded")).toBeInTheDocument();
+    });
+    // The engine block still renders (it IS registered) — but not as healthy.
+    expect(screen.queryByTestId("health-healthy")).not.toBeNull();
   });
 
   // ── v1.3 §4.3 L5a — LinuxMicGainCard surface on the Voice page ──

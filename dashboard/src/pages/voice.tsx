@@ -52,25 +52,32 @@ interface PipelineStatus {
   latency_ms: number | null;
 }
 
+// LIVE-2 Phase 3 (P0-1) — `health` distinguishes "actually usable" from the
+// pre-existing registration/config flags. Optional because older daemons
+// don't emit it; treated as "unknown" when absent (never assumed healthy).
 interface STTStatus {
   engine: string | null;
   model: string | null;
   state: string | null;
+  health?: string;
 }
 
 interface TTSStatus {
   engine: string | null;
   model: string | null;
   initialized: boolean;
+  health?: string;
 }
 
 interface WakeWordStatus {
   enabled: boolean;
   phrase: string | null;
+  health?: string;
 }
 
 interface VADStatus {
   enabled: boolean;
+  health?: string;
 }
 
 interface WyomingStatus {
@@ -187,6 +194,58 @@ function StatusDot({ active }: { active: boolean }) {
           : "bg-[var(--svx-color-text-tertiary)]"
       }`}
     />
+  );
+}
+
+/* ── Health badge (LIVE-2 Phase 3 / P0-1) ── */
+
+const VOICE_HEALTH_TONE: Record<string, "ok" | "warn" | "danger" | "neutral"> = {
+  healthy: "ok",
+  degraded: "warn",
+  failed: "danger",
+  unknown: "warn",
+  unavailable: "neutral",
+};
+
+/**
+ * Render a subsystem's real health, distinct from its registration/config
+ * state. ``showHealthy`` controls whether a green "Healthy" pill renders:
+ * STT/TTS surface it always (they have no status dot); VAD/Wake pass
+ * ``false`` because their dot already conveys the healthy case and only the
+ * problem states (degraded/failed/unknown) need a word.
+ *
+ * An absent/unrecognised value renders as the neutral "unknown" tone —
+ * never as healthy. This is the anti-presence-only-lie guarantee on the
+ * frontend side: nothing here can paint a registered-but-broken engine green.
+ */
+function HealthBadge({
+  health,
+  t,
+  showHealthy = false,
+}: {
+  health: string | undefined;
+  t: (key: string, opts?: Record<string, unknown>) => string;
+  showHealthy?: boolean;
+}) {
+  if (!health) return null;
+  if (!showHealthy && (health === "healthy" || health === "unavailable")) {
+    return null;
+  }
+  const tone = VOICE_HEALTH_TONE[health] ?? "neutral";
+  const toneClass = {
+    ok: "bg-[var(--svx-color-status-green)]/15 text-[var(--svx-color-status-green)]",
+    warn: "bg-[var(--svx-color-status-amber)]/15 text-[var(--svx-color-status-amber)]",
+    danger: "bg-[var(--svx-color-status-red)]/15 text-[var(--svx-color-status-red)]",
+    neutral:
+      "bg-[var(--svx-color-surface-secondary)] text-[var(--svx-color-text-secondary)]",
+  }[tone];
+  return (
+    <span
+      data-testid={`health-${health}`}
+      className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ${toneClass}`}
+    >
+      {t(`subsystemHealth.${health}`, { defaultValue: health })}
+    </span>
   );
 }
 
@@ -669,6 +728,13 @@ export default function VoicePage() {
               {status.stt.state && (
                 <InfoRow label={t("stt.state")} value={status.stt.state} />
               )}
+              {/* LIVE-2 P0-1 — real health, not mere registration. */}
+              <div className="flex items-center justify-between py-1.5">
+                <span className="text-sm text-[var(--svx-color-text-secondary)]">
+                  {t("subsystemHealth.label")}
+                </span>
+                <HealthBadge health={status.stt.health} t={t} showHealthy />
+              </div>
             </>
           ) : (
             <p className="py-2 text-sm text-[var(--svx-color-text-tertiary)]">{t("stt.none")}</p>
@@ -689,30 +755,42 @@ export default function VoicePage() {
                 label={t("tts.initialized")}
                 value={status.tts.initialized ? t("tts.yes") : t("tts.no")}
               />
+              {/* LIVE-2 P0-1 — real health, not mere registration. */}
+              <div className="flex items-center justify-between py-1.5">
+                <span className="text-sm text-[var(--svx-color-text-secondary)]">
+                  {t("subsystemHealth.label")}
+                </span>
+                <HealthBadge health={status.tts.health} t={t} showHealthy />
+              </div>
             </>
           ) : (
             <p className="py-2 text-sm text-[var(--svx-color-text-tertiary)]">{t("tts.none")}</p>
           )}
         </Section>
 
-        {/* VAD */}
+        {/* VAD — LIVE-2 P0-1: the dot reflects real health, not mere
+            registration. "Enabled/disabled" still reports configuration;
+            the badge surfaces degraded/failed/unknown so a registered-but-
+            broken VAD never reads as a healthy green dot. */}
         <Section icon={<RadioIcon className="size-4" />} title={t("sections.vad")}>
           <div className="flex items-center justify-between py-1.5">
             <span className="text-sm text-[var(--svx-color-text-secondary)]">{t("pipeline.state")}</span>
             <span className="flex items-center gap-2 text-sm font-medium">
-              <StatusDot active={status.vad.enabled} />
+              <StatusDot active={status.vad.health === "healthy"} />
               {status.vad.enabled ? t("vad.enabled") : t("vad.disabled")}
+              <HealthBadge health={status.vad.health} t={t} />
             </span>
           </div>
         </Section>
 
-        {/* Wake Word */}
+        {/* Wake Word — LIVE-2 P0-1: dot reflects real health (see VAD). */}
         <Section icon={<MicIcon className="size-4" />} title={t("sections.wakeWord")}>
           <div className="flex items-center justify-between py-1.5">
             <span className="text-sm text-[var(--svx-color-text-secondary)]">{t("pipeline.state")}</span>
             <span className="flex items-center gap-2 text-sm font-medium">
-              <StatusDot active={status.wake_word.enabled} />
+              <StatusDot active={status.wake_word.health === "healthy"} />
               {status.wake_word.enabled ? t("wakeWord.enabled") : t("wakeWord.disabled")}
+              <HealthBadge health={status.wake_word.health} t={t} />
             </span>
           </div>
           {status.wake_word.phrase && (

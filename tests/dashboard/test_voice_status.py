@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -44,6 +45,12 @@ class TestGetVoiceStatus:
         assert status["vad"]["enabled"] is False
         assert status["wyoming"]["connected"] is False
         assert status["hardware"]["tier"] is None
+        # LIVE-2 P0-1: nothing registered → every subsystem is honestly
+        # "unavailable" (NOT healthy, NOT unknown).
+        assert status["stt"]["health"] == "unavailable"
+        assert status["tts"]["health"] == "unavailable"
+        assert status["wake_word"]["health"] == "unavailable"
+        assert status["vad"]["health"] == "unavailable"
 
     @pytest.mark.asyncio()
     async def test_pipeline_running_requires_capture(self, mock_registry: MagicMock) -> None:
@@ -158,6 +165,8 @@ class TestGetVoiceStatus:
         assert status["stt"]["engine"] is not None  # type(mock).__name__ in test env
         assert status["stt"]["model"] == "small"
         assert status["stt"]["state"] == "ready"
+        # READY → healthy (LIVE-2 P0-1).
+        assert status["stt"]["health"] == "healthy"
 
     @pytest.mark.asyncio()
     async def test_tts_engine_detected(self, mock_registry: MagicMock) -> None:
@@ -184,6 +193,8 @@ class TestGetVoiceStatus:
         assert status["tts"]["engine"] is not None  # type(mock).__name__ in test env
         assert status["tts"]["initialized"] is True
         assert status["tts"]["model"] == "en_US-lessac-medium"
+        # initialized → healthy (LIVE-2 P0-1).
+        assert status["tts"]["health"] == "healthy"
 
     @pytest.mark.asyncio()
     async def test_tts_kokoro_model_from_voice(self, mock_registry: MagicMock) -> None:
@@ -212,17 +223,23 @@ class TestGetVoiceStatus:
 
     @pytest.mark.asyncio()
     async def test_vad_detected(self, mock_registry: MagicMock) -> None:
-        """VAD shows as enabled when registered."""
+        """VAD shows enabled + healthy when registered with a sound session."""
         from sovyx.voice.vad import SileroVAD
+
+        mock_vad = MagicMock(spec=SileroVAD)
+        mock_vad.is_session_unrecoverable = False
+        mock_vad.corruption_count = 0
 
         def is_reg(cls: type) -> bool:
             return cls is SileroVAD
 
         mock_registry.is_registered = is_reg
+        mock_registry.resolve = AsyncMock(return_value=mock_vad)
 
         status = await get_voice_status(mock_registry)
 
         assert status["vad"]["enabled"] is True
+        assert status["vad"]["health"] == "healthy"
 
     @pytest.mark.asyncio()
     async def test_wake_word_detected(self, mock_registry: MagicMock) -> None:
@@ -243,6 +260,8 @@ class TestGetVoiceStatus:
 
         assert status["wake_word"]["enabled"] is True
         assert status["wake_word"]["phrase"] == "hey sovyx"
+        # Registered detector with a readable FSM state → healthy (P0-1).
+        assert status["wake_word"]["health"] == "healthy"
 
     @pytest.mark.asyncio()
     async def test_hardware_tier_detected(self, mock_registry: MagicMock) -> None:
@@ -287,9 +306,130 @@ class TestGetVoiceStatus:
 
         status = await get_voice_status(mock_registry)
 
-        # VAD doesn't need resolve, just is_registered
+        # LIVE-2 P0-1: ``enabled`` (registration fact) is set before the
+        # resolve, so it survives a resolve failure — but health must NOT
+        # claim healthy when the engine couldn't be probed; it stays
+        # "unknown". This is the core anti-presence-only-lie guarantee.
         assert status["vad"]["enabled"] is True
+        assert status["vad"]["health"] == "unknown"
         assert status["pipeline"]["running"] is False
+
+    # ── LIVE-2 Phase 3 (P0-1) — health is real readiness, not registration ──
+
+    @staticmethod
+    def _only(cls_obj: type) -> Any:
+        def is_reg(cls: type) -> bool:
+            return cls is cls_obj
+
+        return is_reg
+
+    @pytest.mark.asyncio()
+    async def test_stt_uninitialized_is_degraded_not_healthy(
+        self, mock_registry: MagicMock
+    ) -> None:
+        from sovyx.voice.stt import MoonshineSTT, STTEngine, STTState
+
+        mock_stt = MagicMock(spec=MoonshineSTT)
+        mock_stt.state = STTState.UNINITIALIZED
+        mock_registry.is_registered = self._only(STTEngine)
+        mock_registry.resolve = AsyncMock(return_value=mock_stt)
+
+        status = await get_voice_status(mock_registry)
+
+        assert status["stt"]["health"] == "degraded"
+
+    @pytest.mark.asyncio()
+    async def test_stt_closed_is_failed(self, mock_registry: MagicMock) -> None:
+        from sovyx.voice.stt import MoonshineSTT, STTEngine, STTState
+
+        mock_stt = MagicMock(spec=MoonshineSTT)
+        mock_stt.state = STTState.CLOSED
+        mock_registry.is_registered = self._only(STTEngine)
+        mock_registry.resolve = AsyncMock(return_value=mock_stt)
+
+        status = await get_voice_status(mock_registry)
+
+        assert status["stt"]["health"] == "failed"
+
+    @pytest.mark.asyncio()
+    async def test_stt_registered_but_resolve_fails_is_unknown_not_healthy(
+        self, mock_registry: MagicMock
+    ) -> None:
+        """Headline P0-1 regression — a registered STT whose instance can't
+        be resolved (the 'registered but broken' case) must report
+        ``unknown``, never ``healthy``, and must not invent an engine name.
+        """
+        from sovyx.voice.stt import STTEngine
+
+        mock_registry.is_registered = self._only(STTEngine)
+        mock_registry.resolve = AsyncMock(side_effect=RuntimeError("broken"))
+
+        status = await get_voice_status(mock_registry)
+
+        assert status["stt"]["health"] == "unknown"
+        assert status["stt"]["health"] != "healthy"
+        assert status["stt"]["engine"] is None
+
+    @pytest.mark.asyncio()
+    async def test_tts_not_initialized_is_degraded_not_healthy(
+        self, mock_registry: MagicMock
+    ) -> None:
+        from sovyx.voice.tts_piper import PiperConfig, PiperTTS, TTSEngine
+
+        mock_tts = MagicMock(spec=PiperTTS)
+        mock_tts.config = PiperConfig(voice="en_US-lessac-medium")
+        mock_tts.is_initialized = False
+        mock_registry.is_registered = self._only(TTSEngine)
+        mock_registry.resolve = AsyncMock(return_value=mock_tts)
+
+        status = await get_voice_status(mock_registry)
+
+        assert status["tts"]["initialized"] is False
+        assert status["tts"]["health"] == "degraded"
+
+    @pytest.mark.asyncio()
+    async def test_vad_session_unrecoverable_is_failed(self, mock_registry: MagicMock) -> None:
+        from sovyx.voice.vad import SileroVAD
+
+        mock_vad = MagicMock(spec=SileroVAD)
+        mock_vad.is_session_unrecoverable = True
+        mock_vad.corruption_count = 3
+        mock_registry.is_registered = self._only(SileroVAD)
+        mock_registry.resolve = AsyncMock(return_value=mock_vad)
+
+        status = await get_voice_status(mock_registry)
+
+        # Registered (enabled) but the ONNX session is dead → failed, NOT
+        # a green/healthy dot.
+        assert status["vad"]["enabled"] is True
+        assert status["vad"]["health"] == "failed"
+
+    @pytest.mark.asyncio()
+    async def test_vad_corruption_without_unrecoverable_is_degraded(
+        self, mock_registry: MagicMock
+    ) -> None:
+        from sovyx.voice.vad import SileroVAD
+
+        mock_vad = MagicMock(spec=SileroVAD)
+        mock_vad.is_session_unrecoverable = False
+        mock_vad.corruption_count = 2
+        mock_registry.is_registered = self._only(SileroVAD)
+        mock_registry.resolve = AsyncMock(return_value=mock_vad)
+
+        status = await get_voice_status(mock_registry)
+
+        assert status["vad"]["health"] == "degraded"
+
+    @pytest.mark.asyncio()
+    async def test_health_values_are_within_the_ssot_vocabulary(
+        self, mock_registry: MagicMock
+    ) -> None:
+        """Every emitted health value belongs to the SSoT set."""
+        from sovyx.dashboard.voice_status import VOICE_HEALTH_VALUES
+
+        status = await get_voice_status(mock_registry)
+        for axis in ("stt", "tts", "wake_word", "vad"):
+            assert status[axis]["health"] in VOICE_HEALTH_VALUES
 
     @pytest.mark.asyncio()
     async def test_returns_all_expected_sections(self, mock_registry: MagicMock) -> None:

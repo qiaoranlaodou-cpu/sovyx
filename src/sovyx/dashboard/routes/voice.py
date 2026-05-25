@@ -194,12 +194,22 @@ class VoiceStatusCapture(BaseModel):
     last_bypass_event_family: str | None = None
 
 
+# LIVE-2 Phase 3 (P0-1) — voice-subsystem health vocabulary. The producer
+# (``sovyx.dashboard.voice_status``) is the SSoT for the value set; this is
+# a plain ``str`` (not a closed Literal) so a forward-additive value never
+# breaks the boundary round-trip. Default "unavailable" = subsystem not
+# registered. "healthy" is emitted ONLY when a real readiness signal
+# confirms usability — never from registration alone.
+_VOICE_HEALTH_DEFAULT = "unavailable"
+
+
 class VoiceStatusSTT(BaseModel):
     """STT-engine state for ``/api/voice/status``."""
 
     engine: str | None = None
     model: str | None = None
     state: str | None = None
+    health: str = _VOICE_HEALTH_DEFAULT
 
 
 class VoiceStatusTTS(BaseModel):
@@ -208,6 +218,7 @@ class VoiceStatusTTS(BaseModel):
     engine: str | None = None
     model: str | None = None
     initialized: bool = False
+    health: str = _VOICE_HEALTH_DEFAULT
 
 
 class VoiceStatusWakeWord(BaseModel):
@@ -215,12 +226,14 @@ class VoiceStatusWakeWord(BaseModel):
 
     enabled: bool = False
     phrase: str | None = None
+    health: str = _VOICE_HEALTH_DEFAULT
 
 
 class VoiceStatusVAD(BaseModel):
     """VAD state for ``/api/voice/status``."""
 
     enabled: bool = False
+    health: str = _VOICE_HEALTH_DEFAULT
 
 
 class VoiceStatusWyoming(BaseModel):

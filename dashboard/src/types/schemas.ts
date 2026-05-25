@@ -1847,25 +1847,33 @@ const VoiceStatusCaptureSchema = z
   })
   .passthrough();
 
+// LIVE-2 Phase 3 (P0-1) — subsystem health, distinct from registration.
+// Open z.string() (not z.enum) mirrors the backend's open str + lets a
+// forward-additive value parse on an older bundle; the UI maps known
+// values to a tone and renders unrecognised values neutrally.
 const VoiceStatusSTTSchema = z.object({
   engine: z.string().nullable().optional(),
   model: z.string().nullable().optional(),
   state: z.string().nullable().optional(),
+  health: z.string().optional(),
 });
 
 const VoiceStatusTTSSchema = z.object({
   engine: z.string().nullable().optional(),
   model: z.string().nullable().optional(),
   initialized: z.boolean().optional(),
+  health: z.string().optional(),
 });
 
 const VoiceStatusWakeWordSchema = z.object({
   enabled: z.boolean().optional(),
   phrase: z.string().nullable().optional(),
+  health: z.string().optional(),
 });
 
 const VoiceStatusVADSchema = z.object({
   enabled: z.boolean().optional(),
+  health: z.string().optional(),
 });
 
 const VoiceStatusWyomingSchema = z.object({

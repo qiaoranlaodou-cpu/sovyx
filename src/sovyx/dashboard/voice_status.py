@@ -17,6 +17,51 @@ if TYPE_CHECKING:
 logger = get_logger(__name__)
 
 
+# LIVE-2 Phase 3 (P0-1) — voice-subsystem health vocabulary (SSoT).
+#
+# String-valued + intentionally OPEN: the frontend maps known values to a
+# tone and falls back to a neutral rendering for anything it doesn't
+# recognise, so a future value can land here without breaking an older
+# bundle (avoids the closed-enum drift flagged for composite_severity).
+#
+# The cardinal rule this vocabulary enforces: registration ALONE never
+# yields ``healthy``. A subsystem is set to ``unknown`` the moment it is
+# confirmed registered, then refined ONLY by a real readiness signal read
+# off the live engine. If the resolve or the signal read fails, it stays
+# ``unknown`` — a registered-but-broken engine must never render green.
+VOICE_HEALTH_HEALTHY = "healthy"
+VOICE_HEALTH_DEGRADED = "degraded"
+VOICE_HEALTH_FAILED = "failed"
+VOICE_HEALTH_UNAVAILABLE = "unavailable"
+VOICE_HEALTH_UNKNOWN = "unknown"
+VOICE_HEALTH_VALUES: frozenset[str] = frozenset(
+    {
+        VOICE_HEALTH_HEALTHY,
+        VOICE_HEALTH_DEGRADED,
+        VOICE_HEALTH_FAILED,
+        VOICE_HEALTH_UNAVAILABLE,
+        VOICE_HEALTH_UNKNOWN,
+    },
+)
+
+
+def _stt_health_from_state_name(state_name: str) -> str:
+    """Map a :class:`sovyx.voice.stt.STTState` name to a health value.
+
+    READY / TRANSCRIBING are usable (healthy); UNINITIALIZED is registered
+    but not yet ready (degraded); CLOSED is terminal (failed). An
+    unrecognised state name yields ``unknown`` rather than assuming healthy.
+    """
+    name = state_name.strip().lower()
+    if name in ("ready", "transcribing"):
+        return VOICE_HEALTH_HEALTHY
+    if name == "uninitialized":
+        return VOICE_HEALTH_DEGRADED
+    if name == "closed":
+        return VOICE_HEALTH_FAILED
+    return VOICE_HEALTH_UNKNOWN
+
+
 async def get_voice_status(registry: ServiceRegistry) -> dict[str, Any]:
     """Collect voice pipeline status from the registry.
 
@@ -53,18 +98,24 @@ async def get_voice_status(registry: ServiceRegistry) -> dict[str, Any]:
             "engine": None,
             "model": None,
             "state": None,
+            # LIVE-2 P0-1 — default "unavailable" (not registered). Refined
+            # to a real value below only when the engine is registered.
+            "health": VOICE_HEALTH_UNAVAILABLE,
         },
         "tts": {
             "engine": None,
             "model": None,
             "initialized": False,
+            "health": VOICE_HEALTH_UNAVAILABLE,
         },
         "wake_word": {
             "enabled": False,
             "phrase": None,
+            "health": VOICE_HEALTH_UNAVAILABLE,
         },
         "vad": {
             "enabled": False,
+            "health": VOICE_HEALTH_UNAVAILABLE,
         },
         "wyoming": {
             "connected": False,
@@ -210,6 +261,10 @@ async def get_voice_status(registry: ServiceRegistry) -> dict[str, Any]:
         from sovyx.voice.stt import STTEngine
 
         if registry.is_registered(STTEngine):
+            # LIVE-2 P0-1: registered != healthy. Start at "unknown"; a
+            # resolve/read failure below leaves it there rather than
+            # falling back to the optimistic default.
+            status["stt"]["health"] = VOICE_HEALTH_UNKNOWN
             stt = await registry.resolve(STTEngine)  # type: ignore[type-abstract]
             status["stt"]["engine"] = type(stt).__name__
             if hasattr(stt, "config"):
@@ -222,6 +277,9 @@ async def get_voice_status(registry: ServiceRegistry) -> dict[str, Any]:
                 status["stt"]["model"] = getattr(cfg, "model_size", None)
             if hasattr(stt, "state"):
                 status["stt"]["state"] = stt.state.name.lower()
+                status["stt"]["health"] = _stt_health_from_state_name(
+                    stt.state.name,
+                )
     except Exception:  # noqa: BLE001
         logger.debug("voice_status_stt_failed")
 
@@ -230,6 +288,8 @@ async def get_voice_status(registry: ServiceRegistry) -> dict[str, Any]:
         from sovyx.voice.tts_piper import TTSEngine
 
         if registry.is_registered(TTSEngine):
+            # LIVE-2 P0-1: registered != healthy (see STT block).
+            status["tts"]["health"] = VOICE_HEALTH_UNKNOWN
             tts = await registry.resolve(TTSEngine)  # type: ignore[type-abstract]
             status["tts"]["engine"] = type(tts).__name__
             if hasattr(tts, "config"):
@@ -243,7 +303,13 @@ async def get_voice_status(registry: ServiceRegistry) -> dict[str, Any]:
                 model = getattr(cfg, "voice", None)
                 status["tts"]["model"] = str(model) if model is not None else None
             if hasattr(tts, "is_initialized"):
-                status["tts"]["initialized"] = tts.is_initialized
+                initialized = bool(tts.is_initialized)
+                status["tts"]["initialized"] = initialized
+                # An initialized TTS engine is usable; registered-but-not-
+                # initialized is present-but-not-ready (degraded), never green.
+                status["tts"]["health"] = (
+                    VOICE_HEALTH_HEALTHY if initialized else VOICE_HEALTH_DEGRADED
+                )
     except Exception:  # noqa: BLE001
         logger.debug("voice_status_tts_failed")
 
@@ -252,11 +318,26 @@ async def get_voice_status(registry: ServiceRegistry) -> dict[str, Any]:
         from sovyx.voice.wake_word import WakeWordDetector
 
         if registry.is_registered(WakeWordDetector):
-            ww = await registry.resolve(WakeWordDetector)
+            # ``enabled`` is the registration/config fact and is set BEFORE
+            # resolve so a resolve failure still reports the subsystem as
+            # configured. LIVE-2 P0-1: health starts "unknown" and only
+            # becomes healthy from a real signal below — never from the
+            # ``enabled`` flag alone.
             status["wake_word"]["enabled"] = True
+            status["wake_word"]["health"] = VOICE_HEALTH_UNKNOWN
+            ww = await registry.resolve(WakeWordDetector)
             if hasattr(ww, "config"):
                 cfg = ww.config
                 status["wake_word"]["phrase"] = getattr(cfg, "wake_phrase", None)
+            # The wake-word detector exposes no runtime-failure signal
+            # (unlike VAD's ``is_session_unrecoverable``). A readable FSM
+            # ``state`` confirms a constructed detector — construction
+            # loads + validates the ONNX session synchronously, so a
+            # registered detector with a live state is usable. We never
+            # assert healthy purely from registration: if the state can't
+            # be read (or resolve raised above), health stays "unknown".
+            if hasattr(ww, "state"):
+                status["wake_word"]["health"] = VOICE_HEALTH_HEALTHY
     except Exception:  # noqa: BLE001
         logger.debug("voice_status_wake_word_failed")
 
@@ -265,7 +346,23 @@ async def get_voice_status(registry: ServiceRegistry) -> dict[str, Any]:
         from sovyx.voice.vad import SileroVAD
 
         if registry.is_registered(SileroVAD):
+            # ``enabled`` is the registration fact (set before resolve, see
+            # wake-word block). LIVE-2 P0-1: health starts "unknown" and is
+            # only refined to healthy from a real session signal below.
             status["vad"]["enabled"] = True
+            status["vad"]["health"] = VOICE_HEALTH_UNKNOWN
+            vad = await registry.resolve(SileroVAD)
+            # SileroVAD loads + smoke-probes its ONNX session at
+            # construction, so a registered instance starts usable. The
+            # real runtime-failure signal is ``is_session_unrecoverable``
+            # (terminal) with ``corruption_count`` as a soft-degradation
+            # gauge — read both rather than assuming health from presence.
+            if getattr(vad, "is_session_unrecoverable", False):
+                status["vad"]["health"] = VOICE_HEALTH_FAILED
+            elif getattr(vad, "corruption_count", 0) > 0:
+                status["vad"]["health"] = VOICE_HEALTH_DEGRADED
+            else:
+                status["vad"]["health"] = VOICE_HEALTH_HEALTHY
     except Exception:  # noqa: BLE001
         logger.debug("voice_status_vad_failed")
 

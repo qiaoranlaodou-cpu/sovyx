@@ -1,6 +1,14 @@
 {
   "title": "Pipeline de Voz",
   "subtitle": "Estado e configuração da interação de voz em tempo real.",
+  "subsystemHealth": {
+    "label": "Saúde",
+    "healthy": "Operacional",
+    "degraded": "Degradado",
+    "failed": "Com falha",
+    "unavailable": "Não configurado",
+    "unknown": "Desconhecido"
+  },
   "loading": "Carregando estado da voz…",
   "error": "Falha ao carregar estado da voz",
   "retry": "Tentar novamente",

@@ -1,6 +1,14 @@
 {
   "title": "Voice Pipeline",
   "subtitle": "Real-time voice interaction status and configuration.",
+  "subsystemHealth": {
+    "label": "Health",
+    "healthy": "Healthy",
+    "degraded": "Degraded",
+    "failed": "Failed",
+    "unavailable": "Not configured",
+    "unknown": "Unknown"
+  },
   "loading": "Loading voice status…",
   "error": "Failed to load voice status",
   "retry": "Retry",
