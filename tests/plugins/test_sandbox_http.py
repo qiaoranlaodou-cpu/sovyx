@@ -5,7 +5,9 @@ Coverage target: ≥95% on plugins/sandbox_http.py
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, patch
+import gzip
+from collections.abc import AsyncIterator, Callable
+from unittest.mock import patch
 
 import httpx
 import pytest
@@ -18,6 +20,60 @@ from sovyx.plugins.sandbox_http import (
     _RateLimiter,
     _resolve_hostname,
 )
+
+# ── MockTransport harness (gold standard) ───────────────────────────
+#
+# The production client now STREAMS: it does
+# ``build_request(...)`` + ``send(req, stream=True)``, walks redirects
+# calling ``aclose()`` on each unread 3xx body, then reads the final
+# body incrementally via ``aiter_bytes()`` under a running size cap and
+# rebuilds a buffered ``httpx.Response``. ``patch.object(client._client,
+# "request", ...)`` therefore intercepts NOTHING (the prod code never
+# calls ``.request``). We instead swap in an ``httpx.AsyncClient`` backed
+# by ``httpx.MockTransport`` so the REAL send / stream / redirect path is
+# exercised end-to-end, with ``follow_redirects=False`` preserved (the
+# SSRF invariant — the prod redirect walk must stay manual).
+
+Handler = Callable[[httpx.Request], httpx.Response]
+
+
+def _mock_client(handler: Handler) -> httpx.AsyncClient:
+    """Build a MockTransport-backed client preserving follow_redirects=False.
+
+    ``follow_redirects=False`` is CRITICAL: the production SSRF closure
+    depends on httpx NOT auto-following 3xx, so the sandbox can validate
+    every hop. A MockTransport client that auto-follows would mask that.
+    """
+    return httpx.AsyncClient(
+        transport=httpx.MockTransport(handler),
+        follow_redirects=False,
+    )
+
+
+class _CountingStream(httpx.AsyncByteStream):
+    """An async byte stream that records exactly how many bytes were pulled.
+
+    Used to PROVE the streaming size cap aborts the read early (it stops
+    iterating before the whole body is produced) and that redirect bodies
+    are never pulled at all. ``pulled_bytes`` / ``pulled_chunks`` reflect
+    only what the consumer actually requested.
+    """
+
+    def __init__(self, chunk: bytes, count: int) -> None:
+        self._chunk = chunk
+        self._count = count
+        self.pulled_bytes = 0
+        self.pulled_chunks = 0
+
+    async def __aiter__(self) -> AsyncIterator[bytes]:
+        for _ in range(self._count):
+            self.pulled_bytes += len(self._chunk)
+            self.pulled_chunks += 1
+            yield self._chunk
+
+    async def aclose(self) -> None:  # pragma: no cover - nothing to release
+        return None
+
 
 # ── Local IP Detection ──────────────────────────────────────────────
 
@@ -221,84 +277,76 @@ class TestUrlValidation:
 
 
 class TestHttpRequests:
-    """Tests for actual HTTP request methods."""
+    """Tests for actual HTTP request methods (MockTransport-backed)."""
 
     @pytest.mark.anyio()
     async def test_get_success(self) -> None:
         """GET request to allowed domain works."""
         client = SandboxedHttpClient("test", ["httpbin.org"])
-
-        mock_response = httpx.Response(200, text='{"ok": true}')
-        with patch.object(
-            client._client, "request", new_callable=AsyncMock, return_value=mock_response
-        ):
+        client._client = _mock_client(lambda _req: httpx.Response(200, text='{"ok": true}'))
+        try:
             resp = await client.get("https://httpbin.org/get")
             assert resp.status_code == 200
-
-        await client.close()
+        finally:
+            await client.close()
 
     @pytest.mark.anyio()
     async def test_post_success(self) -> None:
-        """POST request to allowed domain works."""
+        """POST request to allowed domain works (real send path)."""
         client = SandboxedHttpClient("test", ["api.example.com"])
 
-        mock_response = httpx.Response(201, text="created")
-        with patch.object(
-            client._client, "request", new_callable=AsyncMock, return_value=mock_response
-        ):
+        def handler(req: httpx.Request) -> httpx.Response:
+            assert req.method == "POST"
+            assert str(req.url) == "https://api.example.com/data"
+            return httpx.Response(201, text="created")
+
+        client._client = _mock_client(handler)
+        try:
             resp = await client.post("https://api.example.com/data", json={"key": "val"})
             assert resp.status_code == 201
-
-        await client.close()
+            assert resp.text == "created"
+        finally:
+            await client.close()
 
     @pytest.mark.anyio()
     async def test_rate_limit_enforced(self) -> None:
         """Rate limit blocks excess requests."""
         client = SandboxedHttpClient("test", ["api.example.com"], rate_limit=2)
-
-        mock_response = httpx.Response(200)
-        with patch.object(
-            client._client, "request", new_callable=AsyncMock, return_value=mock_response
-        ):
+        client._client = _mock_client(lambda _req: httpx.Response(200))
+        try:
             await client.get("https://api.example.com/1")
             await client.get("https://api.example.com/2")
             with pytest.raises(PermissionDeniedError, match="Rate limit"):
                 await client.get("https://api.example.com/3")
-
-        await client.close()
+        finally:
+            await client.close()
 
     @pytest.mark.anyio()
     async def test_response_size_blocked_by_content_length(self) -> None:
         """Oversized response (declared content-length) is rejected, not returned (C-Σ-003)."""
         client = SandboxedHttpClient("test", ["api.example.com"], max_response_bytes=100)
-
-        mock_response = httpx.Response(200, headers={"content-length": "999999"}, text="big")
-        with (
-            patch.object(
-                client._client, "request", new_callable=AsyncMock, return_value=mock_response
-            ),
-            pytest.raises(PermissionDeniedError, match="exceeds cap"),
-        ):
-            await client.get("https://api.example.com/big")
-
-        await client.close()
+        client._client = _mock_client(
+            lambda _req: httpx.Response(200, headers={"content-length": "999999"}, text="big")
+        )
+        try:
+            with pytest.raises(PermissionDeniedError, match="exceeds cap"):
+                await client.get("https://api.example.com/big")
+        finally:
+            await client.close()
 
     @pytest.mark.anyio()
     async def test_response_size_blocked_by_actual_body(self) -> None:
         """A small/absent declared length cannot bypass the cap — actual body is checked (C-Σ-003)."""
         client = SandboxedHttpClient("test", ["api.example.com"], max_response_bytes=10)
-
         # Declared length lies (small); actual body is large.
-        mock_response = httpx.Response(200, headers={"content-length": "5"}, content=b"x" * 5000)
-        with (
-            patch.object(
-                client._client, "request", new_callable=AsyncMock, return_value=mock_response
-            ),
-            pytest.raises(PermissionDeniedError, match="exceeds cap"),
-        ):
-            await client.get("https://api.example.com/big")
-
-        await client.close()
+        client._client = _mock_client(
+            lambda _req: httpx.Response(200, headers={"content-length": "5"}, content=b"x" * 5000)
+        )
+        try:
+            with pytest.raises(PermissionDeniedError, match="exceeds cap"):
+                await client.get("https://api.example.com/big")
+        finally:
+            await client.close()
 
     @pytest.mark.anyio()
     async def test_context_manager(self) -> None:
@@ -312,11 +360,187 @@ class TestHttpRequests:
         client = SandboxedHttpClient("test", ["api.example.com"], rate_limit=5)
         assert client.remaining_requests == 5
 
-        mock_response = httpx.Response(200)
-        with patch.object(
-            client._client, "request", new_callable=AsyncMock, return_value=mock_response
-        ):
+        client._client = _mock_client(lambda _req: httpx.Response(200))
+        try:
             await client.get("https://api.example.com/1")
-        assert client.remaining_requests == 4
+            assert client.remaining_requests == 4
+        finally:
+            await client.close()
 
-        await client.close()
+
+# ── C-Σ-003b: streaming size-cap regression tests ──────────────────
+
+
+class TestStreamingSizeCap:
+    """Prove the size cap BOUNDS THE READ, not just a post-read check.
+
+    The production code reads the body incrementally via
+    ``aiter_bytes()`` and raises the instant the running decoded total
+    exceeds ``max_response_bytes`` — so an oversized body (with a missing
+    or lying content-length, or chunked, or a decompression bomb) is
+    never fully buffered. Redirect bodies are never read at all.
+    """
+
+    @pytest.mark.anyio()
+    async def test_oversized_chunked_no_content_length(self) -> None:
+        """Chunked body > cap with NO content-length still rejected (C-Σ-003b)."""
+        client = SandboxedHttpClient("test", ["api.example.com"], max_response_bytes=100)
+        # 10 × 1 KiB chunks = ~10 KiB decoded, no content-length header.
+        stream = _CountingStream(b"a" * 1024, count=10)
+        client._client = _mock_client(lambda _req: httpx.Response(200, stream=stream))
+        try:
+            with pytest.raises(PermissionDeniedError, match="exceeds cap"):
+                await client.get("https://api.example.com/chunked")
+        finally:
+            await client.close()
+
+    @pytest.mark.anyio()
+    async def test_abort_early_stream_not_fully_drained(self) -> None:
+        """THE core proof: the read aborts early — the whole body is NOT pulled.
+
+        max_bytes=100; the stream is ready to yield 100×1 KiB = ~100 KiB.
+        The cap must trip after pulling only ~max_bytes (+ at most one
+        chunk), proving the read is bounded rather than buffered-then-checked.
+        """
+        max_bytes = 100
+        client = SandboxedHttpClient("test", ["api.example.com"], max_response_bytes=max_bytes)
+        chunk = b"k" * 1024
+        stream = _CountingStream(chunk, count=100)  # ready to yield ~100 KiB
+        client._client = _mock_client(lambda _req: httpx.Response(200, stream=stream))
+        try:
+            with pytest.raises(PermissionDeniedError, match="exceeds cap"):
+                await client.get("https://api.example.com/bomb")
+            # Bounded read: only enough chunks to cross the cap were pulled.
+            # With 1 KiB chunks and a 100-byte cap, the very first chunk
+            # already exceeds it → exactly one chunk pulled, NOT all 100.
+            assert stream.pulled_chunks == 1
+            assert stream.pulled_bytes <= max_bytes + len(chunk)
+            assert stream.pulled_bytes < 100 * len(chunk)  # NOT the whole body
+        finally:
+            await client.close()
+
+    @pytest.mark.anyio()
+    async def test_redirect_body_never_read(self) -> None:
+        """302's body stream is NEVER pulled — redirect bodies aren't downloaded."""
+        client = SandboxedHttpClient("test.fetch", allowed_domains=None, allow_any_domain=True)
+        # The 302 carries a counting body; if the prod code read it, the
+        # counter would move. It must stay at 0.
+        redirect_body = _CountingStream(b"z" * 1024, count=50)
+
+        def handler(req: httpx.Request) -> httpx.Response:
+            if req.url.path == "/start":
+                return httpx.Response(
+                    302,
+                    headers={"location": "http://final.example.com/end"},
+                    stream=redirect_body,
+                )
+            return httpx.Response(200, text="final")
+
+        client._client = _mock_client(handler)
+        try:
+            resp = await client.get("http://start.example.com/start")
+            assert resp.status_code == 200
+            assert resp.text == "final"
+            # The redirect body was discarded via aclose(), never iterated.
+            assert redirect_body.pulled_bytes == 0
+            assert redirect_body.pulled_chunks == 0
+        finally:
+            await client.close()
+
+    @pytest.mark.anyio()
+    async def test_decompression_aware_cap_on_decoded_size(self) -> None:
+        """gzip body whose DECODED size > cap is rejected on the decoded size.
+
+        ``aiter_bytes()`` decodes gzip, so the cap protects against a
+        decompression bomb: a tiny compressed payload that inflates past
+        the cap. The compressed bytes are well under the cap; the decoded
+        bytes are far over it.
+        """
+        max_bytes = 1000
+        client = SandboxedHttpClient("test", ["api.example.com"], max_response_bytes=max_bytes)
+        decoded = b"y" * 200_000  # 200 KB decoded → way over 1 KB cap
+        compressed = gzip.compress(decoded)
+        # Sanity: compressed payload itself is under the cap, so only the
+        # DECODED-size enforcement can catch this.
+        assert len(compressed) < max_bytes
+
+        client._client = _mock_client(
+            lambda _req: httpx.Response(
+                200,
+                headers={"content-encoding": "gzip"},
+                content=compressed,
+            )
+        )
+        try:
+            with pytest.raises(PermissionDeniedError, match="exceeds cap"):
+                await client.get("https://api.example.com/gzipbomb")
+        finally:
+            await client.close()
+
+    @pytest.mark.anyio()
+    async def test_happy_path_response_faithful(self) -> None:
+        """Normal small response: rebuilt buffered Response is faithful (C-Σ-003b).
+
+        Proves .content / .text / .json() / .status_code / .headers all
+        survive the stream→rebuild round-trip and match the handler's
+        response.
+
+        Encoding note: content-encoding / content-length / transfer-encoding
+        are stripped on rebuild (the body is already decoded), so encoded
+        responses round-trip correctly too — see
+        ``test_gzip_under_cap_returns_decoded_body``.
+        """
+        client = SandboxedHttpClient("test", ["api.example.com"])
+        payload = b'{"hello": "world", "n": 7}'
+
+        def handler(req: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200,
+                headers={"x-custom": "kept", "content-type": "application/json"},
+                content=payload,
+            )
+
+        client._client = _mock_client(handler)
+        try:
+            resp = await client.get("https://api.example.com/data")
+            assert resp.status_code == 200
+            assert resp.content == payload
+            assert resp.text == payload.decode()
+            assert resp.json() == {"hello": "world", "n": 7}
+            assert resp.headers["x-custom"] == "kept"
+            assert resp.headers["content-type"] == "application/json"
+        finally:
+            await client.close()
+
+    @pytest.mark.anyio()
+    async def test_gzip_under_cap_returns_decoded_body(self) -> None:
+        """An under-cap gzip response returns the DECODED body (C-Σ-003b).
+
+        ``_request`` reads the body via ``aiter_bytes()`` (which decodes
+        gzip/deflate/br/zstd), then rebuilds the buffered Response with
+        ``content-encoding`` / ``content-length`` / ``transfer-encoding``
+        STRIPPED — the body is already decoded — so httpx does NOT
+        double-decode and the caller gets plaintext. ``web_intelligence``
+        sends ``Accept-Encoding: gzip``, so this is the common real path.
+        """
+        client = SandboxedHttpClient("test", ["api.example.com"], max_response_bytes=1_000_000)
+        payload = b'{"small": "gzipped"}'
+        compressed = gzip.compress(payload)
+        assert len(compressed) < client._max_bytes  # well under the cap
+
+        client._client = _mock_client(
+            lambda _req: httpx.Response(
+                200,
+                headers={"content-encoding": "gzip", "content-type": "application/json"},
+                content=compressed,
+            )
+        )
+        try:
+            resp = await client.get("https://api.example.com/gz")
+            assert resp.status_code == 200
+            assert resp.content == payload  # decoded plaintext, no double-decode
+            assert resp.json() == {"small": "gzipped"}
+            # content-encoding stripped on rebuild (body is already decoded).
+            assert "content-encoding" not in resp.headers
+        finally:
+            await client.close()

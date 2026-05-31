@@ -398,6 +398,29 @@ class SandboxedHttpClient:
         """
         return await self._request(method.upper(), url, **kwargs)
 
+    def _log_response_too_large(
+        self, method: str, url: str, host_only: str, observed: int
+    ) -> None:
+        """Emit the response-too-large violation logs (C-Σ-003 / C-Σ-003b)."""
+        logger.warning(
+            "plugin_http_response_too_large",
+            plugin=self._plugin,
+            url=url,
+            size=observed,
+            limit=self._max_bytes,
+        )
+        logger.warning(
+            "plugin.http.violation",
+            **{
+                "plugin_id": self._plugin,
+                "plugin.http.method": method,
+                "plugin.http.url_host_only": host_only,
+                "plugin.http.violation_kind": "response_too_large",
+                "plugin.http.response_bytes": observed,
+                "plugin.http.limit_bytes": self._max_bytes,
+            },
+        )
+
     async def _request(self, method: str, url: str, **kwargs: object) -> httpx.Response:
         """Execute sandboxed HTTP request.
 
@@ -411,8 +434,9 @@ class SandboxedHttpClient:
 
         Raises:
             PermissionDeniedError: URL/domain/rate violation, or the response
-                exceeds max_bytes (by declared content-length or actual body
-                length). The transient buffered read is tracked as C-Σ-003b.
+                exceeds max_bytes — enforced by bounding the READ (declared
+                content-length pre-check + incremental decoded-byte cap), so an
+                oversized body is never fully buffered (C-Σ-003 + C-Σ-003b).
         """
         parsed = urlparse(url)
         host_only = parsed.hostname or ""
@@ -480,59 +504,79 @@ class SandboxedHttpClient:
         )
 
         started = time.monotonic()
+        # The redirect walk returns a STREAMED (unread) response, so the body
+        # is never fully buffered before the size check (C-Σ-003b).
         response = await self._request_with_redirect_validation(method, url, **kwargs)
-        latency_ms = (time.monotonic() - started) * 1000.0
 
-        # Enforce response size cap (C-Σ-003): reject oversized responses so a
-        # plugin never receives them. Check BOTH the declared content-length
-        # AND the actual body length — a missing or false content-length header
-        # must not bypass the cap. NOTE: httpx buffers the body before this
-        # point, so an oversized body is still transiently allocated; bounding
-        # the *read* itself needs a streaming refactor of the SSRF-hardened
-        # redirect walk — tracked as follow-up C-Σ-003b.
+        # Enforce the response-size cap by BOUNDING THE READ (C-Σ-003 + C-Σ-003b):
+        #  (1) reject early when the declared content-length exceeds the cap;
+        #  (2) accumulate DECODED chunks via aiter_bytes() — httpx decodes
+        #      gzip/deflate/br/zstd, so the cap also catches decompression bombs
+        #      on the decoded size — raising the instant the running total
+        #      exceeds the cap (at most one extra chunk is ever held); a missing
+        #      or false content-length therefore cannot bypass it;
+        #  (3) on success, rebuild a buffered Response (public httpx API) so the
+        #      caller's .content/.text/.json() keep working unchanged.
         content_length = response.headers.get("content-length")
         declared = int(content_length) if content_length and content_length.isdigit() else None
-        actual = len(response.content or b"")
-        if (declared is not None and declared > self._max_bytes) or actual > self._max_bytes:
-            observed = max(declared or 0, actual)
-            logger.warning(
-                "plugin_http_response_too_large",
-                plugin=self._plugin,
-                url=url,
-                size=observed,
-                limit=self._max_bytes,
-            )
-            logger.warning(
-                "plugin.http.violation",
-                **{
-                    "plugin_id": self._plugin,
-                    "plugin.http.method": method,
-                    "plugin.http.url_host_only": host_only,
-                    "plugin.http.violation_kind": "response_too_large",
-                    "plugin.http.response_bytes": observed,
-                    "plugin.http.limit_bytes": self._max_bytes,
-                },
-            )
+        if declared is not None and declared > self._max_bytes:
+            await response.aclose()
+            self._log_response_too_large(method, url, host_only, declared)
             raise PermissionDeniedError(
                 self._plugin,
-                f"Response size {observed} bytes exceeds cap of {self._max_bytes} bytes",
+                f"Response size {declared} bytes exceeds cap of {self._max_bytes} bytes",
             )
 
-        response_bytes = actual
+        chunks: list[bytes] = []
+        total = 0
+        try:
+            async for chunk in response.aiter_bytes():
+                total += len(chunk)
+                if total > self._max_bytes:
+                    self._log_response_too_large(method, url, host_only, total)
+                    raise PermissionDeniedError(
+                        self._plugin,
+                        f"Response size exceeds cap of {self._max_bytes} bytes",
+                    )
+                chunks.append(chunk)
+        finally:
+            # aiter_bytes() auto-closes on full consumption; aclose() is
+            # idempotent, so this releases the connection on every path.
+            await response.aclose()
+
+        # The body collected via aiter_bytes() is ALREADY DECODED, so the
+        # rebuilt response must NOT carry content-encoding (else httpx re-runs
+        # the gzip/deflate/br/zstd decoder on plaintext → DecodingError) nor the
+        # original content-length / transfer-encoding (they describe the encoded
+        # wire body, not our decoded bytes). httpx recomputes content-length
+        # from the content; all other headers are preserved verbatim.
+        rebuilt_headers = httpx.Headers(response.headers)
+        for _stale in ("content-encoding", "content-length", "transfer-encoding"):
+            if _stale in rebuilt_headers:
+                del rebuilt_headers[_stale]
+        capped_response = httpx.Response(
+            response.status_code,
+            headers=rebuilt_headers,
+            content=b"".join(chunks),
+            request=response.request,
+            extensions=response.extensions,
+            history=response.history,
+        )
+        latency_ms = (time.monotonic() - started) * 1000.0
         logger.info(
             "plugin.http.response",
             **{
                 "plugin_id": self._plugin,
                 "plugin.http.method": method,
                 "plugin.http.url_host_only": host_only,
-                "plugin.http.status": response.status_code,
-                "plugin.http.response_bytes": response_bytes,
+                "plugin.http.status": capped_response.status_code,
+                "plugin.http.response_bytes": total,
                 "plugin.http.latency_ms": round(latency_ms, 2),
                 "plugin.http.attempt": 1,
             },
         )
 
-        return response
+        return capped_response
 
     async def _request_with_redirect_validation(
         self,
@@ -573,7 +617,12 @@ class SandboxedHttpClient:
         current_kwargs: dict[str, object] = dict(kwargs)
 
         for hop in range(_MAX_REDIRECTS + 1):
-            response = await self._client.request(current_method, current_url, **current_kwargs)  # type: ignore[arg-type]
+            request = self._client.build_request(current_method, current_url, **current_kwargs)  # type: ignore[arg-type]
+            # Stream (C-Σ-003b): 3xx bodies are never read, and the final body
+            # is size-capped incrementally by the caller. build_request + send
+            # (stream=True) is exactly equivalent to client.request(...) — see
+            # httpx AsyncClient.request docstring — but unbuffered.
+            response = await self._client.send(request, stream=True)
 
             if response.status_code not in _REDIRECT_STATUS_CODES:
                 return response
@@ -594,6 +643,7 @@ class SandboxedHttpClient:
                         "plugin.http.hops": hop + 1,
                     },
                 )
+                await response.aclose()  # release the unread 3xx body
                 raise PermissionDeniedError(
                     self._plugin,
                     f"Exceeded max redirects ({_MAX_REDIRECTS}) at {current_url}",
@@ -621,6 +671,7 @@ class SandboxedHttpClient:
                         "plugin.http.reason": str(exc),
                     },
                 )
+                await response.aclose()  # release the unread 3xx body
                 raise PermissionDeniedError(
                     self._plugin,
                     f"redirect to unsafe URL '{next_url}': {exc}",
@@ -643,6 +694,8 @@ class SandboxedHttpClient:
                     }
 
             current_url = next_url
+            # Release the redirect response's unread body before the next hop.
+            await response.aclose()
 
         # Unreachable: the loop either returns a non-3xx response, returns
         # a 3xx without Location, or raises on max-redirects. Defensive

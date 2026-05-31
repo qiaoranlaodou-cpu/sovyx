@@ -7,8 +7,11 @@ allowlisted domain could 302 → ``http://169.254.169.254/`` (AWS
 metadata) or any internal IP. The fix walks redirects manually and
 validates EVERY hop's URL through the sandbox.
 
-Each test mocks ``httpx.AsyncClient.request`` so the HTTP layer is
-exercised end-to-end without real network egress.
+Each test wires an ``httpx.MockTransport`` into the sandbox client so
+the REAL send / stream / manual-redirect-walk path is exercised
+end-to-end without real network egress. ``follow_redirects=False`` is
+preserved on the mock client — the SSRF closure depends on httpx NOT
+auto-following 3xx so the sandbox can validate every hop itself.
 
 Coverage:
 
@@ -24,7 +27,6 @@ Coverage:
 from __future__ import annotations
 
 from typing import Any
-from unittest.mock import AsyncMock, patch
 
 import httpx
 import pytest
@@ -44,28 +46,68 @@ def _ok_response(status: int = 200, *, text: str = "ok") -> httpx.Response:
 
 
 class _SequenceResponder:
-    """Helper that returns a queued response per call + records args.
+    """MockTransport handler that returns a queued response per call.
 
-    Used as the ``side_effect`` of an :class:`AsyncMock` patched onto
-    ``httpx.AsyncClient.request``. ``AsyncMock`` calls the side_effect
-    *synchronously* and awaits the AsyncMock's own return path, so the
-    ``__call__`` here is intentionally NOT a coroutine — it returns the
-    response object directly. Each call pops the next response off the
-    queue and records the ``(method, url, kwargs)`` tuple for later
-    assertion.
+    Wired into ``httpx.MockTransport`` and swapped onto
+    ``client._client``, so it sees the REAL :class:`httpx.Request` that
+    the production redirect walk builds for every hop (method downgrade,
+    body/header stripping, and per-hop URL all happen for real before we
+    observe them here). Each call pops the next queued response and
+    records ``(method, url, kwargs)`` where ``kwargs`` is reconstructed
+    from the actual request so the existing assertions keep working:
+
+    * ``json``  → present (as the parsed JSON body) when the request
+      carries a JSON content-type + body (mirrors the old ``json=`` kwarg).
+    * ``data`` / ``content`` → present when a non-JSON body is sent.
+    * ``headers`` → the request's headers as a plain ``dict`` (only the
+      caller-supplied/meaningful keys are asserted on).
+
+    The recorded URL is the absolute request URL string, exactly as the
+    old mock recorded the ``url`` positional arg.
     """
 
     def __init__(self, responses: list[httpx.Response]) -> None:
         self._responses = list(responses)
         self.calls: list[tuple[str, str, dict[str, Any]]] = []
 
-    def __call__(self, method: str, url: str, **kwargs: Any) -> httpx.Response:
-        self.calls.append((method, url, dict(kwargs)))
+    @staticmethod
+    def _reconstruct_kwargs(request: httpx.Request) -> dict[str, Any]:
+        # Reconstruct headers from ``.raw`` so ORIGINAL casing is preserved
+        # (httpx lowercases ``dict(headers)``; the downgrade test asserts the
+        # caller-supplied ``X-Trace`` header survives by its exact name).
+        headers = {k.decode("latin-1"): v.decode("latin-1") for k, v in request.headers.raw}
+        kwargs: dict[str, Any] = {"headers": headers}
+        body = request.content
+        if body:
+            content_type = request.headers.get("content-type", "")
+            if "application/json" in content_type:
+                import json as _json
+
+                kwargs["json"] = _json.loads(body)
+            else:
+                kwargs["content"] = body
+        return kwargs
+
+    def __call__(self, request: httpx.Request) -> httpx.Response:
+        self.calls.append((request.method, str(request.url), self._reconstruct_kwargs(request)))
         if not self._responses:
             raise AssertionError(
                 f"_SequenceResponder ran out of queued responses (call #{len(self.calls)})"
             )
         return self._responses.pop(0)
+
+
+def _install(client: SandboxedHttpClient, responder: _SequenceResponder) -> None:
+    """Swap a MockTransport-backed client (follow_redirects=False) onto the sandbox.
+
+    ``follow_redirects=False`` is CRITICAL: re-enabling auto-follow would
+    let httpx walk 3xx WITHOUT the per-hop sandbox validation, silently
+    masking the SSRF guard this whole module exists to prove.
+    """
+    client._client = httpx.AsyncClient(
+        transport=httpx.MockTransport(responder),
+        follow_redirects=False,
+    )
 
 
 # ── Core SSRF rejection ─────────────────────────────────────────────
@@ -90,13 +132,9 @@ class TestRedirectSsrfRejection:
         responder = _SequenceResponder(
             [_redirect_response(302, "http://169.254.169.254/latest/meta-data/")]
         )
+        _install(client, responder)
         try:
-            with (
-                patch.object(
-                    client._client, "request", new_callable=AsyncMock, side_effect=responder
-                ),
-                pytest.raises(PermissionDeniedError, match="redirect to unsafe URL"),
-            ):
+            with pytest.raises(PermissionDeniedError, match="redirect to unsafe URL"):
                 await client.get("http://attacker.example.com/")
             # CRITICAL: only the FIRST request was issued — the metadata
             # endpoint was NEVER contacted.
@@ -114,13 +152,9 @@ class TestRedirectSsrfRejection:
             allow_any_domain=True,
         )
         responder = _SequenceResponder([_redirect_response(302, "http://127.0.0.1:8080/")])
+        _install(client, responder)
         try:
-            with (
-                patch.object(
-                    client._client, "request", new_callable=AsyncMock, side_effect=responder
-                ),
-                pytest.raises(PermissionDeniedError, match="redirect to unsafe URL"),
-            ):
+            with pytest.raises(PermissionDeniedError, match="redirect to unsafe URL"):
                 await client.get("http://attacker.example.com/")
             assert len(responder.calls) == 1
         finally:
@@ -147,13 +181,9 @@ class TestRedirectSsrfRejection:
                 _redirect_response(302, "http://10.0.0.5/admin"),
             ]
         )
+        _install(client, responder)
         try:
-            with (
-                patch.object(
-                    client._client, "request", new_callable=AsyncMock, side_effect=responder
-                ),
-                pytest.raises(PermissionDeniedError, match="redirect to unsafe URL"),
-            ):
+            with pytest.raises(PermissionDeniedError, match="redirect to unsafe URL"):
                 await client.get("http://attacker.example.com/")
             # Three public hops fired, the fourth (to 10.0.0.5) was
             # blocked BEFORE the request was issued.
@@ -185,11 +215,9 @@ class TestRedirectLegitimate:
                 _ok_response(200, text="hello"),
             ]
         )
+        _install(client, responder)
         try:
-            with patch.object(
-                client._client, "request", new_callable=AsyncMock, side_effect=responder
-            ):
-                resp = await client.get("http://start.example.com/")
+            resp = await client.get("http://start.example.com/")
             assert resp.status_code == 200
             assert resp.text == "hello"
             assert len(responder.calls) == 2
@@ -210,13 +238,9 @@ class TestRedirectLegitimate:
         responder = _SequenceResponder(
             [_redirect_response(302, "http://loop.example.com/") for _ in range(10)]
         )
+        _install(client, responder)
         try:
-            with (
-                patch.object(
-                    client._client, "request", new_callable=AsyncMock, side_effect=responder
-                ),
-                pytest.raises(PermissionDeniedError, match="max redirects"),
-            ):
+            with pytest.raises(PermissionDeniedError, match="max redirects"):
                 await client.get("http://loop.example.com/")
             # 1 initial + 5 follow-ups = 6 actual requests, then the
             # 7th proposed hop trips the cap.
@@ -248,15 +272,13 @@ class TestRedirectMethodSemantics:
                 _ok_response(200, text="downgraded"),
             ]
         )
+        _install(client, responder)
         try:
-            with patch.object(
-                client._client, "request", new_callable=AsyncMock, side_effect=responder
-            ):
-                resp = await client.post(
-                    "http://start.example.com/",
-                    json={"secret": "value"},
-                    headers={"Content-Type": "application/json", "X-Trace": "keep"},
-                )
+            resp = await client.post(
+                "http://start.example.com/",
+                json={"secret": "value"},
+                headers={"Content-Type": "application/json", "X-Trace": "keep"},
+            )
             assert resp.status_code == 200
             assert len(responder.calls) == 2
             initial_method, _, initial_kwargs = responder.calls[0]
@@ -297,14 +319,12 @@ class TestRedirectMethodSemantics:
                 _ok_response(200, text="preserved"),
             ]
         )
+        _install(client, responder)
         try:
-            with patch.object(
-                client._client, "request", new_callable=AsyncMock, side_effect=responder
-            ):
-                resp = await client.post(
-                    "http://start.example.com/",
-                    json={"payload": "kept"},
-                )
+            resp = await client.post(
+                "http://start.example.com/",
+                json={"payload": "kept"},
+            )
             assert resp.status_code == 200
             assert len(responder.calls) == 2
             redirect_method, _, redirect_kwargs = responder.calls[1]
@@ -345,20 +365,17 @@ class TestPublicRequestEntrypoint:
         """Plugins using arbitrary verbs (PROPFIND, …) get the same guard."""
         client = SandboxedHttpClient("caldav.test", ["caldav.example.com"])
         responder = _SequenceResponder([_redirect_response(302, "http://192.168.1.1/internal")])
+        _install(client, responder)
         try:
-            with (
-                patch.object(
-                    client._client, "request", new_callable=AsyncMock, side_effect=responder
-                ),
-                pytest.raises(PermissionDeniedError, match="redirect to unsafe URL"),
-            ):
+            with pytest.raises(PermissionDeniedError, match="redirect to unsafe URL"):
                 await client.request("PROPFIND", "https://caldav.example.com/dav/")
             assert len(responder.calls) == 1
+            assert responder.calls[0][0] == "PROPFIND"
         finally:
             await client.close()
 
 
-# ── Sanity: module exports the AsyncMock-friendly API ──────────────
+# ── Sanity: the MockTransport harness records real requests ────────
 
 
 class TestSequenceResponderHarness:
@@ -366,12 +383,22 @@ class TestSequenceResponderHarness:
 
     @pytest.mark.anyio()
     async def test_responder_records_calls(self) -> None:
+        """The responder, wired via MockTransport, records the REAL request.
+
+        Mirrors the wiring used by every SSRF test above: a sandbox
+        client whose ``_client`` is a MockTransport-backed
+        ``follow_redirects=False`` client. Sending one request records
+        the actual ``(method, url, kwargs)`` the production code built.
+        """
         responder = _SequenceResponder([_ok_response()])
-        # When wired into AsyncMock as side_effect, AsyncMock calls the
-        # synchronous responder, captures its return value, and awaits
-        # the wrapping coroutine itself. This mirrors the real wiring in
-        # the SSRF tests above.
-        mock = AsyncMock(side_effect=responder)
-        result = await mock("GET", "https://x/", headers={"a": "b"})
-        assert result.status_code == 200
-        assert responder.calls == [("GET", "https://x/", {"headers": {"a": "b"}})]
+        client = SandboxedHttpClient("harness.test", allowed_domains=None, allow_any_domain=True)
+        _install(client, responder)
+        try:
+            result = await client.get("https://harness.example.com/", headers={"X-A": "b"})
+            assert result.status_code == 200
+            method, url, kwargs = responder.calls[0]
+            assert method == "GET"
+            assert url == "https://harness.example.com/"
+            assert kwargs["headers"]["X-A"] == "b"
+        finally:
+            await client.close()

@@ -218,13 +218,27 @@ with pytest.raises(Exception) as exc_info:
     do_something_that_raises()
 assert type(exc_info.value).__name__ == "LLMError"
 
-# SandboxedHttpClient mock — internal is ._client.request(METHOD, url, ...), wire MockClient.return_value
-with patch("httpx.AsyncClient") as MockClient:
-    mock_client = AsyncMock()
-    mock_client.request = AsyncMock(return_value=mock_resp)
-    mock_client.aclose = AsyncMock()
-    MockClient.return_value = mock_client
+# SandboxedHttpClient mock — it builds its OWN httpx.AsyncClient and issues
+# build_request(...) + send(req, stream=True) (NOT ._client.request), so mock at
+# the httpx.AsyncClient boundary with a MockTransport returning a REAL response.
+# Capture the real class first (factory recursing into the patched name hangs)
+# and preserve follow_redirects=False (SSRF invariant — sandbox walks redirects).
+_REAL_ASYNC_CLIENT = httpx.AsyncClient  # module level, before any patch
+
+def _mock_async_client(handler):  # handler(req: httpx.Request) -> httpx.Response
+    def _factory(*_a, **_kw):
+        return _REAL_ASYNC_CLIENT(transport=httpx.MockTransport(handler), follow_redirects=False)
+    return _factory
+
+def handler(req: httpx.Request) -> httpx.Response:
+    return httpx.Response(200, json={...})  # .json()/.text/.content all work; or content=<bytes>
+
+with patch("httpx.AsyncClient", _mock_async_client(handler)):
     result = await my_plugin_func()
+# Assert request shape (headers/url/method) via the real Request the handler sees,
+# not a mock's call_args. (Plugins that patch SandboxedHttpClient itself —
+# patch.object(plugin_mod, "SandboxedHttpClient", return_value=mock) — are a
+# different, equally-valid boundary unaffected by the send/stream change.)
 
 # Aliased imports (#2): patch real module, not sys.modules
 import onnxruntime

@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from collections.abc import Callable
+from unittest.mock import AsyncMock, patch
 
+import httpx
 import pytest
 
 from sovyx.plugins.official import weather as _weather_mod  # anti-pattern #11
@@ -57,6 +59,30 @@ def _mock_weather_response(
             "precipitation_sum": [0.0 if code not in _RAIN_CODES else 5.2] * forecast_days,
         },
     }
+
+
+# Real class captured BEFORE any patch so the factory below builds a genuine
+# client (patching ``httpx.AsyncClient`` with a factory that itself called
+# ``httpx.AsyncClient(...)`` would recurse infinitely).
+_REAL_ASYNC_CLIENT = httpx.AsyncClient
+
+
+def _mock_async_client(
+    handler: Callable[[httpx.Request], httpx.Response],
+) -> Callable[..., httpx.AsyncClient]:
+    """Build an ``httpx.AsyncClient`` factory backed by a MockTransport.
+
+    The real ``SandboxedHttpClient`` builds its own ``httpx.AsyncClient`` via
+    ``build_request(...)`` + ``send(req, stream=True)`` (it no longer calls
+    ``._client.request``), so the durable boundary mock is a MockTransport that
+    returns a real ``httpx.Response``. The ``follow_redirects=False`` SSRF
+    invariant is preserved (the sandbox walks redirects manually).
+    """
+
+    def _factory(*_a: object, **_kw: object) -> httpx.AsyncClient:
+        return _REAL_ASYNC_CLIENT(transport=httpx.MockTransport(handler), follow_redirects=False)
+
+    return _factory
 
 
 class TestWeatherPlugin:
@@ -293,21 +319,10 @@ class TestGeocode:
 
     @pytest.mark.anyio()
     async def test_success(self) -> None:
+        def handler(_req: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, json=_mock_geocode_response())
 
-        mock_resp = MagicMock()
-        mock_resp.status_code = 200
-        mock_resp.json.return_value = _mock_geocode_response()
-
-        with patch("httpx.AsyncClient") as MockClient:
-            mock_client = AsyncMock()
-            # SandboxedHttpClient wraps httpx.AsyncClient and calls
-            # ._client.request(method, url, ...) — not .get — so the mock
-            # must intercept .request, not .get.
-            mock_client.request = AsyncMock(return_value=mock_resp)
-            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-            mock_client.__aexit__ = AsyncMock(return_value=False)
-            MockClient.return_value = mock_client
-
+        with patch("httpx.AsyncClient", _mock_async_client(handler)):
             result = await _geocode("Berlin")
 
         assert result is not None
@@ -316,70 +331,41 @@ class TestGeocode:
 
     @pytest.mark.anyio()
     async def test_no_results(self) -> None:
-        mock_resp = MagicMock()
-        mock_resp.status_code = 200
-        mock_resp.json.return_value = {"results": []}
+        def handler(_req: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, json={"results": []})
 
-        with patch("httpx.AsyncClient") as MockClient:
-            mock_client = AsyncMock()
-            # SandboxedHttpClient wraps httpx.AsyncClient and calls
-            # ._client.request(method, url, ...) — not .get — so the mock
-            # must intercept .request, not .get.
-            mock_client.request = AsyncMock(return_value=mock_resp)
-            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-            mock_client.__aexit__ = AsyncMock(return_value=False)
-            MockClient.return_value = mock_client
-
+        with patch("httpx.AsyncClient", _mock_async_client(handler)):
             result = await _geocode("ZZZZZ")
         assert result is None
 
     @pytest.mark.anyio()
     async def test_api_error(self) -> None:
-        mock_resp = MagicMock()
-        mock_resp.status_code = 500
+        def handler(_req: httpx.Request) -> httpx.Response:
+            return httpx.Response(500)
 
-        with patch("httpx.AsyncClient") as MockClient:
-            mock_client = AsyncMock()
-            # SandboxedHttpClient wraps httpx.AsyncClient and calls
-            # ._client.request(method, url, ...) — not .get — so the mock
-            # must intercept .request, not .get.
-            mock_client.request = AsyncMock(return_value=mock_resp)
-            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-            mock_client.__aexit__ = AsyncMock(return_value=False)
-            MockClient.return_value = mock_client
-
+        with patch("httpx.AsyncClient", _mock_async_client(handler)):
             result = await _geocode("Berlin")
         assert result is None
 
     @pytest.mark.anyio()
     async def test_exception(self) -> None:
-        with patch("httpx.AsyncClient") as MockClient:
-            mock_client = AsyncMock()
-            mock_client.request = AsyncMock(side_effect=Exception("network"))
-            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-            mock_client.__aexit__ = AsyncMock(return_value=False)
-            MockClient.return_value = mock_client
+        def handler(_req: httpx.Request) -> httpx.Response:
+            raise httpx.ConnectError("network")
 
+        with patch("httpx.AsyncClient", _mock_async_client(handler)):
             result = await _geocode("Berlin")
         assert result is None
 
     @pytest.mark.anyio()
     async def test_no_country(self) -> None:
         """City without country field."""
-        mock_resp = MagicMock()
-        mock_resp.status_code = 200
-        mock_resp.json.return_value = {"results": [{"name": "X", "latitude": 0, "longitude": 0}]}
 
-        with patch("httpx.AsyncClient") as MockClient:
-            mock_client = AsyncMock()
-            # SandboxedHttpClient wraps httpx.AsyncClient and calls
-            # ._client.request(method, url, ...) — not .get — so the mock
-            # must intercept .request, not .get.
-            mock_client.request = AsyncMock(return_value=mock_resp)
-            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-            mock_client.__aexit__ = AsyncMock(return_value=False)
-            MockClient.return_value = mock_client
+        def handler(_req: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200, json={"results": [{"name": "X", "latitude": 0, "longitude": 0}]}
+            )
 
+        with patch("httpx.AsyncClient", _mock_async_client(handler)):
             result = await _geocode("X")
         assert result is not None
         assert result[2] == "X"
@@ -390,51 +376,29 @@ class TestFetchWeather:
 
     @pytest.mark.anyio()
     async def test_success(self) -> None:
-        mock_resp = MagicMock()
-        mock_resp.status_code = 200
-        mock_resp.json.return_value = _mock_weather_response()
+        def handler(_req: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, json=_mock_weather_response())
 
-        with patch("httpx.AsyncClient") as MockClient:
-            mock_client = AsyncMock()
-            # SandboxedHttpClient wraps httpx.AsyncClient and calls
-            # ._client.request(method, url, ...) — not .get — so the mock
-            # must intercept .request, not .get.
-            mock_client.request = AsyncMock(return_value=mock_resp)
-            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-            mock_client.__aexit__ = AsyncMock(return_value=False)
-            MockClient.return_value = mock_client
-
+        with patch("httpx.AsyncClient", _mock_async_client(handler)):
             result = await _fetch_weather(52.52, 13.41)
         assert result is not None
         assert "current" in result
 
     @pytest.mark.anyio()
     async def test_api_error(self) -> None:
-        mock_resp = MagicMock()
-        mock_resp.status_code = 500
+        def handler(_req: httpx.Request) -> httpx.Response:
+            return httpx.Response(500)
 
-        with patch("httpx.AsyncClient") as MockClient:
-            mock_client = AsyncMock()
-            # SandboxedHttpClient wraps httpx.AsyncClient and calls
-            # ._client.request(method, url, ...) — not .get — so the mock
-            # must intercept .request, not .get.
-            mock_client.request = AsyncMock(return_value=mock_resp)
-            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-            mock_client.__aexit__ = AsyncMock(return_value=False)
-            MockClient.return_value = mock_client
-
+        with patch("httpx.AsyncClient", _mock_async_client(handler)):
             result = await _fetch_weather(0, 0)
         assert result is None
 
     @pytest.mark.anyio()
     async def test_exception(self) -> None:
-        with patch("httpx.AsyncClient") as MockClient:
-            mock_client = AsyncMock()
-            mock_client.request = AsyncMock(side_effect=Exception("timeout"))
-            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-            mock_client.__aexit__ = AsyncMock(return_value=False)
-            MockClient.return_value = mock_client
+        def handler(_req: httpx.Request) -> httpx.Response:
+            raise httpx.ConnectTimeout("timeout")
 
+        with patch("httpx.AsyncClient", _mock_async_client(handler)):
             result = await _fetch_weather(0, 0)
         assert result is None
 

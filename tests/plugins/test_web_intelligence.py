@@ -4,11 +4,38 @@ from __future__ import annotations
 
 import json
 import time
-from unittest.mock import AsyncMock, MagicMock, patch
+from collections.abc import Callable
+from unittest.mock import AsyncMock, patch
 
+import httpx
 import pytest
 
 from sovyx.plugins.official import web_intelligence as _web_mod  # anti-pattern #11
+
+# Real class captured BEFORE any patch so the MockTransport factory builds a
+# genuine client (a factory that itself called ``httpx.AsyncClient(...)`` while
+# ``httpx.AsyncClient`` is patched to that factory would recurse infinitely).
+_REAL_ASYNC_CLIENT = httpx.AsyncClient
+
+
+def _mock_async_client(
+    handler: Callable[[httpx.Request], httpx.Response],
+) -> Callable[..., httpx.AsyncClient]:
+    """Build an ``httpx.AsyncClient`` factory backed by a MockTransport.
+
+    The real ``SandboxedHttpClient`` builds its own ``httpx.AsyncClient`` via
+    ``build_request(...)`` + ``send(req, stream=True)`` (it no longer calls
+    ``._client.request``), so the durable boundary mock is a MockTransport that
+    returns a real ``httpx.Response``. The ``follow_redirects=False`` SSRF
+    invariant is preserved (the sandbox walks redirects manually).
+    """
+
+    def _factory(*_a: object, **_kw: object) -> httpx.AsyncClient:
+        return _REAL_ASYNC_CLIENT(transport=httpx.MockTransport(handler), follow_redirects=False)
+
+    return _factory
+
+
 from sovyx.plugins.official.web_intelligence import (
     DuckDuckGoBackend,
     SearchBackend,
@@ -386,30 +413,27 @@ class TestSearXNGBackend:
     @pytest.mark.anyio()
     async def test_search_text(self) -> None:
         backend = SearXNGBackend("https://search.example.com")
-        mock_resp = MagicMock()
-        mock_resp.status_code = 200
-        mock_resp.json.return_value = {
-            "results": [
-                {
-                    "title": "Python Docs",
-                    "url": "https://docs.python.org",
-                    "content": "Official Python documentation.",
-                },
-                {
-                    "title": "Real Python",
-                    "url": "https://realpython.com",
-                    "content": "Python tutorials.",
-                },
-            ],
-        }
 
-        with patch("httpx.AsyncClient") as MockClient:
-            mock_client = AsyncMock()
-            # SandboxedHttpClient routes through ._client.request(...)
-            mock_client.request = AsyncMock(return_value=mock_resp)
-            mock_client.aclose = AsyncMock()
-            MockClient.return_value = mock_client
+        def handler(_req: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200,
+                json={
+                    "results": [
+                        {
+                            "title": "Python Docs",
+                            "url": "https://docs.python.org",
+                            "content": "Official Python documentation.",
+                        },
+                        {
+                            "title": "Real Python",
+                            "url": "https://realpython.com",
+                            "content": "Python tutorials.",
+                        },
+                    ],
+                },
+            )
 
+        with patch("httpx.AsyncClient", _mock_async_client(handler)):
             results = await backend.search_text("python", 5)
 
         assert len(results) == 2
@@ -419,26 +443,23 @@ class TestSearXNGBackend:
     @pytest.mark.anyio()
     async def test_search_news(self) -> None:
         backend = SearXNGBackend("https://search.example.com")
-        mock_resp = MagicMock()
-        mock_resp.status_code = 200
-        mock_resp.json.return_value = {
-            "results": [
-                {
-                    "title": "Breaking News",
-                    "url": "https://reuters.com/article",
-                    "content": "Something happened.",
-                    "publishedDate": "2026-04-12",
+
+        def handler(_req: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200,
+                json={
+                    "results": [
+                        {
+                            "title": "Breaking News",
+                            "url": "https://reuters.com/article",
+                            "content": "Something happened.",
+                            "publishedDate": "2026-04-12",
+                        },
+                    ],
                 },
-            ],
-        }
+            )
 
-        with patch("httpx.AsyncClient") as MockClient:
-            mock_client = AsyncMock()
-            # SandboxedHttpClient routes through ._client.request(...)
-            mock_client.request = AsyncMock(return_value=mock_resp)
-            mock_client.aclose = AsyncMock()
-            MockClient.return_value = mock_client
-
+        with patch("httpx.AsyncClient", _mock_async_client(handler)):
             results = await backend.search_news("news", 5)
 
         assert len(results) == 1
@@ -448,16 +469,11 @@ class TestSearXNGBackend:
     @pytest.mark.anyio()
     async def test_api_error(self) -> None:
         backend = SearXNGBackend("https://search.example.com")
-        mock_resp = MagicMock()
-        mock_resp.status_code = 500
 
-        with patch("httpx.AsyncClient") as MockClient:
-            mock_client = AsyncMock()
-            # SandboxedHttpClient routes through ._client.request(...)
-            mock_client.request = AsyncMock(return_value=mock_resp)
-            mock_client.aclose = AsyncMock()
-            MockClient.return_value = mock_client
+        def handler(_req: httpx.Request) -> httpx.Response:
+            return httpx.Response(500)
 
+        with patch("httpx.AsyncClient", _mock_async_client(handler)):
             results = await backend.search_text("test", 5)
 
         assert results == []
@@ -466,12 +482,10 @@ class TestSearXNGBackend:
     async def test_network_error(self) -> None:
         backend = SearXNGBackend("https://search.example.com")
 
-        with patch("httpx.AsyncClient") as MockClient:
-            mock_client = AsyncMock()
-            mock_client.request = AsyncMock(side_effect=Exception("connection refused"))
-            mock_client.aclose = AsyncMock()
-            MockClient.return_value = mock_client
+        def handler(_req: httpx.Request) -> httpx.Response:
+            raise httpx.ConnectError("connection refused")
 
+        with patch("httpx.AsyncClient", _mock_async_client(handler)):
             results = await backend.search_text("test", 5)
 
         assert results == []
@@ -479,22 +493,23 @@ class TestSearXNGBackend:
     @pytest.mark.anyio()
     async def test_max_results_respected(self) -> None:
         backend = SearXNGBackend("https://search.example.com")
-        mock_resp = MagicMock()
-        mock_resp.status_code = 200
-        mock_resp.json.return_value = {
-            "results": [
-                {"title": f"Result {i}", "url": f"https://example.com/{i}", "content": "..."}
-                for i in range(10)
-            ],
-        }
 
-        with patch("httpx.AsyncClient") as MockClient:
-            mock_client = AsyncMock()
-            # SandboxedHttpClient routes through ._client.request(...)
-            mock_client.request = AsyncMock(return_value=mock_resp)
-            mock_client.aclose = AsyncMock()
-            MockClient.return_value = mock_client
+        def handler(_req: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200,
+                json={
+                    "results": [
+                        {
+                            "title": f"Result {i}",
+                            "url": f"https://example.com/{i}",
+                            "content": "...",
+                        }
+                        for i in range(10)
+                    ],
+                },
+            )
 
+        with patch("httpx.AsyncClient", _mock_async_client(handler)):
             results = await backend.search_text("test", 3)
 
         assert len(results) == 3
@@ -509,61 +524,57 @@ class TestBraveBackend:
     @pytest.mark.anyio()
     async def test_search_text(self) -> None:
         backend = BraveBackend("test-api-key")
-        mock_resp = MagicMock()
-        mock_resp.status_code = 200
-        mock_resp.json.return_value = {
-            "web": {
-                "results": [
-                    {
-                        "title": "Example",
-                        "url": "https://example.com",
-                        "description": "An example site.",
+        seen_requests: list[httpx.Request] = []
+
+        def handler(req: httpx.Request) -> httpx.Response:
+            seen_requests.append(req)
+            return httpx.Response(
+                200,
+                json={
+                    "web": {
+                        "results": [
+                            {
+                                "title": "Example",
+                                "url": "https://example.com",
+                                "description": "An example site.",
+                            },
+                        ],
                     },
-                ],
-            },
-        }
+                },
+            )
 
-        with patch("httpx.AsyncClient") as MockClient:
-            mock_client = AsyncMock()
-            # SandboxedHttpClient routes through ._client.request(...)
-            mock_client.request = AsyncMock(return_value=mock_resp)
-            mock_client.aclose = AsyncMock()
-            MockClient.return_value = mock_client
-
+        with patch("httpx.AsyncClient", _mock_async_client(handler)):
             results = await backend.search_text("test", 5)
 
         assert len(results) == 1
         assert results[0].title == "Example"
-        # Verify API key was sent. SandboxedHttpClient calls the
-        # underlying httpx client via .request("GET", url, headers=..., ...)
-        call_kwargs = mock_client.request.call_args
-        assert call_kwargs[1]["headers"]["X-Subscription-Token"] == "test-api-key"
+        # Verify API key was sent: the sandbox builds the real httpx.Request,
+        # so the header lands on the wire-level request the transport sees.
+        assert len(seen_requests) == 1
+        assert seen_requests[0].headers["X-Subscription-Token"] == "test-api-key"
 
     @pytest.mark.anyio()
     async def test_search_news(self) -> None:
         backend = BraveBackend("test-key")
-        mock_resp = MagicMock()
-        mock_resp.status_code = 200
-        mock_resp.json.return_value = {
-            "news": {
-                "results": [
-                    {
-                        "title": "Breaking",
-                        "url": "https://reuters.com/art",
-                        "description": "News.",
-                        "age": "2h ago",
+
+        def handler(_req: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200,
+                json={
+                    "news": {
+                        "results": [
+                            {
+                                "title": "Breaking",
+                                "url": "https://reuters.com/art",
+                                "description": "News.",
+                                "age": "2h ago",
+                            },
+                        ],
                     },
-                ],
-            },
-        }
+                },
+            )
 
-        with patch("httpx.AsyncClient") as MockClient:
-            mock_client = AsyncMock()
-            # SandboxedHttpClient routes through ._client.request(...)
-            mock_client.request = AsyncMock(return_value=mock_resp)
-            mock_client.aclose = AsyncMock()
-            MockClient.return_value = mock_client
-
+        with patch("httpx.AsyncClient", _mock_async_client(handler)):
             results = await backend.search_news("news", 5)
 
         assert len(results) == 1
@@ -572,16 +583,11 @@ class TestBraveBackend:
     @pytest.mark.anyio()
     async def test_api_error(self) -> None:
         backend = BraveBackend("key")
-        mock_resp = MagicMock()
-        mock_resp.status_code = 401
 
-        with patch("httpx.AsyncClient") as MockClient:
-            mock_client = AsyncMock()
-            # SandboxedHttpClient routes through ._client.request(...)
-            mock_client.request = AsyncMock(return_value=mock_resp)
-            mock_client.aclose = AsyncMock()
-            MockClient.return_value = mock_client
+        def handler(_req: httpx.Request) -> httpx.Response:
+            return httpx.Response(401)
 
+        with patch("httpx.AsyncClient", _mock_async_client(handler)):
             results = await backend.search_text("test", 5)
 
         assert results == []
