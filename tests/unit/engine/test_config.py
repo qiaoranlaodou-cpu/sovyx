@@ -231,6 +231,99 @@ class TestLoadEngineConfig:
         assert config.database.wal_mode is True  # preserved from yaml
 
 
+class TestConfigPrecedence:
+    """Regression: overrides > env > yaml > defaults (config-precedence fix).
+
+    Historically ``load_engine_config`` passed YAML as init kwargs to
+    ``EngineConfig(**yaml_data)``; pydantic-settings ranks init ABOVE env, so
+    YAML silently won over ``SOVYX_*`` env vars — the OPPOSITE of the
+    documented intent.  The fix orders sources via
+    ``EngineConfig.settings_customise_sources`` (env above yaml) and feeds the
+    migrated YAML through ``_YamlDictSettingsSource``.
+
+    Env mutated via ``monkeypatch.setenv``/``delenv`` (AP #23); each test
+    isolates the ``SOVYX_*`` keys it touches.
+    """
+
+    def test_env_beats_yaml_top_level(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # (a) env beats yaml — TOP-LEVEL field.
+        yaml_file = tmp_path / "system.yaml"
+        yaml_file.write_text("data_dir: /yaml/x\n")
+        monkeypatch.setenv("SOVYX_DATA_DIR", "/env/x")
+        config = load_engine_config(config_path=yaml_file)
+        assert config.data_dir == Path("/env/x")
+
+    def test_env_beats_yaml_nested(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        # (b) env beats yaml — NESTED field (log is a plain BaseModel sub-model
+        # whose env routing relies on env_nested_delimiter "__").
+        yaml_file = tmp_path / "system.yaml"
+        yaml_file.write_text("log:\n  console_format: text\n")
+        monkeypatch.setenv("SOVYX_LOG__CONSOLE_FORMAT", "json")
+        config = load_engine_config(config_path=yaml_file)
+        assert config.log.console_format == "json"
+
+    def test_env_beats_yaml_nested_basesettings_submodel(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # (b') Same precedence holds for a BaseSettings sub-model
+        # (observability), which carries its own env_prefix.
+        yaml_file = tmp_path / "system.yaml"
+        yaml_file.write_text("observability:\n  ring_buffer_size: 111\n")
+        monkeypatch.setenv("SOVYX_OBSERVABILITY__RING_BUFFER_SIZE", "222")
+        config = load_engine_config(config_path=yaml_file)
+        assert config.observability.ring_buffer_size == 222
+
+    def test_overrides_beat_env(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        # (c) overrides (init kwargs) beat env.
+        yaml_file = tmp_path / "system.yaml"
+        yaml_file.write_text("data_dir: /yaml/x\n")
+        monkeypatch.setenv("SOVYX_DATA_DIR", "/env/x")
+        config = load_engine_config(config_path=yaml_file, overrides={"data_dir": "/override/x"})
+        assert config.data_dir == Path("/override/x")
+
+    def test_yaml_beats_default(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        # (d) yaml beats hardcoded default when no env is set.
+        monkeypatch.delenv("SOVYX_DATA_DIR", raising=False)
+        monkeypatch.delenv("SOVYX_LOG__CONSOLE_FORMAT", raising=False)
+        yaml_file = tmp_path / "system.yaml"
+        yaml_file.write_text("data_dir: /yaml/x\nlog:\n  console_format: json\n")
+        config = load_engine_config(config_path=yaml_file)
+        assert config.data_dir == Path("/yaml/x")
+        assert config.log.console_format == "json"
+
+    def test_env_only(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        # (e) env-only (no yaml) still works.
+        monkeypatch.setenv("SOVYX_DATA_DIR", "/env/only")
+        config = load_engine_config()
+        assert config.data_dir == Path("/env/only")
+
+    def test_defaults_only(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        # (e) defaults-only (no yaml, no env) still works.
+        monkeypatch.delenv("SOVYX_DATA_DIR", raising=False)
+        config = load_engine_config()
+        assert isinstance(config.data_dir, Path)
+        # log_file resolves under the resolved data_dir (model_validator).
+        assert config.log.log_file == config.data_dir / "logs" / "sovyx.log"
+
+    def test_direct_construction_init_beats_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # (e) Direct EngineConfig(**kwargs) keeps init highest even with env
+        # set — direct-construction behaviour MUST be unaffected by the fix.
+        monkeypatch.setenv("SOVYX_DATA_DIR", "/env/x")
+        config = EngineConfig(data_dir="/direct")
+        assert config.data_dir == Path("/direct")
+
+    def test_direct_construction_unaffected_when_yaml_carrier_empty(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The _YamlDictSettingsSource contributes nothing for direct
+        # construction (ContextVar empty), so env still applies normally.
+        monkeypatch.setenv("SOVYX_DATA_DIR", "/env/direct")
+        config = EngineConfig()
+        assert config.data_dir == Path("/env/direct")
+
+
 class TestDeepMerge:
     """Deep merge utility."""
 

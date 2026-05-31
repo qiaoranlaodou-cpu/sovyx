@@ -8,16 +8,65 @@ from __future__ import annotations
 
 import os
 import sys
+from contextvars import ContextVar
 from datetime import datetime  # noqa: TC003 — pydantic resolves field type at runtime.
 from pathlib import Path
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 import yaml
 from pydantic import BaseModel, Field, model_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import (
+    BaseSettings,
+    PydanticBaseSettingsSource,
+    SettingsConfigDict,
+)
 
 from sovyx.engine._home_path import resolve_home_dir
 from sovyx.engine.errors import ConfigNotFoundError, ConfigValidationError
+
+if TYPE_CHECKING:
+    from pydantic.fields import FieldInfo
+
+# Module-level carrier for the parsed + legacy-migrated system.yaml dict that
+# ``load_engine_config`` feeds into ``EngineConfig`` construction.  A ContextVar
+# (not a plain module global) keeps this isolated across threads / async tasks
+# and trivially reentrant — ``load_engine_config`` sets it immediately before
+# constructing ``EngineConfig`` and resets it in a ``finally`` block.
+#
+# When EMPTY (direct ``EngineConfig(**kwargs)`` construction, or
+# ``config_path=None``), the YAML source below contributes NOTHING, so direct
+# construction precedence (init kwargs highest) is completely unaffected.
+_pending_yaml_data: ContextVar[dict[str, Any] | None] = ContextVar(
+    "_pending_yaml_data", default=None
+)
+
+
+class _YamlDictSettingsSource(PydanticBaseSettingsSource):
+    """Settings source that yields the migrated system.yaml dict.
+
+    Reads the in-memory, already-parsed and legacy-migrated YAML mapping
+    from the ``_pending_yaml_data`` ContextVar.  This is preferred over the
+    built-in :class:`YamlConfigSettingsSource` because (a) the migration
+    (``_migrate_legacy_log_format``) operates on the in-memory dict and
+    (b) the path is dynamic per ``load_engine_config`` call.
+
+    Ordered BELOW ``env_settings`` in :meth:`EngineConfig.settings_customise_sources`
+    so environment variables outrank YAML, and ABOVE only ``file_secret_settings``
+    so YAML still outranks hardcoded defaults.  When the ContextVar is empty the
+    source returns ``{}`` — a no-op that preserves direct-construction behaviour.
+    """
+
+    def get_field_value(
+        self, field: FieldInfo, field_name: str
+    ) -> tuple[Any, str, bool]:  # pragma: no cover - not used (whole-dict source)
+        # Whole-dict sources implement ``__call__`` directly; this abstract
+        # method is required by the base class but never exercised here.
+        return None, field_name, False
+
+    def __call__(self) -> dict[str, Any]:
+        # Return a shallow copy so downstream deep-merge mutation in
+        # pydantic-settings can never leak back into the carried dict.
+        return dict(_pending_yaml_data.get() or {})
 
 
 class LoggingConfig(BaseModel):
@@ -3360,12 +3409,46 @@ class EngineConfig(BaseSettings):
     Inherits from BaseSettings (pydantic-settings) for env_prefix support.
 
     Priority (highest to lowest):
-        1. Environment variables (SOVYX_*)
-        2. system.yaml
-        3. Hardcoded defaults
+        1. Init kwargs / programmatic ``overrides`` (direct construction +
+           ``load_engine_config(overrides=...)``)
+        2. Environment variables (SOVYX_*)
+        3. system.yaml (via :class:`_YamlDictSettingsSource` + the
+           ``_pending_yaml_data`` ContextVar set by ``load_engine_config``)
+        4. Hardcoded defaults
+
+    The custom source ordering in :meth:`settings_customise_sources` is what
+    makes env outrank YAML; pydantic-settings ranks init kwargs above env by
+    default, so direct ``EngineConfig(**kwargs)`` construction keeps init
+    highest with no extra wiring.
     """
 
     model_config = SettingsConfigDict(env_prefix="SOVYX_", env_nested_delimiter="__")
+
+    @classmethod
+    def settings_customise_sources(
+        cls,
+        settings_cls: type[BaseSettings],
+        init_settings: PydanticBaseSettingsSource,
+        env_settings: PydanticBaseSettingsSource,
+        dotenv_settings: PydanticBaseSettingsSource,
+        file_secret_settings: PydanticBaseSettingsSource,
+    ) -> tuple[PydanticBaseSettingsSource, ...]:
+        """Order sources so precedence is overrides > env > yaml > defaults.
+
+        pydantic-settings applies sources left-to-right as highest-to-lowest
+        priority (deep-merged), so the YAML source is placed BELOW the env /
+        dotenv sources but ABOVE ``file_secret_settings`` (and the implicit
+        defaults).  ``init_settings`` stays first, preserving init-kwargs /
+        programmatic-override supremacy for both direct construction and
+        ``load_engine_config(overrides=...)``.
+        """
+        return (
+            init_settings,
+            env_settings,
+            dotenv_settings,
+            _YamlDictSettingsSource(settings_cls),
+            file_secret_settings,
+        )
 
     data_dir: Path = Field(
         # #32 — defensive home resolution at the EngineConfig level
@@ -3430,11 +3513,17 @@ def load_engine_config(
     config_path: Path | None = None,
     overrides: dict[str, Any] | None = None,
 ) -> EngineConfig:
-    """Load engine configuration with merge: defaults → yaml → env → overrides.
+    """Load engine configuration. Precedence: overrides > env > yaml > defaults.
+
+    The parsed + legacy-migrated YAML dict is handed to
+    :class:`_YamlDictSettingsSource` via the ``_pending_yaml_data`` ContextVar
+    rather than passed as init kwargs, so environment variables correctly
+    outrank YAML (see :meth:`EngineConfig.settings_customise_sources`).
+    ``overrides`` ARE passed as init kwargs, keeping them above env.
 
     Args:
         config_path: Path to system.yaml. If None, uses defaults + env only.
-        overrides: Programmatic overrides (highest priority after env).
+        overrides: Programmatic overrides (highest priority, above env).
 
     Returns:
         Fully resolved EngineConfig.
@@ -3470,16 +3559,19 @@ def load_engine_config(
     # Backward compatibility: migrate legacy "format" → "console_format"
     _migrate_legacy_log_format(yaml_data)
 
-    if overrides:
-        yaml_data = _deep_merge(yaml_data, overrides)
-
+    # Hand the migrated YAML dict to _YamlDictSettingsSource via the ContextVar.
+    # overrides are passed as init kwargs (highest priority, above env); they are
+    # NOT merged into yaml_data so they cannot be demoted below env.
+    token = _pending_yaml_data.set(yaml_data)
     try:
-        return EngineConfig(**yaml_data)
+        return EngineConfig(**(overrides or {}))
     except Exception as exc:  # noqa: BLE001
         raise ConfigValidationError(
             f"Configuration validation failed: {exc}",
-            context={"fields": str(yaml_data.keys())},
+            context={"fields": str(list(yaml_data.keys()) + list((overrides or {}).keys()))},
         ) from exc
+    finally:
+        _pending_yaml_data.reset(token)
 
 
 def _migrate_legacy_log_format(data: dict[str, Any]) -> None:
