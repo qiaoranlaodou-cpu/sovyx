@@ -84,8 +84,12 @@ WebSocket.
 
 ## Cognitive Loop
 
-Each interaction runs five phases. The loop is serialized per Mind by a gate
-so concurrent requests don't step on each other.
+Each interaction runs five request-driven phases. The loop is serialized
+per Mind by a gate so concurrent requests don't step on each other. Two
+further phases run on schedulers rather than per interaction —
+**Consolidate** (every 6 h) and **Dream** (nightly) — making the full
+cognitive loop seven phases. The two scheduled phases are covered in
+[`modules/brain.md`](modules/brain.md) and [`modules/cognitive.md`](modules/cognitive.md).
 
 ```mermaid
 stateDiagram-v2
@@ -240,7 +244,9 @@ Sovyx ships a built-in safety stack:
   injection patterns.
 - **Financial gate** — any transaction-like action requires an explicit
   user confirmation step.
-- **Content filter tiers** — `standard`, `strict`, and `child_safe`.
+- **Content filter tiers** — `none`, `standard`, and `strict` (the
+  `content_filter` setting). Child safety is a separate `child_safe_mode`
+  boolean, not a filter tier.
 - **Shadow mode** — try new rules in log-only mode before promoting.
 
 Guardrails, custom regex rules, and banned topics are all configured in

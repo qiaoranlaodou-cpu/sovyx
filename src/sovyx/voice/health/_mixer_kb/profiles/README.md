@@ -6,7 +6,7 @@ presets for the Voice Mixer Sanity L2.5 layer.
 ## What lives here
 
 Each `*.yaml` file in this directory is a
-[MixerKBProfile](../../contract.py) — one per hardware class.
+[MixerKBProfile](../../contract/) — one per hardware class.
 
 Files are loaded at startup by
 [`MixerKBLookup.load_shipped`](../__init__.py) and validated via the
@@ -19,7 +19,7 @@ metadata and skipped by the profile enumeration.**
 
 Phase F1 (v0.22.0) ships the loader infrastructure only. Production
 profile content lands in Phase F1.H per the
-[V2 Master Plan](../../../../../docs-internal/missions/VOICE-MIXER-SANITY-L2.5-MASTER-PLAN-v2.md)
+[KB profile contribution guide](../../../../../../docs/contributing/voice-mixer-kb-profiles.md)
 — each profile requires HIL attestation captured on the target hardware
 (pilot + reference laptops) before merge, per `F.3 Contribution workflow`.
 
@@ -38,5 +38,5 @@ matching hardware or document an explicit exception.
 
 ## Schema reference
 
-See [Appendix 2 of the V2 Master Plan](../../../../../docs-internal/missions/VOICE-MIXER-SANITY-L2.5-MASTER-PLAN-v2.md#appendix-2--kb-profile-yaml-schema-v1)
+See the [KB profile contribution guide](../../../../../../docs/contributing/voice-mixer-kb-profiles.md)
 for the complete YAML schema.

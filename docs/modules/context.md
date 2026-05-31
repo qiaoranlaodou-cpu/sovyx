@@ -33,11 +33,11 @@ Assembled in this order (never reordered — LLM attention is strongest at start
 
 | Signal | Effect |
 |---|---|
-| Long conversation (>10 turns) | Conversation slot gets more budget |
+| Long conversation (>15 turns) | Conversation slot gets more budget |
 | Short conversation (<3 turns) | Memory slots get more budget |
 | High complexity (>0.7) | Response reserve increases |
-| Many brain results (>15) | Memory concept slot grows |
-| High mean confidence (>0.8) | Memory slots shrink (fewer, better results) |
+| Many brain results (>20) | Memory concept slot grows |
+| High mean confidence (>0.7) | Memory slots shrink (fewer, better results) |
 | Small context window (<8K) | System prompt and temporal get minimum floors |
 
 Minimum floors prevent any slot from disappearing: system prompt ≥200 tokens, conversation ≥500 tokens, response reserve ≥256 tokens, temporal ≥50 tokens, context window ≥2048 tokens.

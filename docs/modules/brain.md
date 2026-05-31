@@ -143,7 +143,13 @@ class ImportanceWeights:
 
 ## Ebbinghaus decay
 
-`EbbinghausDecay` applies `retention = e^(-t/tau)` to concept importance during consolidation, where `t` is time since `last_accessed` and `tau` is a per-concept strength parameter boosted by `access_count`. Reinforcement on recall resets the clock.
+`EbbinghausDecay` applies a rehearsal-modulated **linear** decay to concept importance once per consolidation cycle:
+
+```
+new_importance = importance × (1 − decay_rate × (1 / (1 + access_count × 0.1)))
+```
+
+`decay_rate` defaults to `0.1`; frequently accessed concepts decay slower (the `1 / (1 + access_count × 0.1)` term shrinks the effective rate). Importance is floored at `min_strength = 0.01` so nothing decays to zero. This is a per-cycle linear step, not a continuous `e^(-t/tau)` curve. See `brain/learning.py`.
 
 ## Consolidation cycle
 
@@ -187,7 +193,7 @@ Per run:
 ```yaml
 brain:
   consolidation:
-    interval_hours: 24
+    interval_hours: 6
     prune_threshold: 0.1
   retrieval:
     rrf_k: 60

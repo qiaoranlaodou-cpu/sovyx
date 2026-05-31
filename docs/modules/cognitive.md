@@ -169,8 +169,6 @@ Safety rules and thresholds live under `cognitive.safety` in the mind config.
 
 - **Streaming Think/Act** — cooperate with the LLM router's streaming
   path for faster first-token latency.
-- **PAD 3D emotional model** (ADR-001) — `Episode` is 2D today,
-  `Concept` is 1D; migrate both to PAD 3D with a backfill pass.
 
 ## See also
 

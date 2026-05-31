@@ -60,10 +60,33 @@ nav:
     - Voice setup (CLI): modules/voice-setup.md
     - Voice calibration: modules/voice-calibration.md
     - Voice device test: modules/voice-device-test.md
+    - Voice capture health: modules/voice-capture-health.md
+    - Voice privacy: modules/voice-privacy.md
+    - Voice platform parity: modules/voice-platform-parity.md
+    - Voice OTel semconv: modules/voice-otel-semconv.md
+    - LLM provider integrity: modules/llm-provider-integrity.md
+    - Dashboard distribution integrity: modules/dashboard-distribution-integrity.md
     - Licensing: modules/licensing.md
     - Benchmarks: modules/benchmarks.md
+  - Reference:
+    - CLI reference: cli-reference.md
+    - Plugin developer guide: plugin-developer-guide.md
+    - Audio quality: audio-quality.md
+    - Model mirrors: model-mirrors.md
+    - Compliance: compliance.md
+  - Troubleshooting:
+    - Voice (Windows): modules/voice-troubleshooting-windows.md
+    - Voice (Linux): modules/voice-troubleshooting-linux.md
+    - Voice setup (Linux Mint): voice-setup-linux-mint.md
+  - Operations:
+    - Resource hygiene: operations/resource-hygiene.md
   - FAQ: faq.md
-  - Contributing: contributing.md
+  - Contributing:
+    - Overview: contributing.md
+    - Voice mixer KB profiles: contributing/voice-mixer-kb-profiles.md
+    - Voice KB rotation: contributing/voice-kb-rotation.md
+    - Voice wake words: contributing/voice-wake-words.md
+    - Voice mixer band-aid removal: migration/voice-mixer-band-aid-removal.md
 
 markdown_extensions:
   - admonition
