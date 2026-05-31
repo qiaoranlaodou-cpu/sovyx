@@ -507,6 +507,12 @@ class TestContradictionDetection:
         evt = contradiction_events[0].args[0]
         assert evt.old_confidence == pytest.approx(0.80)
         assert evt.new_confidence == pytest.approx(0.48, abs=0.02)
+        # C-Σ-001: old_content must be the PRE-overwrite value. It was emitted
+        # AFTER concept.content was overwritten ("Recency wins"), so the event
+        # carried old_content == new_content — a broken contract.
+        assert evt.old_content == "Favorite color is blue"
+        assert evt.new_content == "Favorite color is red"
+        assert evt.old_content != evt.new_content
 
     async def test_corroboration_no_contradiction(
         self, brain: BrainService, mock_deps: dict[str, AsyncMock | WorkingMemory]

@@ -289,6 +289,10 @@ class BrainService:
                     from sovyx.brain.scoring import ConfidenceScorer  # noqa: PLC0415
 
                     old_conf = concept.confidence
+                    # Capture the pre-overwrite content for the event BEFORE
+                    # recency overwrites it (C-Σ-001): emitting concept.content
+                    # after the overwrite made old_content == new_content.
+                    old_content_value = concept.content
                     scorer = ConfidenceScorer()
                     concept.confidence = scorer.score_contradiction(concept.confidence)
                     concept.content = content  # Recency wins
@@ -305,7 +309,7 @@ class BrainService:
                     await self._events.emit(
                         ConceptContradicted(
                             concept_id=str(concept.id),
-                            old_content=concept.content,
+                            old_content=old_content_value,
                             new_content=content,
                             old_confidence=old_conf,
                             new_confidence=concept.confidence,
