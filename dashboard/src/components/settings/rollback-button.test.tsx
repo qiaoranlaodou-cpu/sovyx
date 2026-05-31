@@ -11,9 +11,13 @@
  *   surfaces the failed-toast).
  */
 
-import { beforeEach, describe, expect, it, vi } from "vitest";
-import { fireEvent, render, screen, waitFor } from "@/test/test-utils";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { act, fireEvent, render, screen, waitFor } from "@/test/test-utils";
 
+import {
+  __resetResolvedMindIdCacheForTests,
+  __seedResolvedMindIdForTests,
+} from "@/hooks/use-resolved-mind-id";
 import { useDashboardStore } from "@/stores/dashboard";
 import { RollbackButton } from "./rollback-button";
 
@@ -41,10 +45,38 @@ beforeEach(() => {
   mockFetch.mockReset();
   mockToastSuccess.mockReset();
   mockToastError.mockReset();
+  // RollbackButton subscribes to ``useResolvedMindId`` so every slice
+  // call carries an explicit ``mind_id``. That hook is a module-level
+  // singleton that, on first subscription, fires its OWN
+  // ``/api/onboarding/state`` fetch through the shared ``mockFetch`` —
+  // silently consuming a queued ``mockResolvedValueOnce`` and corrupting
+  // the strict response ordering the tests rely on. It also transitions
+  // ``mindId`` from the loading sentinel to the resolved value, which
+  // re-fires the mount ``loadBackups`` effect (an extra fetch). Reset +
+  // pre-seed the singleton so ``mindId`` is stable from first render and
+  // the hook never touches ``mockFetch``. (Same proven pattern as
+  // signing-key-card.test.tsx.)
+  __resetResolvedMindIdCacheForTests();
+  __seedResolvedMindIdForTests({
+    complete: true,
+    mind_name: "Default",
+    mind_id: "default",
+    provider_configured: true,
+    default_provider: "ollama",
+    default_model: "llama3.1:latest",
+    ollama_available: true,
+    ollama_models: ["llama3.1:latest"],
+  });
   useDashboardStore.setState({
     calibrationBackupCount: null,
     calibrationError: null,
+    currentCalibrationJob: null,
+    calibrationFeatureFlag: null,
   });
+});
+
+afterEach(() => {
+  __resetResolvedMindIdCacheForTests();
 });
 
 describe("RollbackButton", () => {
@@ -172,22 +204,27 @@ describe("RollbackButton", () => {
 
     // Simulate the calibration slice receiving a terminal snapshot
     // (DONE) — this is what subscribeToCalibrationJob does on the
-    // last WS message before unsubscribing.
-    useDashboardStore.setState({
-      currentCalibrationJob: {
-        job_id: "default",
-        mind_id: "default",
-        status: "done",
-        progress: 1.0,
-        current_stage_message: "complete",
-        created_at_utc: "2026-05-07T00:00:00Z",
-        updated_at_utc: "2026-05-07T00:08:00Z",
-        profile_path: "/home/user/.sovyx/default/calibration.json",
-        triage_winner_hid: "H10",
-        error_summary: null,
-        fallback_reason: null,
-        extras: null,
-      },
+    // last WS message before unsubscribing. Wrap in ``act`` so the
+    // terminal-subscription effect (which fires the re-fetch) is
+    // flushed synchronously before we assert, instead of racing the
+    // assertion's poll loop.
+    act(() => {
+      useDashboardStore.setState({
+        currentCalibrationJob: {
+          job_id: "default",
+          mind_id: "default",
+          status: "done",
+          progress: 1.0,
+          current_stage_message: "complete",
+          created_at_utc: "2026-05-07T00:00:00Z",
+          updated_at_utc: "2026-05-07T00:08:00Z",
+          profile_path: "/home/user/.sovyx/default/calibration.json",
+          triage_winner_hid: "H10",
+          error_summary: null,
+          fallback_reason: null,
+          extras: null,
+        },
+      });
     });
 
     await waitFor(() =>
@@ -195,20 +232,43 @@ describe("RollbackButton", () => {
     );
   });
 
-  it("rc.15 LOW.4: retries loadBackups after initial-mount failure (real-time, 1500ms delay)", async () => {
-    // Real timers + real delay (1500ms in production). The test waits
-    // up to 3000ms via waitFor, giving 2x headroom.
-    mockFetch.mockRejectedValueOnce(new Error("network blip"));
-    mockFetch.mockResolvedValueOnce(
-      jsonResponse({ mind_id: "default", generations: [1] }),
-    );
+  it("rc.15 LOW.4: retries loadBackups after initial-mount failure (fake timers, 1500ms delay)", async () => {
+    // The component schedules a single ``setTimeout(_RETRY_DELAY_MS=1500)``
+    // retry after the initial-mount load fails. Pre-hardening this test
+    // used REAL timers + the real 1500ms production delay with a 3000ms
+    // ``waitFor`` — under full-suite parallelism on a low-memory machine
+    // the real wall-clock delay routinely exceeded the headroom and the
+    // test flaked. Fix: drive the retry deterministically with fake
+    // timers — advance exactly the retry delay and assert, with zero
+    // dependence on wall-clock scheduling.
+    vi.useFakeTimers();
+    try {
+      mockFetch.mockRejectedValueOnce(new Error("network blip"));
+      mockFetch.mockResolvedValueOnce(
+        jsonResponse({ mind_id: "default", generations: [1] }),
+      );
 
-    render(<RollbackButton />);
-    await waitFor(
-      () =>
-        expect(useDashboardStore.getState().calibrationBackupCount).toBe(1),
-      { timeout: 3000, interval: 100 },
-    );
+      render(<RollbackButton />);
+
+      // Let the initial (rejected) load settle: count stays null, which
+      // arms the retry ``setTimeout``. Wrap in ``act`` so the resulting
+      // re-render is flushed inside React's batching window.
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0);
+      });
+      expect(useDashboardStore.getState().calibrationBackupCount).toBeNull();
+
+      // Fire the retry timer and flush its async ``loadBackups`` — the
+      // second (resolved) response now lands → count becomes 1. The
+      // settle-induced re-render is wrapped in ``act``.
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1500);
+      });
+
+      expect(useDashboardStore.getState().calibrationBackupCount).toBe(1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   // ====================================================================

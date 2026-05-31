@@ -18,15 +18,58 @@
  * the explicit 30 s timeout. The mission accepts the test latency
  * because the contract is load-bearing.
  */
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, afterAll, beforeAll } from "vitest";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
-import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, writeFileSync, rmSync, readdirSync } from "node:fs";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 const dashboardRoot = join(__dirname, "..");
+
+const FIXTURE_PREFIX = ".lint-rule-fixture-";
+
+/**
+ * Robustly remove a temp fixture directory. On Windows the just-spawned
+ * ESLint process can still hold a handle on the directory for a moment
+ * after ``close`` fires, so a single ``rmSync`` races the handle release
+ * and (a) throws EBUSY/EPERM or (b) silently leaves a stray
+ * ``.lint-rule-fixture-*`` dir under dashboard/. ``maxRetries`` +
+ * ``retryDelay`` give the handle time to release; ``force`` swallows the
+ * already-gone case.
+ */
+function removeFixtureDir(dir: string): void {
+  rmSync(dir, {
+    recursive: true,
+    force: true,
+    maxRetries: 5,
+    retryDelay: 100,
+  });
+}
+
+/**
+ * Safety net: sweep any leftover ``.lint-rule-fixture-*`` sibling dirs
+ * under dashboard/. Guarantees a crashed/aborted prior run (or a Windows
+ * handle-lock that defeated even the retrying cleanup) never accumulates
+ * stray fixtures in the repo working tree.
+ */
+function sweepLeftoverFixtures(): void {
+  let entries: string[];
+  try {
+    entries = readdirSync(dashboardRoot);
+  } catch {
+    return;
+  }
+  for (const name of entries) {
+    if (name.startsWith(FIXTURE_PREFIX)) {
+      removeFixtureDir(join(dashboardRoot, name));
+    }
+  }
+}
+
+beforeAll(sweepLeftoverFixtures);
+afterAll(sweepLeftoverFixtures);
 
 const FIXTURE_CONTENTS = `
 import * as React from "react";
@@ -86,9 +129,14 @@ function runEslint(file: string): Promise<EslintRun> {
 describe("BT.B.1 ESLint rule — block mindId='default'", () => {
   it(
     "fires against the deliberate-violation fixture with all 3 expected messages",
-    { timeout: 30_000 },
+    // 60s (not 30s): this is the documented slow path — it spawns an
+    // ESLint cold-start, which under full-suite parallelism on a
+    // low-memory machine can exceed 30s purely from runner contention
+    // (not a logic regression). Wider headroom keeps the gate
+    // deterministic; the assertions below remain unchanged.
+    { timeout: 60_000 },
     async () => {
-      const dir = mkdtempSync(join(dashboardRoot, ".lint-rule-fixture-"));
+      const dir = mkdtempSync(join(dashboardRoot, FIXTURE_PREFIX));
       const file = join(dir, "fixture.tsx");
       writeFileSync(file, FIXTURE_CONTENTS, "utf8");
       try {
@@ -103,7 +151,7 @@ describe("BT.B.1 ESLint rule — block mindId='default'", () => {
         expect(combined).toContain('Hardcoded mindId="default"');
         expect(combined).toContain('Hardcoded mind_id="default"');
       } finally {
-        rmSync(dir, { recursive: true, force: true });
+        removeFixtureDir(dir);
       }
     },
   );
