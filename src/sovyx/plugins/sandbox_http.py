@@ -8,7 +8,9 @@ Security layers:
 2. Local network blocking (127.*, 10.*, 172.16-31.*, 192.168.*, ::1, etc.)
 3. DNS rebinding protection (resolve IP before connect)
 4. Rate limiting (10 req/min default)
-5. Response size limit (5MB default)
+5. Response size cap (5MB default): oversized responses raise
+   PermissionDeniedError — checked by BOTH declared content-length and
+   actual body length, so a missing/false header cannot bypass it.
 6. Timeout enforcement (10s default)
 
 Spec: SPE-008-SANDBOX §5
@@ -249,7 +251,8 @@ class SandboxedHttpClient:
     """HTTP client sandboxed for plugin use.
 
     Enforces domain allowlist, blocks local network access,
-    rate-limits requests, and caps response size.
+    rate-limits requests, and rejects oversized responses
+    (raises PermissionDeniedError; see ``_request``).
 
     Usage::
 
@@ -404,7 +407,12 @@ class SandboxedHttpClient:
             **kwargs: httpx kwargs.
 
         Returns:
-            httpx.Response (body truncated if too large).
+            httpx.Response.
+
+        Raises:
+            PermissionDeniedError: URL/domain/rate violation, or the response
+                exceeds max_bytes (by declared content-length or actual body
+                length). The transient buffered read is tracked as C-Σ-003b.
         """
         parsed = urlparse(url)
         host_only = parsed.hostname or ""
@@ -475,14 +483,23 @@ class SandboxedHttpClient:
         response = await self._request_with_redirect_validation(method, url, **kwargs)
         latency_ms = (time.monotonic() - started) * 1000.0
 
-        # Check response size
+        # Enforce response size cap (C-Σ-003): reject oversized responses so a
+        # plugin never receives them. Check BOTH the declared content-length
+        # AND the actual body length — a missing or false content-length header
+        # must not bypass the cap. NOTE: httpx buffers the body before this
+        # point, so an oversized body is still transiently allocated; bounding
+        # the *read* itself needs a streaming refactor of the SSRF-hardened
+        # redirect walk — tracked as follow-up C-Σ-003b.
         content_length = response.headers.get("content-length")
-        if content_length and int(content_length) > self._max_bytes:
+        declared = int(content_length) if content_length and content_length.isdigit() else None
+        actual = len(response.content or b"")
+        if (declared is not None and declared > self._max_bytes) or actual > self._max_bytes:
+            observed = max(declared or 0, actual)
             logger.warning(
                 "plugin_http_response_too_large",
                 plugin=self._plugin,
                 url=url,
-                size=content_length,
+                size=observed,
                 limit=self._max_bytes,
             )
             logger.warning(
@@ -492,12 +509,16 @@ class SandboxedHttpClient:
                     "plugin.http.method": method,
                     "plugin.http.url_host_only": host_only,
                     "plugin.http.violation_kind": "response_too_large",
-                    "plugin.http.response_bytes": int(content_length),
+                    "plugin.http.response_bytes": observed,
                     "plugin.http.limit_bytes": self._max_bytes,
                 },
             )
+            raise PermissionDeniedError(
+                self._plugin,
+                f"Response size {observed} bytes exceeds cap of {self._max_bytes} bytes",
+            )
 
-        response_bytes = int(content_length) if content_length else len(response.content or b"")
+        response_bytes = actual
         logger.info(
             "plugin.http.response",
             **{

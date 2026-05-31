@@ -268,16 +268,35 @@ class TestHttpRequests:
         await client.close()
 
     @pytest.mark.anyio()
-    async def test_response_size_warning(self) -> None:
-        """Large response logs warning but doesn't block."""
+    async def test_response_size_blocked_by_content_length(self) -> None:
+        """Oversized response (declared content-length) is rejected, not returned (C-Σ-003)."""
         client = SandboxedHttpClient("test", ["api.example.com"], max_response_bytes=100)
 
         mock_response = httpx.Response(200, headers={"content-length": "999999"}, text="big")
-        with patch.object(
-            client._client, "request", new_callable=AsyncMock, return_value=mock_response
+        with (
+            patch.object(
+                client._client, "request", new_callable=AsyncMock, return_value=mock_response
+            ),
+            pytest.raises(PermissionDeniedError, match="exceeds cap"),
         ):
-            resp = await client.get("https://api.example.com/big")
-            assert resp.status_code == 200  # Not blocked, just warned
+            await client.get("https://api.example.com/big")
+
+        await client.close()
+
+    @pytest.mark.anyio()
+    async def test_response_size_blocked_by_actual_body(self) -> None:
+        """A small/absent declared length cannot bypass the cap — actual body is checked (C-Σ-003)."""
+        client = SandboxedHttpClient("test", ["api.example.com"], max_response_bytes=10)
+
+        # Declared length lies (small); actual body is large.
+        mock_response = httpx.Response(200, headers={"content-length": "5"}, content=b"x" * 5000)
+        with (
+            patch.object(
+                client._client, "request", new_callable=AsyncMock, return_value=mock_response
+            ),
+            pytest.raises(PermissionDeniedError, match="exceeds cap"),
+        ):
+            await client.get("https://api.example.com/big")
 
         await client.close()
 
