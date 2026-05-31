@@ -193,8 +193,14 @@ class CognitiveLoop:
             return None
         if not self._fail_fast_on_missing_dep:
             return None
-        target_channel = str(getattr(request, "channel", "")) or "unknown"
-        reply_to = getattr(request, "request_id", None) or getattr(request, "message_id", None)
+        # C-Σ-002: derive channel + reply target from the perception (the real
+        # source), mirroring ActPhase's normal path. The previous code read
+        # request.channel / request.request_id / request.message_id — none of
+        # which exist on CognitiveRequest — so target_channel was ALWAYS
+        # "unknown" and reply_to ALWAYS None.
+        perception = request.perception
+        target_channel = perception.source or "unknown"
+        reply_to = str(perception.metadata.get("reply_to", "")) or None
         logger.info(
             "cognitive.loop.short_circuit_degraded",
             missing_dependencies=list(self._missing_dependencies),

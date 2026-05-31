@@ -19,7 +19,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from sovyx.cognitive.act import ActionResult
+from sovyx.cognitive.gate import CognitiveRequest
 from sovyx.cognitive.loop import CognitiveLoop
+from sovyx.cognitive.perceive import Perception
+from sovyx.engine.types import ConversationId, MindId, PerceptionType
 
 
 def _make_loop(
@@ -42,13 +45,23 @@ def _make_loop(
     )
 
 
-def _make_request(channel: str = "test-channel") -> MagicMock:
-    req = MagicMock()
-    req.mind_id = "test-mind"
-    req.conversation_id = "test-conv"
-    req.channel = channel
-    req.request_id = "req-1"
-    return req
+def _make_request(channel: str = "test-channel") -> CognitiveRequest:
+    # C-Σ-002: build a REAL CognitiveRequest. The previous helper returned a
+    # MagicMock with `.channel`/`.request_id` set — attributes that do NOT
+    # exist on CognitiveRequest — which masked the bug where the synthetic
+    # degraded path read those nonexistent attrs and always got "unknown".
+    return CognitiveRequest(
+        perception=Perception(
+            id="msg-1",
+            type=PerceptionType.USER_MESSAGE,
+            source=channel,
+            content="hello",
+            metadata={"reply_to": "msg-1"},
+        ),
+        mind_id=MindId("test-mind"),
+        conversation_id=ConversationId("test-conv"),
+        conversation_history=[],
+    )
 
 
 class TestStartDependencyGate:
@@ -130,6 +143,10 @@ class TestProcessRequestShortCircuit:
         assert result.error is True
         assert result.metadata["reason"] == "cognitive_dependency_missing"
         assert "llm_router_no_available_provider" in result.metadata["missing_dependencies"]
+        # C-Σ-002: channel + reply target derive from the real perception, not
+        # nonexistent request attrs (was ALWAYS "unknown" / None).
+        assert result.target_channel == "voice"
+        assert result.reply_to == "msg-1"
         # _execute_loop must NOT have been invoked
         loop._execute_loop.assert_not_called()
         # Short-circuit event fired exactly once
