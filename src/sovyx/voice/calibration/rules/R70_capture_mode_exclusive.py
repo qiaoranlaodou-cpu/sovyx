@@ -1,5 +1,16 @@
 """R70: Windows capture mode -- prefer WASAPI exclusive when latency is high.
 
+STATUS AT HEAD — UNREACHABLE (W1.3 honesty pass, anti-pattern #48).
+This rule cannot fire from real captured data: ``applies()`` gates on
+``measurements.portaudio_latency_advertised_ms > 30`` OR
+``capture_jitter_ms > 5``, but the measurer hardcodes BOTH fields to
+``0.0`` (``voice/calibration/_measurer.py`` — no producer measures
+PortAudio latency/jitter), so neither threshold can ever be crossed;
+calibration is also Linux-only. It exists + is unit-tested with
+synthetic inputs as scaffolding, self-declares via ``unreachable_reason``
+(disclosed by ``--evaluate-rules``), and a real latency/jitter probe is
+tracked as W4 of MISSION-VOICE-DEEP-INVESTIGATION-2026-06-01.md.
+
 Pure measurement-driven rule (no triage winner gate): on Windows
 hosts where the diag observed elevated PortAudio latency or jitter,
 WASAPI exclusive mode reduces buffer contention and APO interference
@@ -60,6 +71,13 @@ class _Rule:
     description = (
         "Windows capture path with elevated latency or jitter -- advises "
         "WASAPI exclusive mode to reduce APO/session-mixer overhead."
+    )
+    # W1.3 — see module docstring. latency/jitter measurements are
+    # hardcoded 0.0 (no producer), so the > thresholds can never be met.
+    unreachable_reason = (
+        "measurements.portaudio_latency_advertised_ms and capture_jitter_ms are "
+        "hardcoded 0.0 (no producer) — the > thresholds can never be met. "
+        "Real latency/jitter probe tracked in W4."
     )
 
     def applies(self, ctx: RuleContext) -> bool:

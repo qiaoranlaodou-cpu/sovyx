@@ -1,5 +1,19 @@
 """R20: Windows Voice Clarity APO destroying capture signal.
 
+STATUS AT HEAD — UNREACHABLE (W1.3 honesty pass, anti-pattern #48).
+This rule cannot fire from real captured data: its ``applies()`` gate
+requires ``fingerprint.apo_active`` to be True, but that field is
+hardcoded ``False`` in ``voice/calibration/_fingerprint.py`` (no Windows
+runtime APO detection is wired into the calibration fingerprint), AND
+the calibration engine only runs on Linux (``--calibrate`` → Linux-only
+full-diag). It exists + is unit-tested with synthetic inputs as
+scaffolding; it is NOT a live capability. It self-declares this via
+``unreachable_reason`` so the ``--evaluate-rules`` preview discloses it
+and a future maintainer who wires the producer must remove the marker
+(a test enforces the set). Wiring the runtime ``_apo_detector`` result
+into the fingerprint is tracked as W3/W4 of
+MISSION-VOICE-DEEP-INVESTIGATION-2026-06-01.md.
+
 Translates triage hypothesis H2 (`HypothesisId.H2_VOICE_CLARITY_APO`)
 into a deterministic calibration rule. When Windows Voice Clarity
 (`VocaEffectPack` / `voiceclarityep`, shipped via Windows Update in
@@ -49,6 +63,14 @@ class _Rule:
     description = (
         "Windows Voice Clarity APO destroys capture signal -- advises "
         "WASAPI exclusive mode to bypass the entire APO chain."
+    )
+    # W1.3 — see module docstring. ``fingerprint.apo_active`` has no
+    # producer (hardcoded False) and calibration is Linux-only, so this
+    # gate can never open from real data. Documented gap, not a live rule.
+    unreachable_reason = (
+        "fingerprint.apo_active is hardcoded False (no Windows runtime→fingerprint "
+        "APO producer) and calibration runs Linux-only — gate can never open. "
+        "Producer wire-up tracked in W3/W4."
     )
 
     def applies(self, ctx: RuleContext) -> bool:

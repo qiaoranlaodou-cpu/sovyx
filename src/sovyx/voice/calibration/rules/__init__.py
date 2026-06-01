@@ -48,7 +48,28 @@ __all__ = [
     "RuleContext",
     "RuleEvaluation",
     "iter_rules",
+    "iter_unreachable_rules",
 ]
+
+
+def iter_unreachable_rules() -> Iterable[tuple[str, str]]:
+    """Yield ``(rule_id, reason)`` for every discovered rule that declares
+    itself UNREACHABLE at HEAD.
+
+    W1.3 (anti-pattern #48) — a rule is "unreachable" when it exists and is
+    unit-tested with synthetic inputs but cannot fire from real captured
+    data because its ``applies()`` gate reads a field that has no producer
+    yet (e.g. ``fingerprint.apo_active`` / ``measurements.echo_correlation_db``
+    are hardcoded sentinels). Such a rule sets a module-level
+    ``unreachable_reason`` string; this helper is the single source of truth
+    that the ``--evaluate-rules`` preview discloses and the rule-honesty test
+    enforces. Wiring the missing producers is tracked in W3/W4 of
+    MISSION-VOICE-DEEP-INVESTIGATION-2026-06-01.md.
+    """
+    for rule in iter_rules():
+        reason = getattr(rule, "unreachable_reason", None)
+        if reason:
+            yield rule.rule_id, str(reason)
 
 
 def iter_rules() -> Iterable[CalibrationRule]:

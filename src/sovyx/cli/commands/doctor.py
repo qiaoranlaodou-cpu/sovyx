@@ -1269,6 +1269,25 @@ def _run_voice_calibrate_evaluate_rules(*, mind_id: str, explain: bool) -> int:
         dry_run=True,
     )
     _render_calibration_verdict(profile, inspect_result, explain=explain)
+
+    # W1.3 (anti-pattern #48) — proactively disclose scaffolding rules that
+    # exist but cannot fire from real captured data (no producer for their
+    # gate field). Without this an operator sees only the rules that fired
+    # and might assume the absent ones merely didn't match THIS hardware,
+    # when in fact they can never match anywhere yet.
+    from sovyx.voice.calibration.rules import (  # noqa: PLC0415
+        iter_unreachable_rules,
+    )
+
+    unreachable = list(iter_unreachable_rules())
+    if unreachable:
+        console.print(
+            f"\n[dim]Note: {len(unreachable)} rule(s) are scaffolding and cannot "
+            "fire from real captured data yet (no producer for their gate field) "
+            "— not live capabilities:[/dim]"
+        )
+        for rule_id, reason in unreachable:
+            console.print(f"  [yellow]○[/yellow] [cyan]{rule_id}[/cyan] [dim]— {reason}[/dim]")
     return EXIT_DOCTOR_OK
 
 

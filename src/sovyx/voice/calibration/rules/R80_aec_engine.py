@@ -1,5 +1,15 @@
 """R80: AEC (acoustic echo cancellation) engine recommendation.
 
+STATUS AT HEAD — UNREACHABLE (W1.3 honesty pass, anti-pattern #48).
+This rule cannot fire from real captured data: ``applies()`` gates on
+``measurements.echo_correlation_db is not None``, but the measurer
+hardcodes that field to ``None`` (``voice/calibration/_measurer.py`` —
+no echo-correlation producer ran), so the gate never opens; calibration
+is also Linux-only. It exists + is unit-tested with synthetic inputs as
+scaffolding, self-declares via ``unreachable_reason`` (disclosed by
+``--evaluate-rules``), and a real echo-correlation measurement is
+tracked as W4 of MISSION-VOICE-DEEP-INVESTIGATION-2026-06-01.md.
+
 Pure measurement-driven rule: when the diag observed echo
 correlation between TTS output and capture above ``-10 dB`` (a
 threshold below which speakers' output is bleeding into the mic
@@ -54,6 +64,12 @@ class _Rule:
     description = (
         "Echo correlation between TTS output and capture exceeds the "
         "self-feedback threshold -- advises enabling/upgrading AEC."
+    )
+    # W1.3 — see module docstring. echo_correlation_db is hardcoded None
+    # (no producer), so the not-None gate never opens.
+    unreachable_reason = (
+        "measurements.echo_correlation_db is hardcoded None (no echo-correlation "
+        "producer) — the not-None gate never opens. Real measurement tracked in W4."
     )
 
     def applies(self, ctx: RuleContext) -> bool:
