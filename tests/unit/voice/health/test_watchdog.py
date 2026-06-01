@@ -1561,7 +1561,37 @@ class TestPlatformAudioServiceFactory:
         )
         assert isinstance(monitor, NoopAudioServiceMonitor)
 
-    def test_linux_noop_in_sprint_2(self) -> None:
+    def test_linux_routes_to_real_monitor_when_systemd_present(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # W0.3: the Linux backend is now wired (was orphaned). The factory
+        # lazily imports build_linux_audio_service_monitor, which resolves
+        # _query_service_state on its OWN module at call time (AP #38), so
+        # patch the source-module global to make the systemd probe
+        # deterministic instead of depending on the test host.
+        from sovyx.voice.health import _audio_service_linux
+
+        monkeypatch.setattr(
+            _audio_service_linux,
+            "_query_service_state",
+            lambda svc: "active" if svc == "pipewire.service" else None,
+        )
+        monitor = build_platform_audio_service_monitor(
+            platform_key="linux",
+            runtime_resilience_enabled=True,
+        )
+        assert isinstance(monitor, _audio_service_linux.LinuxAudioServiceMonitor)
+
+    def test_linux_routes_to_noop_without_systemd(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # No systemd user bus / no audio units → the builder self-routes to
+        # Noop, so the wire-up is safe on non-systemd Linux hosts.
+        from sovyx.voice.health import _audio_service_linux
+
+        monkeypatch.setattr(
+            _audio_service_linux,
+            "_query_service_state",
+            lambda _svc: None,
+        )
         monitor = build_platform_audio_service_monitor(
             platform_key="linux",
             runtime_resilience_enabled=True,

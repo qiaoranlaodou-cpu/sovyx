@@ -14,11 +14,17 @@ each pin one branch of the contract:
 
 from __future__ import annotations
 
+import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from sovyx.voice.health._audio_service_linux import LinuxAudioServiceMonitor
+from sovyx.voice.health import _audio_service_linux
+from sovyx.voice.health._audio_service_linux import (
+    _DEFERRAL_REWARN_EVERY,
+    LinuxAudioServiceMonitor,
+)
+from sovyx.voice.health.contract import AudioServiceEvent, AudioServiceEventKind
 
 
 def _query_stub(_service: str) -> str | None:
@@ -129,3 +135,101 @@ class TestPostUpHealthCheck:
                 # MUST NOT raise.
                 result = await monitor._post_up_health_check()
                 assert result is False
+
+
+class TestUpGateDeferral:
+    """W0.5 — the deferred-UP path defers the event, tracks a run-length,
+    and warns without flooding (anti-pattern #27)."""
+
+    @pytest.mark.asyncio()
+    async def test_failing_health_check_defers_event_and_advances_counter(self) -> None:
+        """When ``pactl`` stays unresponsive, the UP event is held back and
+        the deferral run-length climbs — the watchdog never reacts to a
+        systemctl-active-but-pactl-dead daemon."""
+        # inactive (baseline DOWN) → active (UP transition) → active …
+        states = ["inactive", "active", "active", "active"]
+
+        def _q(_svc: str) -> str | None:
+            return states.pop(0) if states else "active"
+
+        monitor = LinuxAudioServiceMonitor(
+            services_to_monitor=frozenset({"pipewire.service"}),
+            poll_interval_s=0.01,
+            query=_q,
+        )
+        events: list[AudioServiceEvent] = []
+
+        async def _cb(event: AudioServiceEvent) -> None:
+            events.append(event)
+
+        with patch.object(monitor, "_post_up_health_check", new=AsyncMock(return_value=False)):
+            await monitor.start(_cb)
+            await asyncio.sleep(0.1)
+            await monitor.stop()
+
+        # UP never emitted (perpetually deferred); run-length advanced.
+        assert events == []
+        assert monitor._consecutive_up_deferrals >= 1  # noqa: SLF001
+
+    @pytest.mark.asyncio()
+    async def test_passing_health_check_emits_up_and_resets_counter(self) -> None:
+        """Once ``pactl`` answers, the UP event fires and the deferral
+        run-length resets to zero."""
+        states = ["inactive", "active"]
+
+        def _q(_svc: str) -> str | None:
+            return states.pop(0) if states else "active"
+
+        monitor = LinuxAudioServiceMonitor(
+            services_to_monitor=frozenset({"pipewire.service"}),
+            poll_interval_s=0.01,
+            query=_q,
+        )
+        events: list[AudioServiceEvent] = []
+
+        async def _cb(event: AudioServiceEvent) -> None:
+            events.append(event)
+
+        with patch.object(monitor, "_post_up_health_check", new=AsyncMock(return_value=True)):
+            await monitor.start(_cb)
+            await asyncio.sleep(0.1)
+            await monitor.stop()
+
+        assert any(e.kind is AudioServiceEventKind.UP for e in events)
+        assert monitor._consecutive_up_deferrals == 0  # noqa: SLF001
+
+    @pytest.mark.asyncio()
+    async def test_sustained_deferral_warns_throttled_not_per_poll(self) -> None:
+        """A wedged daemon must not emit one WARN per poll (anti-pattern
+        #27): the canonical ``audio.service.up_gate_deferred`` topic fires
+        on the 1st deferral and then only every ``_DEFERRAL_REWARN_EVERY``."""
+        states = ["inactive"] + ["active"] * 50
+
+        def _q(_svc: str) -> str | None:
+            return states.pop(0) if states else "active"
+
+        monitor = LinuxAudioServiceMonitor(
+            services_to_monitor=frozenset({"pipewire.service"}),
+            poll_interval_s=0.001,
+            query=_q,
+        )
+
+        async def _cb(_event: AudioServiceEvent) -> None:
+            return
+
+        fake_logger = MagicMock()
+        with (
+            patch.object(monitor, "_post_up_health_check", new=AsyncMock(return_value=False)),
+            patch.object(_audio_service_linux, "logger", fake_logger),
+        ):
+            await monitor.start(_cb)
+            await asyncio.sleep(0.1)
+            await monitor.stop()
+
+        topics = [c.args[0] for c in fake_logger.warning.call_args_list if c.args]
+        deferred_warns = [t for t in topics if t == "audio.service.up_gate_deferred"]
+        counter = monitor._consecutive_up_deferrals  # noqa: SLF001
+        # Precondition: at least one UP transition was deferred.
+        assert counter >= 1
+        # Exact throttle contract: warn on the 1st deferral + every Nth.
+        assert len(deferred_warns) == 1 + counter // _DEFERRAL_REWARN_EVERY

@@ -78,6 +78,18 @@ on Flatpak sandboxes). Pattern deliberately matches Windows
 ``"sc.exe"``."""
 
 
+_DEFERRAL_REWARN_EVERY = 30
+"""Re-warn cadence for a *stuck* UP gate (anti-pattern #27 — no WARN
+floods). A healthy restart cascade defers the UP event for a handful
+of poll rounds while PipeWire re-publishes its node graph, then
+confirms — that natural burst is the operator-actionable signal and
+every occurrence is emitted. A daemon that reports ``active`` but
+never accepts ``pactl`` connections would otherwise emit one warning
+per poll forever; instead we warn on the 1st deferral and then only
+every ``_DEFERRAL_REWARN_EVERY``-th (≈60 s at the default 2 s poll)
+so a permanently-wedged daemon stays visible without flooding."""
+
+
 _AUDIO_SERVICE_CANDIDATES: tuple[str, ...] = (
     "pipewire.service",
     "wireplumber.service",
@@ -191,6 +203,11 @@ class LinuxAudioServiceMonitor:
         self._query = query if query is not None else _query_service_state
         self._task: asyncio.Task[None] | None = None
         self._started = False
+        self._consecutive_up_deferrals = 0
+        """Run-length of consecutive UP-gate deferrals (pactl not yet
+        accepting connections post-cascade). Reset to 0 on any confirmed
+        transition. Drives the throttled ``audio.service.up_gate_deferred``
+        re-warn per :data:`_DEFERRAL_REWARN_EVERY`."""
 
     async def start(
         self,
@@ -288,30 +305,52 @@ class LinuxAudioServiceMonitor:
                     AudioServiceEventKind.UP if current_all_running else AudioServiceEventKind.DOWN
                 )
                 if kind is AudioServiceEventKind.UP and not await self._post_up_health_check():
-                    # PipeWire systemctl reports active but ``pactl
-                    # info`` is unresponsive — daemon isn't yet
-                    # accepting client connections. Defer the UP emit
-                    # to the next poll.
+                    # PipeWire systemctl reports active but ``pactl info``
+                    # is unresponsive — the daemon isn't yet accepting
+                    # client connections. Defer the UP emit to the next
+                    # poll. A sustained run of deferrals means a restart
+                    # cascade whose UP never completes (operator-actionable).
                     #
-                    # TODO: STRICT flip pending operator telemetria
-                    # Promote this logger.info →
-                    # logger.warning("voice_audio_service_up_health_check_failed", ...)
-                    # AND add an SLO alert ("audio.service.up_gate_deferred")
-                    # that fires when ``voice_audio_service_up_health_check_failed``
-                    # is emitted > 3x in any 60 s window. Gate: 1 minor
-                    # cycle of v0.37.x telemetria on the operator's env
-                    # real (Sony VAIO + Mint + PipeWire + Razer USB)
-                    # confirming the gate trips on real restart cascades
-                    # without false-positive flapping. See §3.K flip step
-                    # + ``feedback_staged_adoption`` + skipped strict-mode
-                    # test in tests/integration/voice/test_pipewire_restart_resilience.py.
-                    logger.info(
-                        "voice_audio_service_up_health_check_failed",
-                        platform="linux",
-                        retry_in_s=self._interval,
-                    )
+                    # W0.5 (MISSION-VOICE-DEEP-INVESTIGATION-2026-06-01):
+                    # promoted info → warning + canonical
+                    # ``audio.service.up_gate_deferred`` topic so SLO
+                    # dashboards can union-query the deferral run-length and
+                    # alert on a sustained cascade (the historical TODO's
+                    # ">3x in 60 s" intent). Emission is throttled per
+                    # :data:`_DEFERRAL_REWARN_EVERY` (anti-pattern #27). The
+                    # AlertManager rule + STRICT promotion remain operator-
+                    # validated — see backlog row V-W0-5 (confirm no
+                    # false-positive flapping on the real Sony VAIO + Mint +
+                    # PipeWire env) + the skipped strict-mode test in
+                    # tests/integration/voice/test_pipewire_restart_resilience.py.
+                    self._consecutive_up_deferrals += 1
+                    if (
+                        self._consecutive_up_deferrals == 1
+                        or self._consecutive_up_deferrals % _DEFERRAL_REWARN_EVERY == 0
+                    ):
+                        logger.warning(
+                            "voice_audio_service_up_health_check_failed",
+                            platform="linux",
+                            retry_in_s=self._interval,
+                            consecutive_deferrals=self._consecutive_up_deferrals,
+                        )
+                        # Canonical cross-cohort topic — mirrors
+                        # ``audio.service.restarted`` below so SLO dashboards
+                        # union-query both across platforms.
+                        logger.warning(
+                            "audio.service.up_gate_deferred",
+                            **{
+                                "voice.service": ",".join(sorted(self._services)),
+                                "voice.consecutive_deferrals": self._consecutive_up_deferrals,
+                                "voice.retry_in_s": self._interval,
+                                "voice.platform": "linux",
+                            },
+                        )
                     deferred = True
                 else:
+                    # Confirmed transition — the UP gate (if any) cleared, so
+                    # the deferral streak is broken.
+                    self._consecutive_up_deferrals = 0
                     logger.info(
                         "voice_audio_service_transition",
                         kind=kind.value,

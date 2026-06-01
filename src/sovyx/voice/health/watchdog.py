@@ -1110,7 +1110,10 @@ def build_platform_audio_service_monitor(
 
     macOS always returns :class:`NoopAudioServiceMonitor` because
     ``coreaudiod`` is managed by launchd and effectively always respawns.
-    Linux Noop until Sprint 4 (``systemctl is-active pipewire.service``).
+    Linux polls the user-session systemd state of the PipeWire / PulseAudio
+    stack (``systemctl --user is-active``); the Linux builder self-routes to
+    Noop on non-systemd hosts (Alpine, containers without a user bus) so the
+    wire-up is safe everywhere.
     """
     if runtime_resilience_enabled is None:
         runtime_resilience_enabled = _VoiceTuning().runtime_resilience_enabled
@@ -1123,12 +1126,25 @@ def build_platform_audio_service_monitor(
         )
 
         return build_windows_audio_service_monitor()
+    if plat == "linux":
+        # W0.3 (MISSION-VOICE-DEEP-INVESTIGATION-2026-06-01): wire the
+        # already-complete LinuxAudioServiceMonitor (was orphaned — built +
+        # tested but never reached from the factory, leaving Linux daemon
+        # death undetected at runtime). Gated by the same
+        # ``runtime_resilience_enabled`` kill-switch as the Windows backend
+        # (parity); the builder probes for systemd audio units and returns
+        # Noop when none exist, so no behaviour change on non-systemd hosts.
+        from sovyx.voice.health._audio_service_linux import (
+            build_linux_audio_service_monitor,
+        )
+
+        return build_linux_audio_service_monitor()
     if plat == "darwin":
         return NoopAudioServiceMonitor(reason="coreaudiod respawns via launchd")
     logger.info(
         "voice_audio_service_monitor_unavailable",
         platform=plat,
-        reason="sprint4_backend_pending",
+        reason="no_backend_for_platform",
     )
     return NoopAudioServiceMonitor(reason=f"no backend for platform {plat!r}")
 

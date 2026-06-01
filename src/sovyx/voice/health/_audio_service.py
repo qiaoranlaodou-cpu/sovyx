@@ -47,8 +47,9 @@ class AudioServiceMonitor(Protocol):
 class NoopAudioServiceMonitor:
     """Audio-service monitor that never reports a transition.
 
-    Used on macOS (``coreaudiod`` is managed by launchd), on Linux until
-    the Sprint 4 ``dbus``/``systemctl`` backend lands, on Windows when
+    Used on macOS (``coreaudiod`` is managed by launchd), on Linux hosts
+    without a systemd user session or audio units (the
+    ``systemctl --user`` backend self-routes here), on Windows when
     ``sc.exe`` is not available, and everywhere when
     ``tuning.voice.runtime_resilience_enabled`` is ``False``.
 
