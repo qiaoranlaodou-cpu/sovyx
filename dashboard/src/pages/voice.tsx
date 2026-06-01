@@ -120,6 +120,10 @@ interface VoiceStatus {
   // registry-resolved store. Optional because older daemons (pre-v1.3)
   // never emit the field.
   preflight_warnings?: import("@/types/api").PreflightWarning[];
+  // W1.4 / LIVE2-P2-9 — the composite degraded block IS part of the
+  // /api/voice/status response; the page-level type previously dropped it.
+  // Referenced from the zod-inferred SSoT shape (no hand-mirror drift).
+  degraded?: import("@/types/schemas").VoiceStatusDegraded;
 }
 
 interface ModelSelection {
@@ -488,6 +492,12 @@ function ModelMatrix({
           </tbody>
         </table>
       </div>
+      {/* W1.4 / LIVE2-P2-2 — the cells are a reference map (model selection
+          per hardware tier), not the operator's installed models. Make the
+          ✦ meaning explicit so non-detected columns aren't read as "yours". */}
+      <p className="mt-3 text-xs text-[var(--svx-color-text-tertiary)]">
+        {t("models.legend")}
+      </p>
     </div>
   );
 }

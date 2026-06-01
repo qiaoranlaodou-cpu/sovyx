@@ -343,6 +343,19 @@ class VoiceStatusDegraded(BaseModel):
     Mission C4 §T1.5 — drives the banner palette + escalation animation.
     """
 
+    composite_max_severity: str | None = None
+    """W1.4 / LIVE2-P2-7 — the pure ``max(entry.severity)`` across axes
+    (NO count-tier escalation), under the same
+    ``None < "warn" < "error" < "critical"`` ordering. Distinct from
+    :attr:`composite_severity` (which may escalate by axis count): this is
+    the raw worst single-axis severity. The producer
+    (``voice_status.py:174``) has emitted it since Mission D.1, but it was
+    previously undeclared here and survived only via ``extra="allow"`` —
+    so consumers and the zod twin could not rely on it. Now a first-class
+    field (boundary contract per anti-pattern #53; pinned by the
+    degraded-boundary round-trip test). ``None`` when no axis is degraded.
+    """
+
     ack_at_monotonic: float | None = None
     """Server-side operator-ack timestamp (Phase 3 — ``operator_acks``
     SQLite table). ``None`` until first ack. Forward-additive so the

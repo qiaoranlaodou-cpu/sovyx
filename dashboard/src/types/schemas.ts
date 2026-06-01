@@ -1925,12 +1925,24 @@ export const VoiceStatusDegradedSchema = z
       .enum(["warn", "error", "critical"])
       .nullable()
       .optional(),
+    // W1.4 / LIVE2-P2-7 — raw max single-axis severity (no count-tier
+    // escalation). Producer-emitted since Mission D.1 but previously only
+    // passed through .passthrough(); now a first-class twin field.
+    composite_max_severity: z
+      .enum(["warn", "error", "critical"])
+      .nullable()
+      .optional(),
     ack_at_monotonic: z.number().nullable().optional(),
     ack_ttl_sec: z.number().int().nullable().optional(),
     ack_operator_id: z.string().nullable().optional(),
     last_resurfaced_monotonic: z.number().nullable().optional(),
   })
   .passthrough();
+
+// W1.4 / LIVE2-P2-9 — inferred type so consumers (e.g. the voice page's
+// VoiceStatus interface) reference the SSoT shape instead of dropping the
+// degraded block or hand-mirroring it (anti-pattern #53).
+export type VoiceStatusDegraded = z.infer<typeof VoiceStatusDegradedSchema>;
 
 /* Mission C4 §T1.6 — Composite engine-degraded surface zod twin.
  *

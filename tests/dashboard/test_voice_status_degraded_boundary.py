@@ -158,6 +158,36 @@ class TestVoiceStatusDegradedBoundaryRoundTrip:
         assert response.degraded.composite_axes == []
         assert response.degraded.composite_severity is None
 
+    def test_p2_7_composite_max_severity_is_declared_field(self) -> None:
+        """W1.4 / LIVE2-P2-7 — composite_max_severity must be a DECLARED
+        field, not merely a value surviving via ``extra="allow"``."""
+        assert "composite_max_severity" in VoiceStatusDegraded.model_fields
+
+    def test_p2_7_composite_max_severity_round_trips_distinctly(self) -> None:
+        """The raw max single-axis severity round-trips and is distinct from
+        the (possibly count-escalated) composite_severity."""
+        response = assert_boundary_accepts(
+            VoiceStatusResponse,
+            helper_factory=partial(
+                _baseline_status_shape,
+                composite_axes=["voice", "llm"],
+                composite_severity="critical",
+                composite_max_severity="error",
+            ),
+            field_assertions={
+                "degraded.composite_max_severity": "error",
+            },
+        )
+        assert response.degraded.composite_severity == "critical"
+        assert response.degraded.composite_max_severity == "error"
+
+    def test_p2_7_composite_max_severity_none_when_empty(self) -> None:
+        response = assert_boundary_accepts(
+            VoiceStatusResponse,
+            helper_factory=partial(_baseline_status_shape, composite_max_severity=None),
+        )
+        assert response.degraded.composite_max_severity is None
+
     def test_c5_dashboard_axis_alone_round_trips(self) -> None:
         """Mission C5 §T2.4 — the new ``dashboard`` axis surfaces through
         ``VoiceStatusResponse.degraded.composite_axes`` cleanly. The

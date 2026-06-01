@@ -267,6 +267,7 @@
   "models": {
     "title": "Model Matrix",
     "subtitle": "Available models per hardware tier.",
+    "legend": "✦ marks your detected tier. Other columns show the reference selection each tier would use — not models installed on your machine.",
     "activeTier": "Active Tier",
     "sttPrimary": "STT Primary",
     "sttStreaming": "STT Streaming",

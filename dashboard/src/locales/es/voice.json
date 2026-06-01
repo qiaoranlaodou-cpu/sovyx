@@ -267,6 +267,7 @@
   "models": {
     "title": "Matriz de Modelos",
     "subtitle": "Modelos disponibles por capa de hardware.",
+    "legend": "✦ marca tu capa detectada. Las demás columnas muestran la selección de referencia que usaría cada capa — no son modelos instalados en tu equipo.",
     "activeTier": "Capa Activa",
     "sttPrimary": "STT Primario",
     "sttStreaming": "STT Streaming",

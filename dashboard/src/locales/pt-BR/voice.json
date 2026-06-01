@@ -267,6 +267,7 @@
   "models": {
     "title": "Matriz de Modelos",
     "subtitle": "Modelos disponíveis por camada de hardware.",
+    "legend": "✦ marca a sua camada detectada. As outras colunas mostram a seleção de referência que cada camada usaria — não são modelos instalados na sua máquina.",
     "activeTier": "Camada Ativa",
     "sttPrimary": "STT Primário",
     "sttStreaming": "STT Streaming",
