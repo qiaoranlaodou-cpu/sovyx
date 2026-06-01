@@ -261,6 +261,10 @@ with patch("sovyx.brain._model_downloader.httpx.AsyncClient", ...): ...
 9. **Third fix→push→CI-fail = STOP.** Reassess approach.
 10. **Windows mypy noise:** 9 platform-FPs (`AF_UNIX`, `os.sysconf`, `getrusage`, `open_unix_server`). Only errors OUTSIDE that list real. CI Linux = baseline.
 11. **Closure protocol on bug class.** When fixing one site, grep ALL consumers of same flag/sentinel. State closure assertion in commit body. Bug classes surface in waves.
+12. **`verify_gates.sh` validates ONE platform/Python — the CI matrix is the real gate.** Local gates run pytest on the dev box only; CI runs the matrix (`windows-latest` + `macos-latest` + self-hosted `sovyx-4core`, Python 3.11 **and** 3.12) and `publish.yml` SKIPS the PyPI upload if ANY matrix leg fails. A green local marker means "ready to push", NOT "CI will pass." Known **matrix-only** failure classes to pre-empt when authoring tests:
+    - **`RuntimeError("Event loop is closed")` — Windows asyncio teardown** (`ProactorEventLoop`, py3.12). An async test that spawns a task/service and lets the loop close with a cancelled-but-un-awaited task (or a started pipeline never `stop()`ed) flakes ON WINDOWS ONLY. **Rule:** every async test that `start()`s a service or spawns a task MUST drain it before returning — `with contextlib.suppress(asyncio.CancelledError): await task` for each cancelled task + `await <obj>.stop()` for started services (see `tests/unit/voice/test_pipeline.py` teardown convention). The test *logic* can pass while teardown raises — it still fails the job.
+    - **Coarse clock** (#22) and **file handle-lock** (#30, the lint-rule fixture flake) are the other recurring Windows-CI-only classes.
+    Practical discipline: when a change touches async lifecycle / timers / files / subprocess, assume the matrix may catch what local cannot; write the teardown defensively up front. The operator surfaces CI-matrix failures (per `feedback_ci_watching` — don't `gh run watch`); on a surfaced failure, root-cause + fix the test hygiene (don't just re-run).
 
 ## Working Style
 

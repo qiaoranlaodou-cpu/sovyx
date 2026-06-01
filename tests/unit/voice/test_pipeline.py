@@ -5471,7 +5471,16 @@ class TestStartThinkingFillerCancellationT31:
         # Second task is the live one (different reference).
         assert second_task is not first_task
 
-        pipeline._cancel_filler()  # cleanup
+        # Cleanup — drain BOTH cancelled filler tasks and stop the pipeline so
+        # no pending callback fires AFTER the event loop closes. On Windows
+        # (ProactorEventLoop, py3.12) an un-awaited cancelled task at loop
+        # teardown raises "Event loop is closed" and fails the test as a
+        # CI-only flake (passed locally + on Linux/macOS; see Debugging Rule #12).
+        pipeline._cancel_filler()
+        for task in (first_task, second_task):
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await task
+        await pipeline.stop()
 
 
 # ===========================================================================
