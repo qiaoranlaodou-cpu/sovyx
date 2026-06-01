@@ -243,10 +243,27 @@ describe("RollbackButton", () => {
     // dependence on wall-clock scheduling.
     vi.useFakeTimers();
     try {
-      mockFetch.mockRejectedValueOnce(new Error("network blip"));
-      mockFetch.mockResolvedValueOnce(
-        jsonResponse({ mind_id: "default", generations: [1] }),
-      );
+      // Flake fix (was a known intermittent: "expected 1 to be null" at the
+      // post-initial-load assertion below). The prior `mockRejectedValueOnce`
+      // + `mockResolvedValueOnce` queue is ORDER-dependent: under full-suite
+      // cross-file ordering, a stray fetch (the `useResolvedMindId` module
+      // singleton re-subscribing) consumed the queued reject, so the mount
+      // load got the RESOLVE (count=1) and the retry never armed. Route by
+      // URL instead so only the backups endpoint is reject-then-resolve and
+      // any other fetch is a benign 200 — deterministic regardless of order.
+      let backupsCalls = 0;
+      mockFetch.mockImplementation((input: RequestInfo | URL) => {
+        if (String(input).includes("/api/voice/calibration/backups")) {
+          backupsCalls += 1;
+          if (backupsCalls === 1) {
+            return Promise.reject(new Error("network blip"));
+          }
+          return Promise.resolve(
+            jsonResponse({ mind_id: "default", generations: [1] }),
+          );
+        }
+        return Promise.resolve(jsonResponse({}));
+      });
 
       render(<RollbackButton />);
 
