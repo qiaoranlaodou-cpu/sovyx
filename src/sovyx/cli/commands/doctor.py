@@ -746,6 +746,13 @@ def _run_voice_full_diag(*, non_interactive: bool, surgical: bool = False) -> in
           speech prompts).
         * EXIT_DOCTOR_GENERIC_FAILURE on diag-script failure (rc!=0).
     """
+    # W3.2 — on Windows the Linux bash toolkit can't run; dispatch to the
+    # native Windows producer (composes the WASAPI/APO/consent probes into the
+    # Windows-v2 tarball the analyzer reads). Non-interactive: Phase 1 has no
+    # speech-capture windows, so the TTY guard below doesn't apply.
+    if sys.platform == "win32":
+        return _run_windows_full_diag()
+
     if not sys.stdin.isatty() and not non_interactive:
         console.print(
             "\n[red]--full-diag requires an interactive TTY for the speech-prompt "
@@ -790,6 +797,39 @@ def _run_voice_full_diag(*, non_interactive: bool, surgical: bool = False) -> in
 
     try:
         triage = triage_tarball(diag_result.tarball_path)
+    except (FileNotFoundError, ValueError) as exc:
+        console.print(f"\n[red]Triage failed:[/red] {exc}")
+        return EXIT_DOCTOR_GENERIC_FAILURE
+
+    _render_full_diag_verdict(triage)
+    return EXIT_DOCTOR_OK
+
+
+def _run_windows_full_diag() -> int:
+    """W3.2 — Windows ``--full-diag``: produce the Windows-v2 forensic tarball
+    from the native probes + render the triage verdict.
+
+    Non-interactive (Phase 1 composes registry/COM probes — no speech
+    capture). Writes the tarball under ``~/.sovyx/diagnostics`` for parity
+    with the Linux toolkit so the operator can re-triage it later.
+    """
+    from sovyx.voice.diagnostics._capture_win import run_windows_diag
+
+    console.print(
+        "\n[bold cyan]Running Windows voice diagnostic[/bold cyan] "
+        "[dim](WASAPI / APO / mic-consent probes — no speech prompts)[/dim]\n"
+    )
+    out_dir = Path.home() / ".sovyx" / "diagnostics"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        tarball = run_windows_diag(out_dir)
+    except Exception as exc:  # noqa: BLE001 — forensic producer is best-effort
+        console.print(f"\n[red]Windows diag failed:[/red] {exc}")
+        return EXIT_DOCTOR_GENERIC_FAILURE
+
+    console.print(f"[green]Diag completed[/green]\n[dim]Result tarball:[/dim] {tarball}\n")
+    try:
+        triage = triage_tarball(tarball)
     except (FileNotFoundError, ValueError) as exc:
         console.print(f"\n[red]Triage failed:[/red] {exc}")
         return EXIT_DOCTOR_GENERIC_FAILURE

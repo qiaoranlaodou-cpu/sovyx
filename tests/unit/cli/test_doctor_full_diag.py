@@ -23,6 +23,7 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
 from typer.testing import CliRunner
 
 from sovyx.cli.main import app
@@ -38,6 +39,15 @@ from sovyx.voice.diagnostics import (
 )
 
 runner = CliRunner()
+
+
+@pytest.fixture(autouse=True)
+def _force_linux_platform(monkeypatch: pytest.MonkeyPatch) -> None:
+    """W3.2 — these tests exercise the LINUX bash full-diag flow (mocking
+    run_full_diag). Pin the platform so the win32 dispatch added in W3.2
+    doesn't short-circuit them on a Windows host (deterministic across CI
+    legs). The Windows dispatch has its own test below."""
+    monkeypatch.setattr("sovyx.cli.commands.doctor.sys.platform", "linux")
 
 
 def _make_diag_result(tmp_path: Path) -> DiagRunResult:
@@ -302,3 +312,38 @@ class TestExtraArgsPlumbing:
             )
         assert result.exit_code == 0
         assert captured_kwargs.get("extra_args") == ("--non-interactive",)
+
+
+# ====================================================================
+# W3.2 — Windows dispatch
+# ====================================================================
+
+
+class TestWindowsFullDiag:
+    """On Windows, --full-diag dispatches to the native producer (no bash)."""
+
+    def test_win32_dispatch_produces_and_triages(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Override the autouse linux pin → exercise the win32 path.
+        monkeypatch.setattr("sovyx.cli.commands.doctor.sys.platform", "win32")
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        fake_tarball = tmp_path / "win-diag.tar.gz"
+        with (
+            patch(
+                "sovyx.voice.diagnostics._capture_win.run_windows_diag",
+                return_value=fake_tarball,
+            ) as run_mock,
+            patch(
+                "sovyx.cli.commands.doctor.triage_tarball",
+                return_value=_make_triage_result(),
+            ) as triage_mock,
+        ):
+            result = runner.invoke(
+                app,
+                ["doctor", "voice", "--full-diag", "--non-interactive"],
+            )
+        assert result.exit_code == 0
+        run_mock.assert_called_once()
+        triage_mock.assert_called_once_with(fake_tarball)
+        assert "Windows voice diagnostic" in result.output
