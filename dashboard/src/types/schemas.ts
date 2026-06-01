@@ -1841,6 +1841,12 @@ const VoiceStatusCaptureSchema = z
     sample_rate: z.number().nullable().optional(),
     frames_delivered: z.number().optional(),
     last_rms_db: z.number().nullable().optional(),
+    // W1.1 / G-P0-1 — honest capture signal state (dead-mic-vs-warming).
+    // Kept as a plain string (not z.enum) so a forward-additive
+    // SignalState value never fails the boundary parse; the UI maps known
+    // values and falls back gracefully. Producer is the SSoT
+    // (voice/capture/_signal_state.classify_signal_state).
+    signal_state: z.string().optional(),
     // Mission H2 §T2.10 (ADR-D15) — platform metadata from the last
     // bypass-coordinator dispatch. Optional + nullable while the
     // ADR-D14 dual-emission calibration window is open; promoted to

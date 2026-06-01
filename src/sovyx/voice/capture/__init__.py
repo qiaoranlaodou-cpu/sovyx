@@ -75,6 +75,10 @@ from sovyx.voice.capture._restart import (
 )
 from sovyx.voice.capture._restart_mixin import RestartMixin
 from sovyx.voice.capture._ring import RingMixin
+from sovyx.voice.capture._signal_state import (
+    SignalState,
+    classify_signal_state,
+)
 
 __all__ = [
     "_LINUX_ALSA_HOST_API",
@@ -98,6 +102,8 @@ __all__ = [
     "SessionManagerRestartVerdict",
     "SharedRestartResult",
     "SharedRestartVerdict",
+    "SignalState",
+    "classify_signal_state",
     "_CAPTURE_UNDERRUN_MIN_CALLBACKS",
     "_CAPTURE_UNDERRUN_WARN_FRACTION",
     "_CAPTURE_UNDERRUN_WARN_INTERVAL_S",

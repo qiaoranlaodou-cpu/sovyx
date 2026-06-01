@@ -181,6 +181,15 @@ class VoiceStatusCapture(BaseModel):
     frames_delivered: int = 0
     last_rms_db: float | None = None
 
+    # W1.1 / G-P0-1 — honest capture signal state so the dashboard tells a
+    # dead/absent mic from a warming or quiet one. Plain str (not a closed
+    # Literal) so a forward-additive SignalState value never breaks the
+    # boundary round-trip; producer (capture status_snapshot) is the SSoT.
+    # Default mirrors ``SignalState.NO_DEVICE`` (capture not running / no PCM
+    # delivered) — kept as a literal to avoid a top-level voice.capture import
+    # in this hot dashboard module; a test pins the two together.
+    signal_state: str = "no_device"
+
     # Mission H2 §T2.10 (ADR-D15) — last bypass-coordinator event's
     # platform metadata. Optional + None-default so legacy clients +
     # pre-mission status snapshots round-trip unchanged. Producers

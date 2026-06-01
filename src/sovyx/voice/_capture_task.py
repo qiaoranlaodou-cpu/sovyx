@@ -201,6 +201,12 @@ from sovyx.voice.capture._restart import (
 )
 from sovyx.voice.capture._restart_mixin import RestartMixin
 from sovyx.voice.capture._ring import RingMixin
+from sovyx.voice.capture._signal_state import (
+    SignalState as SignalState,
+)
+from sovyx.voice.capture._signal_state import (
+    classify_signal_state,
+)
 from sovyx.voice.health.contract import RmsSummary
 
 if TYPE_CHECKING:
@@ -498,13 +504,22 @@ class AudioCaptureTask(EpochMixin, RingMixin, LifecycleMixin, LoopMixin, Restart
 
     def status_snapshot(self) -> dict[str, Any]:
         """Compact dict for ``/api/voice/status`` — no async, no locks."""
+        last_rms_db = round(self._last_rms_db, 1)
         return {
             "running": self._running,
             "input_device": self._input_device,
             "host_api": self._host_api_name,
             "sample_rate": self._sample_rate,
             "frames_delivered": self._frames_delivered,
-            "last_rms_db": round(self._last_rms_db, 1),
+            "last_rms_db": last_rms_db,
+            # W1.1 / G-P0-1 — honest dead-mic-vs-warming signal state derived
+            # from real capture telemetry, so the dashboard stops rendering a
+            # dead/absent mic as "warming up". SSoT: classify_signal_state.
+            "signal_state": classify_signal_state(
+                running=self._running,
+                frames_delivered=self._frames_delivered,
+                last_rms_db=last_rms_db,
+            ).value,
         }
 
     def apply_mic_ducking_db(self, gain_db: float) -> None:
