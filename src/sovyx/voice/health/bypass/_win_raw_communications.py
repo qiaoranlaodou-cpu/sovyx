@@ -9,13 +9,17 @@ it covers MME / DirectSound / WDM-KS / WASAPI-shared endpoints
 uniformly when the device reports
 ``System.Devices.AudioDevice.RawProcessingSupported=true``.
 
-**v0.24.0 (foundation phase) — flag-gated stub.** The full IAudioClient3
-ctypes shim (``voice/health/_audioclient3_raw.py``) lands in v0.25.0
-wire-up (mission task T27). v0.24.0 ships:
+**STATUS AT v0.49.x — UNWIRED placeholder, DEPRECATED (superseded by
+Tier-3 WASAPI-exclusive coverage; see the deprecation note on
+:meth:`probe_eligibility` below).** The IAudioClient3 ctypes shim was
+originally planned for a v0.25.0 wire-up (mission task T27) that did
+NOT land and is no longer on that version path. The strategy is NOT in
+the production Windows bypass ladder — ``factory/_capture.py`` ships
+only :class:`WindowsWASAPIExclusiveBypass` on win32. This module ships:
 
 * The strategy class registered on the
-  :class:`PlatformBypassStrategy` Protocol so factory.py wire-up
-  can import it without further plumbing in v0.25.0.
+  :class:`PlatformBypassStrategy` Protocol so a future operator-gated
+  re-activation can import it without further plumbing.
 * Eligibility logic that respects the
   ``bypass_tier1_raw_enabled`` tuning flag — when the flag is
   ``False`` (foundation default), eligibility returns
@@ -38,8 +42,8 @@ in OTHER apps (Discord/Zoom/Teams) holding the same MMDevice. Tier
 blast radius**. Asymmetric regret: including disable_sysfx expands
 kill-radius without expanding cure-radius.
 
-**v0.25.0+ wire-up contract** (documented now to lock in the
-design):
+**Designed wire-up contract (deferred / deprecated — documented to
+preserve the design, NOT a release commitment):**
 
 * :meth:`apply` opens an :class:`IAudioClient3` against the active
   MMDevice via the ctypes shim, calls
@@ -193,17 +197,17 @@ class WindowsRawCommunicationsBypass:
           (placeholder).
 
     Apply:
-        v0.24.0 placeholder — raises
-        :class:`BypassApplyError(reason="strategy_disabled")` when
-        the flag is ``False``. The coordinator never reaches this in
-        production because eligibility blocks first; the raise is
+        Unwired placeholder — raises
+        :class:`BypassApplyError(reason="strategy_disabled")`. The
+        coordinator never reaches this in production (the strategy is
+        not in the ladder + eligibility blocks first); the raise is
         defence-in-depth so a direct-call test of an un-wired
         strategy fails loudly instead of silently doing nothing.
 
     Revert:
-        v0.24.0 placeholder — no-op (the v0.24.0 apply never engages
-        anything to revert). v0.25.0 wire-up replaces with
-        ``SetClientProperties(AUDIO_STREAM_CATEGORY_OTHER)`` + reopen.
+        Placeholder — no-op (the placeholder apply never engages
+        anything to revert). A future re-activation would replace this
+        with ``SetClientProperties(AUDIO_STREAM_CATEGORY_OTHER)`` + reopen.
     """
 
     name: str = _STRATEGY_NAME
@@ -224,16 +228,15 @@ class WindowsRawCommunicationsBypass:
                 reason=_REASON_DISABLED_BY_TUNING,
                 estimated_cost_ms=0,
             )
-        # v0.24.0 foundation phase: when the flag IS True (operator
-        # opt-in), eligibility passes here as a placeholder that the
-        # v0.25.0 wire-up will tighten by also reading
-        # ``System.Devices.AudioDevice.RawProcessingSupported`` from
-        # the endpoint's IPropertyStore. Until then we let the apply
-        # path run — but the v0.24.0 apply still raises
-        # ``strategy_disabled`` because the COM bindings aren't
-        # wired yet. This means flipping the flag in v0.24.0 is a
-        # safe no-op (eligibility passes → apply raises → coordinator
-        # advances) rather than a silent feature-gate gap.
+        # Unwired placeholder: when the flag IS True (operator opt-in),
+        # eligibility passes here, but the apply path still raises
+        # ``strategy_disabled`` because the COM bindings were never
+        # wired (deprecated — see the probe_eligibility deprecation
+        # note). A future re-activation would tighten this by also
+        # reading ``System.Devices.AudioDevice.RawProcessingSupported``
+        # from the endpoint's IPropertyStore. Flipping the flag today
+        # is therefore a safe no-op (eligibility passes → apply raises
+        # → coordinator advances) rather than a silent feature-gate gap.
         return Eligibility(
             applicable=True,
             reason="",
@@ -254,15 +257,16 @@ class WindowsRawCommunicationsBypass:
             strategy=_STRATEGY_NAME,
             endpoint_guid=context.endpoint_guid,
             host_api=context.host_api_name,
-            target_version="v0.25.0",
+            status="deprecated_superseded_by_tier3",
             reason=(
-                "v0.24.0 ships the strategy class + eligibility logic; the "
-                "IAudioClient3 SetClientProperties COM call lands in v0.25.0 "
-                "wire-up (mission task T27)."
+                "Unwired placeholder, deprecated (superseded by Tier-3 "
+                "WASAPI-exclusive coverage — see ADR-voice-bypass-tier-system). "
+                "Not in the production ladder; re-activation requires a new "
+                "operator-gated mission, not a version bump."
             ),
         )
         raise BypassApplyError(
-            "WindowsRawCommunicationsBypass apply path not wired in v0.24.0",
+            "WindowsRawCommunicationsBypass apply path not wired (deprecated placeholder)",
             reason="strategy_disabled",
         )
 

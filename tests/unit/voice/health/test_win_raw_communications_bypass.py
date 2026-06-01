@@ -185,14 +185,16 @@ class TestApplyV024Placeholder:
         with pytest.raises(BypassApplyError) as exc_info:
             await bypass.apply(_ctx(host_api_name="MME"))
         assert exc_info.value.reason == "strategy_disabled"
-        # WARN log emitted with target_version=v0.25.0 hint.
+        # WARN log emitted documenting the deprecated / not-wired status
+        # (W0.4 — the stale "lands in v0.25.0" promise was corrected to the
+        # deprecation reality; the stable event name is the contract).
         matching = [
             r
             for r in caplog.records
             if "voice.bypass.win_raw_communications.apply_not_yet_wired" in r.getMessage()
         ]
         assert len(matching) == 1
-        assert "v0.25.0" in matching[0].getMessage()
+        assert "deprecated" in matching[0].getMessage()
 
     @pytest.mark.asyncio()
     async def test_apply_raises_strategy_disabled_when_flag_true(

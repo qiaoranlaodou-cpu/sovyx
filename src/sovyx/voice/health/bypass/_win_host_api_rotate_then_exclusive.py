@@ -7,14 +7,22 @@ engage exclusive mode. Bypasses every APO layer (MFX/SFX/EFX) on the
 capture pipeline because exclusive mode does not traverse the APO
 graph at all.
 
-**v0.24.0 (foundation phase) — flag-gated stub.** The actual
-2-phase rotate-then-exclusive logic + the new
-:meth:`AudioCaptureTask.request_host_api_rotate` method land in
-v0.25.0 wire-up (mission task T28). v0.24.0 ships:
+**STATUS AT v0.49.x — UNWIRED foundation, flag-gated stub (NOT a
+production capability).** The originally-planned v0.25.0 wire-up
+(mission task T28) did not land; as of v0.49.x this strategy is still
+NOT in the production Windows bypass ladder — ``factory/_capture.py``
+ships only :class:`WindowsWASAPIExclusiveBypass` on win32. The
+capture-layer primitive this strategy was designed to drive,
+``AudioCaptureTask.request_host_api_rotate`` (see
+``voice/capture/_restart_mixin.py``), DOES exist and is exercised by
+the capture restart ladder; only the bypass-coordinator wiring is
+absent. Promoting this stub to a live strategy is tracked as deferred
+work in MISSION-VOICE-DEEP-INVESTIGATION-2026-06-01.md (the host-API-
+rotate ladder gap), not as an imminent release. This module ships:
 
 * The strategy class on the :class:`PlatformBypassStrategy` Protocol
-  so factory.py wire-up can register it without further plumbing
-  in v0.25.0.
+  so a future factory wire-up can register it without further
+  plumbing.
 * Eligibility logic that respects the
   ``bypass_tier2_host_api_rotate_enabled`` tuning flag AND the
   cross-validator gate (``cascade_host_api_alignment_enabled`` must
@@ -29,8 +37,8 @@ v0.25.0 wire-up (mission task T28). v0.24.0 ships:
   when the flag is ``False``. Defence-in-depth gate; eligibility
   blocks first in production.
 
-**v0.25.0+ wire-up contract** (documented now to lock in the
-design):
+**Designed wire-up contract (deferred, documented to lock in the
+design):**
 
 Apply (2-phase):
 
@@ -179,7 +187,7 @@ class WindowsHostApiRotateThenExclusiveBypass:
 
     See module docstring for the full 2-phase apply / revert design,
     failure-token vocabulary, cross-validator dependency on
-    cascade-runtime alignment, and v0.25.0 wire-up contract.
+    cascade-runtime alignment, and the deferred wire-up contract.
 
     Eligibility:
         * ``platform_key != "win32"`` → ``not_win32_platform``
@@ -197,19 +205,20 @@ class WindowsHostApiRotateThenExclusiveBypass:
     proven safe.
 
     Apply:
-        v0.24.0 placeholder — raises :class:`BypassApplyError(reason=
-        "strategy_disabled")`. v0.25.0 wire-up replaces with the
-        2-phase rotate-then-exclusive logic.
+        Unwired placeholder (as of v0.49.x) — raises
+        :class:`BypassApplyError(reason="strategy_disabled")`. A future
+        wire-up replaces this with the 2-phase rotate-then-exclusive
+        logic; the strategy is not in the production ladder today.
 
     Revert:
-        v0.24.0 placeholder — no-op (the v0.24.0 apply never engages
+        Placeholder — no-op (the placeholder apply never engages
         anything to revert).
     """
 
     name: str = _STRATEGY_NAME
 
     def __init__(self) -> None:
-        # v0.25.0+ wire-up: ``self._source_host_api`` set during
+        # Deferred wire-up: ``self._source_host_api`` set during
         # apply (``capture_task._host_api_name`` before rotate) so
         # revert can restore the pre-apply host_api. Per-coordinator-
         # session strategy instance per `_strategy.py:93-95`.
