@@ -56,7 +56,15 @@
   "capture": {
     "hostApi": "Host API",
     "device": "Device",
-    "frames": "Frames delivered"
+    "frames": "Frames delivered",
+    "signalState": {
+      "no_device": "No device",
+      "warming": "Warming up…",
+      "live_silent": "Silent — check mic",
+      "live_signal": "Live",
+      "no_device_hint": "Capture isn't running or no audio frames have arrived — check the input device.",
+      "live_silent_hint": "The mic is delivering audio but it's silent. Check it isn't muted or held by another app."
+    }
   },
   "pipeline": {
     "state": "State",
@@ -707,14 +715,18 @@
         "good": "Good",
         "degraded": "Degraded",
         "poor": "Poor",
-        "noSignal": "Warming up"
+        "noSignal": "Warming up",
+        "noDevice": "No microphone",
+        "liveSilent": "Silent — check mic"
       },
       "verdictDescription": {
         "excellent": "Studio-grade capture. Moonshine + Silero operate at calibrated rates.",
         "good": "Typical office desk mic with HVAC running. <1% STT degradation.",
         "degraded": "Loud open-plan office, fan close to mic. STT substitution rate climbs ~3-5× per dB lost. Move the mic 30 cm closer or enable in-process noise suppression.",
         "poor": "Mic in a noisy environment (cafe, vehicle). STT becomes unreliable; VAD onset latency climbs. Move the mic, enable noise suppression, or relocate the speaker.",
-        "noSignal": "No SNR samples in the rolling 10-second window. Typical right after boot or during a long silence run. The panel updates automatically once speech frames flow."
+        "noSignal": "No SNR samples in the rolling 10-second window. Typical right after boot or during a long silence run. The panel updates automatically once speech frames flow.",
+        "noDevice": "No audio is reaching the capture pipeline — the mic isn't running, is unplugged, or delivered no frames. This is not a warm-up; check the input device.",
+        "liveSilent": "The mic is delivering audio but it sits at the noise floor — no sound is reaching it. Check it isn't muted, captured by another app, or destroyed by an audio effect (APO)."
       }
     },
     "mos": {

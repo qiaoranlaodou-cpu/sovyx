@@ -101,6 +101,10 @@ interface CaptureStatus {
   sample_rate: number | null;
   frames_delivered: number;
   last_rms_db: number | null;
+  // W1.1 / G-P0-1 — honest capture signal state so a dead/absent mic is
+  // visibly distinct from a warming or quiet one. Optional: pre-W1.1
+  // daemons never emit it.
+  signal_state?: string;
 }
 
 interface VoiceStatus {
@@ -182,6 +186,67 @@ function VuMeter({ db }: { db: number | null | undefined }) {
         </span>
         <span>0 dB</span>
       </div>
+    </div>
+  );
+}
+
+/* ── Capture signal-state honesty (W1.1 / G-P0-1) ── */
+
+/**
+ * Map the backend ``SignalState`` to an operator-facing chip. Keyed by the
+ * exact enum values emitted by ``voice/capture/_signal_state``; an unknown
+ * (forward-additive) value renders nothing rather than guessing. This is
+ * what makes a dead/absent mic ("no_device" / "live_silent") visibly
+ * distinct from a genuinely-warming one ("warming").
+ */
+const SIGNAL_STATE_META: Record<
+  string,
+  { labelKey: string; hintKey?: string; tone: string; dot: string }
+> = {
+  no_device: {
+    labelKey: "capture.signalState.no_device",
+    hintKey: "capture.signalState.no_device_hint",
+    tone: "text-[var(--svx-color-text-tertiary)]",
+    dot: "bg-[var(--svx-color-text-tertiary)]",
+  },
+  warming: {
+    labelKey: "capture.signalState.warming",
+    tone: "text-[var(--svx-color-status-amber)]",
+    dot: "bg-[var(--svx-color-status-amber)]",
+  },
+  live_silent: {
+    labelKey: "capture.signalState.live_silent",
+    hintKey: "capture.signalState.live_silent_hint",
+    tone: "text-[var(--svx-color-status-amber)]",
+    dot: "bg-[var(--svx-color-status-amber)]",
+  },
+  live_signal: {
+    labelKey: "capture.signalState.live_signal",
+    tone: "text-[var(--svx-color-status-green)]",
+    dot: "bg-[var(--svx-color-status-green)]",
+  },
+};
+
+function CaptureSignalChip({ state }: { state: string | undefined }) {
+  const { t } = useTranslation("voice");
+  if (!state) return null;
+  const meta = SIGNAL_STATE_META[state];
+  if (!meta) return null;
+  return (
+    <div className="space-y-1">
+      <span
+        data-testid="capture-signal-state"
+        data-state={state}
+        className={`inline-flex items-center gap-1.5 text-xs font-medium ${meta.tone}`}
+      >
+        <span className={`h-1.5 w-1.5 rounded-full ${meta.dot}`} />
+        {t(meta.labelKey)}
+      </span>
+      {meta.hintKey && (
+        <p className="text-xs text-[var(--svx-color-text-tertiary)]">
+          {t(meta.hintKey)}
+        </p>
+      )}
     </div>
   );
 }
@@ -747,7 +812,7 @@ export default function VoicePage() {
           controller state. Polls /api/voice/quality-snapshot every
           5 s; falls back gracefully when the engine registry isn't
           ready (cold boot before voice enable). */}
-      <VoiceQualityPanel />
+      <VoiceQualityPanel signalState={status.capture?.signal_state} />
 
       {/* Status grid */}
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
@@ -805,6 +870,9 @@ export default function VoicePage() {
               value={String(status.capture.frames_delivered)}
               mono
             />
+            <div className="pt-2">
+              <CaptureSignalChip state={status.capture.signal_state} />
+            </div>
             <div className="pt-2">
               <VuMeter db={status.capture.last_rms_db} />
             </div>

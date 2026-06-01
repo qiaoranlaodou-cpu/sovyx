@@ -56,7 +56,15 @@
   "capture": {
     "hostApi": "API del Host",
     "device": "Dispositivo",
-    "frames": "Frames entregados"
+    "frames": "Frames entregados",
+    "signalState": {
+      "no_device": "Sin dispositivo",
+      "warming": "Calentando…",
+      "live_silent": "Silencio — revisa el mic",
+      "live_signal": "Activo",
+      "no_device_hint": "La captura no está activa o no llegaron frames de audio — revisa el dispositivo de entrada.",
+      "live_silent_hint": "El micrófono entrega audio pero está en silencio. Verifica que no esté silenciado o en uso por otra app."
+    }
   },
   "pipeline": {
     "state": "Estado",
@@ -707,14 +715,18 @@
         "good": "Bueno",
         "degraded": "Degradado",
         "poor": "Pobre",
-        "noSignal": "Calentando"
+        "noSignal": "Calentando",
+        "noDevice": "Sin micrófono",
+        "liveSilent": "Silencio — revisa el mic"
       },
       "verdictDescription": {
         "excellent": "Captura de calidad de estudio. Moonshine + Silero operan a tasas calibradas.",
         "good": "Micrófono de escritorio típico con HVAC funcionando. Degradación de STT < 1%.",
         "degraded": "Oficina abierta ruidosa, ventilador cerca del mic. La tasa de sustitución del STT sube ~3-5× por dB perdido. Acerca el mic 30 cm o activa supresión de ruido in-process.",
         "poor": "Mic en entorno ruidoso (café, vehículo). STT se vuelve poco confiable; la latencia de onset del VAD sube. Mueve el mic, activa supresión de ruido o reubica al hablante.",
-        "noSignal": "Sin muestras de SNR en la ventana rodante de 10 segundos. Típico justo después del boot o durante un silencio largo. El panel se actualiza automáticamente cuando fluyan frames de habla."
+        "noSignal": "Sin muestras de SNR en la ventana rodante de 10 segundos. Típico justo después del boot o durante un silencio largo. El panel se actualiza automáticamente cuando fluyan frames de habla.",
+        "noDevice": "No llega audio a la canalización de captura — el mic no está activo, está desconectado o no entregó frames. Esto no es un calentamiento; revisa el dispositivo de entrada.",
+        "liveSilent": "El micrófono entrega audio pero está en el piso de ruido — no le llega sonido. Verifica que no esté silenciado, en uso por otra app, o destruido por un efecto de audio (APO)."
       }
     },
     "mos": {

@@ -92,7 +92,14 @@ const VERDICT_DESCRIPTION_KEY: Record<VoiceQualityVerdict, string> = {
   no_signal: "qualityPanel.snr.verdictDescription.noSignal",
 };
 
-export function VoiceQualityPanel() {
+export function VoiceQualityPanel({
+  signalState,
+}: {
+  // W1.1 / G-P0-1 — the capture signal state, forwarded so an empty SNR
+  // window ("no_signal") can be rendered as a dead/silent mic rather than a
+  // generic "warming up". Optional: pre-W1.1 daemons never emit it.
+  signalState?: string;
+} = {}) {
   const { t } = useTranslation("voice");
   const [snapshot, setSnapshot] = useState<VoiceQualitySnapshotResponse | null>(
     null,
@@ -164,6 +171,28 @@ export function VoiceQualityPanel() {
   }
 
   const verdict = snapshot.snr_verdict;
+  // W1.1 / G-P0-1 — an empty SNR window ("no_signal") is ambiguous: it can
+  // mean the analyzer is genuinely warming up OR the mic is dead/silent.
+  // Resolve it with the capture signal_state so a dead mic is never
+  // mislabeled "warming up" (the LIVE2-P2-4 bug).
+  const noSignalOverride: "noDevice" | "liveSilent" | null =
+    verdict === "no_signal" && signalState === "no_device"
+      ? "noDevice"
+      : verdict === "no_signal" && signalState === "live_silent"
+        ? "liveSilent"
+        : null;
+  const effectiveLabelKey = noSignalOverride
+    ? `qualityPanel.snr.verdict.${noSignalOverride}`
+    : VERDICT_LABEL_KEY[verdict];
+  const effectiveDescriptionKey = noSignalOverride
+    ? `qualityPanel.snr.verdictDescription.${noSignalOverride}`
+    : VERDICT_DESCRIPTION_KEY[verdict];
+  const effectiveIcon = noSignalOverride ? (
+    <AlertTriangleIcon className="h-5 w-5 text-amber-500" />
+  ) : (
+    VERDICT_ICON[verdict]
+  );
+  const effectiveColor = noSignalOverride ? "text-amber-500" : VERDICT_COLOR[verdict];
   const snrPanel = (
     <div className="rounded-lg border bg-card p-6">
       <div className="mb-3 flex items-center justify-between">
@@ -174,10 +203,10 @@ export function VoiceQualityPanel() {
         <span className="text-xs text-muted-foreground">T4.37</span>
       </div>
       <div className="flex items-baseline gap-3">
-        {VERDICT_ICON[verdict]}
+        {effectiveIcon}
         <div>
-          <div className={`text-2xl font-semibold ${VERDICT_COLOR[verdict]}`}>
-            {t(VERDICT_LABEL_KEY[verdict])}
+          <div className={`text-2xl font-semibold ${effectiveColor}`}>
+            {t(effectiveLabelKey)}
           </div>
           <div className="text-xs text-muted-foreground">
             {snapshot.snr_p50_db !== null ? (
@@ -201,7 +230,7 @@ export function VoiceQualityPanel() {
         </div>
       </div>
       <p className="mt-3 text-sm text-muted-foreground">
-        {t(VERDICT_DESCRIPTION_KEY[verdict])}
+        {t(effectiveDescriptionKey)}
       </p>
       <div className="mt-3 flex flex-wrap gap-3 text-xs text-muted-foreground">
         <span>

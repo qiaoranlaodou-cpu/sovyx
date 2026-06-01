@@ -129,6 +129,40 @@ describe("VoiceQualityPanel", () => {
     });
   });
 
+  it("relabels no_signal as a dead mic when capture signal_state is no_device (W1.1)", async () => {
+    mockFetch.mockResolvedValue(
+      jsonResponse(
+        snapshot({
+          snr_verdict: "no_signal",
+          snr_p50_db: null,
+          snr_sample_count: 0,
+        }),
+      ),
+    );
+    render(<VoiceQualityPanel signalState="no_device" />);
+    await waitFor(() => {
+      expect(screen.getByText("No microphone")).toBeInTheDocument();
+    });
+    // It must NOT read as a transient "Warming up" when the mic is dead.
+    expect(screen.queryByText("Warming up")).not.toBeInTheDocument();
+  });
+
+  it("relabels no_signal as silent when capture signal_state is live_silent (W1.1)", async () => {
+    mockFetch.mockResolvedValue(
+      jsonResponse(
+        snapshot({
+          snr_verdict: "no_signal",
+          snr_p50_db: null,
+          snr_sample_count: 0,
+        }),
+      ),
+    );
+    render(<VoiceQualityPanel signalState="live_silent" />);
+    await waitFor(() => {
+      expect(screen.getByText("Silent — check mic")).toBeInTheDocument();
+    });
+  });
+
   it("shows the install disclaimer when DNSMOS is unavailable (not installed)", async () => {
     mockFetch.mockResolvedValue(
       jsonResponse(

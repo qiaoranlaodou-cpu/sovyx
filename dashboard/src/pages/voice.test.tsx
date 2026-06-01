@@ -490,6 +490,48 @@ describe("VoicePage", () => {
     });
   });
 
+  it("renders the honest capture signal-state chip — live_silent (W1.1)", async () => {
+    setupMockWithStatus({
+      capture: {
+        running: true,
+        input_device: 1,
+        host_api: "WASAPI",
+        sample_rate: 16000,
+        frames_delivered: 1_000_000,
+        last_rms_db: -80,
+        signal_state: "live_silent",
+      },
+    });
+    render(<VoicePage />);
+    await waitFor(() => {
+      expect(screen.getByTestId("capture-signal-state")).toHaveAttribute(
+        "data-state",
+        "live_silent",
+      );
+    });
+  });
+
+  it("shows a dead/absent mic as no_device, never warming (W1.1)", async () => {
+    setupMockWithStatus({
+      capture: {
+        running: false,
+        input_device: null,
+        host_api: null,
+        sample_rate: null,
+        frames_delivered: 0,
+        last_rms_db: null,
+        signal_state: "no_device",
+      },
+    });
+    render(<VoicePage />);
+    await waitFor(() => {
+      expect(screen.getByTestId("capture-signal-state")).toHaveAttribute(
+        "data-state",
+        "no_device",
+      );
+    });
+  });
+
   it("surfaces fetch-failed (showing stale data) when a refresh fails (P1-8)", async () => {
     // First /status succeeds (snapshot lands, capture stopped so the
     // poller stays disabled); the manual refresh's /status rejects. The
