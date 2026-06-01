@@ -919,6 +919,20 @@ class AudioCaptureTask(EpochMixin, RingMixin, LifecycleMixin, LoopMixin, Restart
         * When ``True``: measures the peak per-frame RMS and short-circuits
           the moment it crosses ``capture_validation_min_rms_db``. Retains
           the legacy diagnostic semantics used by the setup-wizard.
+
+        Design decision (W2.3 / G-P1-10 — presence-only is INTENTIONAL, not a
+        gap; ``docs-internal/ADR-voice-capture-boot-validation.md``): boot
+        validation proves *liveness* (callback fires), NOT signal energy.
+        Energy-deadness is deferred to the runtime capture-health coordinator
+        (deaf heartbeat → warm re-probe → bypass ladder). Flipping the default
+        to ``require_signal=True`` was rejected because boot validation cannot
+        distinguish a silent room from a dead mic — both deliver floor-level
+        frames — so requiring energy at open would FAIL a working mic that
+        starts in a quiet room (a worse failure for more users). The wizard /
+        ``sovyx doctor voice`` set ``require_signal=True`` because there the
+        user IS prompted to speak. Contract: open = liveness; runtime
+        coordinator = energy-deadness + recovery. "Catch deafness sooner" work
+        belongs in the coordinator, never in a boot-time energy gate.
         """
         # Drain stale frames from any previously rejected variant — the
         # queue is shared across pyramid iterations.
