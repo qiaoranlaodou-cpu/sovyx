@@ -305,17 +305,29 @@ def test_passthrough_does_not_interfere_with_canonical_typed_fields(
 # ── Type-mismatch rejection ────────────────────────────────────────────
 
 
-@given(
-    value=st.text(min_size=1, max_size=20).filter(
-        # Skip strings pydantic v2 would coerce to int. The coercer is
-        # whitespace-tolerant — ``"0\r"`` / ``" 5"`` / ``"7\n"`` all parse
-        # as int via the same path that accepts the raw digit. Strip the
-        # whitespace BEFORE the sign + ``.isdigit()`` check so the filter
-        # excludes every Hypothesis-discovered coercible spelling.
-        # Original Hypothesis falsifying example pre-fix: ``"0\r"``.
-        lambda s: not (s.strip().lstrip("-").isdigit() or s.strip().lstrip("+").isdigit()),
-    ),
-)
+def _pydantic_int_coercible(s: str) -> bool:
+    """True if pydantic v2 (lax) would coerce ``s`` to ``int``.
+
+    Pydantic accepts more than pure-digit strings: it is whitespace-tolerant
+    (``"0\\r"`` / ``" 5"`` / ``"7\\n"``) AND it accepts integral *float*
+    spellings (``"0.0"`` / ``"-3.0"``) by parsing the float and accepting when
+    ``.is_integer()``. A rejection test must exclude EVERY coercible spelling,
+    else Hypothesis keeps surfacing the next one (``"0\\r"`` pre-fix → ``"0.0"``
+    next). The earlier filter only checked ``.isdigit()`` and missed floats.
+    """
+    t = s.strip()
+    try:
+        int(t)
+        return True
+    except ValueError:
+        pass
+    try:
+        return float(t).is_integer()
+    except (ValueError, OverflowError):
+        return False
+
+
+@given(value=st.text(min_size=1, max_size=20).filter(lambda s: not _pydantic_int_coercible(s)))
 @settings(max_examples=80, deadline=None)
 def test_int_field_rejects_non_numeric_strings(value: str) -> None:
     """``onnx.session_count`` is ``int`` — pydantic coerces numeric
