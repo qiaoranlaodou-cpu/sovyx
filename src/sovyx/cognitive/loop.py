@@ -12,6 +12,7 @@ import time
 from typing import TYPE_CHECKING
 
 from sovyx.cognitive.act import ActionResult
+from sovyx.cognitive.think import is_degraded_llm_response
 from sovyx.engine.types import CognitivePhase
 from sovyx.llm.models import LLMResponse, ToolCall
 from sovyx.observability.logging import get_logger
@@ -379,6 +380,19 @@ class CognitiveLoop:
             action_result.metadata["latency_ms"] = llm_response.latency_ms
             action_result.metadata["provider"] = llm_response.provider
 
+            # W1.2 / G-P1-1 — the ThinkPhase swallows LLM failures and returns a
+            # degradation sentinel; mark the result honestly so every channel
+            # (and the voice bridge) distinguishes "LLM down" from a real short
+            # answer instead of treating the canned fallback as a normal reply.
+            if is_degraded_llm_response(
+                model=llm_response.model,
+                provider=llm_response.provider,
+                finish_reason=llm_response.finish_reason,
+            ):
+                action_result.degraded = True
+                action_result.error = True
+                action_result.metadata.setdefault("reason", "llm_think_degraded")
+
             # ── REFLECT ──
             self._state.transition(CognitivePhase.REFLECTING)
             with (
@@ -583,6 +597,20 @@ class CognitiveLoop:
             action_result.metadata["tokens_in"] = tokens_in
             action_result.metadata["tokens_out"] = tokens_out
             action_result.metadata["provider"] = final_provider
+
+            # W1.2 / G-P1-1 — mark the streamed result honestly when the
+            # ThinkPhase streaming fallback fired (see the non-streaming path).
+            # The degradation text was already forwarded to TTS chunk-by-chunk,
+            # so the user still hears it; this only makes the voice/dashboard
+            # surface able to tell it was an LLM failure, not a real answer.
+            if is_degraded_llm_response(
+                model=final_model,
+                provider=final_provider,
+                finish_reason=finish_reason,
+            ):
+                action_result.degraded = True
+                action_result.error = True
+                action_result.metadata.setdefault("reason", "llm_think_degraded")
 
             # ── REFLECT ──
             self._state.transition(CognitivePhase.REFLECTING)

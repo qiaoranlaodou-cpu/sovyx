@@ -150,7 +150,24 @@ class VoiceCognitiveBridge:
         local_cancel_hook = _cancel_hook
         self._pipeline.register_llm_cancel_hook(local_cancel_hook)
         try:
-            return await cogloop_task
+            result = await cogloop_task
+            # W1.2 / G-P1-1 — when the cognitive loop reports a real failure
+            # (ThinkPhase LLM-degraded OR a dependency-missing short-circuit —
+            # both surface as error=True), emit a PipelineErrorEvent so the
+            # dashboard error banner can tell "LLM down" from a deliberately
+            # short answer. The user still hears the canned reply (already
+            # streamed / spoken); this only adds the missing bus signal. The
+            # barge-in path returns via the CancelledError branch below with
+            # error=False, so a cancellation never trips this.
+            if result.error:
+                try:
+                    reason = str(result.metadata.get("reason", "cognitive_error"))
+                    await self._pipeline.report_cognitive_error(
+                        error=f"cognitive_loop_error: {reason}",
+                    )
+                except Exception:  # noqa: BLE001 — telemetry must not affect the turn
+                    logger.warning("voice_cognitive_error_report_failed", exc_info=True)
+            return result
         except asyncio.CancelledError:
             # Expected outcome of a barge-in cancellation. Returning a
             # sentinel keeps the caller (`_on_perception`) from propagating

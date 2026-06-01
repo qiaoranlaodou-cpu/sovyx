@@ -66,6 +66,9 @@ def _make_pipeline() -> MagicMock:
     pipeline.stream_text = AsyncMock()
     pipeline.flush_stream = AsyncMock()
     pipeline.speak = AsyncMock()
+    # W1.2 — the bridge calls this when the cogloop reports error=True so the
+    # dashboard error banner sees the cognitive-layer failure.
+    pipeline.report_cognitive_error = AsyncMock()
     # current_utterance_id is a property in production; expose as a
     # plain attribute on the mock so accessing it never raises.
     pipeline.current_utterance_id = "trace-fixed-uuid"
@@ -85,6 +88,77 @@ def _make_pipeline() -> MagicMock:
 
     pipeline.register_llm_cancel_hook = MagicMock(side_effect=_register)
     return pipeline
+
+
+class TestVoiceCognitiveBridgeCognitiveErrorSignal:
+    """W1.2 / G-P1-1 — a real cognitive failure (error=True) surfaces on the
+    voice bus; a healthy turn and a barge-in cancellation do not."""
+
+    @pytest.mark.asyncio
+    async def test_error_result_reports_cognitive_error(self) -> None:
+        cogloop = MagicMock()
+        degraded = ActionResult(
+            response_text="I'm having trouble thinking clearly right now.",
+            target_channel="voice",
+            degraded=True,
+            error=True,
+            metadata={"reason": "llm_think_degraded"},
+        )
+        cogloop.process_request_streaming = AsyncMock(return_value=degraded)
+        pipeline = _make_pipeline()
+        bridge = VoiceCognitiveBridge(cogloop, pipeline, streaming=True)
+
+        result = await bridge.process(_make_cog_request())
+
+        assert result.error is True
+        pipeline.report_cognitive_error.assert_awaited_once()
+        # The reason token is carried into the bus signal.
+        _, kwargs = pipeline.report_cognitive_error.call_args
+        assert "llm_think_degraded" in kwargs["error"]
+
+    @pytest.mark.asyncio
+    async def test_healthy_result_does_not_report(self) -> None:
+        cogloop = MagicMock()
+        cogloop.process_request_streaming = AsyncMock(return_value=_make_action_result("hi"))
+        pipeline = _make_pipeline()
+        bridge = VoiceCognitiveBridge(cogloop, pipeline, streaming=True)
+
+        await bridge.process(_make_cog_request())
+
+        pipeline.report_cognitive_error.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_barge_in_cancellation_does_not_report(self) -> None:
+        """A barge-in returns the degraded sentinel with error=False, so the
+        cognitive-error signal must NOT fire (it is a user interruption, not
+        an LLM failure)."""
+        cogloop = MagicMock()
+
+        async def _never_returns(_req: object) -> ActionResult:
+            await asyncio.Event().wait()  # block until cancelled
+            raise AssertionError("unreachable")
+
+        cogloop.process_request_streaming = AsyncMock(side_effect=_never_returns)
+        pipeline = _make_pipeline()
+        bridge = VoiceCognitiveBridge(cogloop, pipeline, streaming=True)
+
+        # Drive the cancel hook from a concurrent task once it's registered.
+        async def _barge_in() -> None:
+            for _ in range(100):
+                hook = pipeline._llm_cancel_hook
+                if hook is not None:
+                    await hook()
+                    return
+                await asyncio.sleep(0)
+
+        proc_task = asyncio.create_task(bridge.process(_make_cog_request()))
+        await _barge_in()
+        result = await proc_task
+
+        assert result.degraded is True
+        assert result.error is False
+        assert result.metadata.get("cancelled_reason") == "barge_in"
+        pipeline.report_cognitive_error.assert_not_awaited()
 
 
 class TestVoiceCognitiveBridgeCancelHookHappyPath:

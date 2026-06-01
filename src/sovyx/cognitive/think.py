@@ -20,6 +20,29 @@ if TYPE_CHECKING:
 logger = get_logger(__name__)
 
 
+DEGRADED_MODEL = "degraded"
+"""Sentinel ``model`` value the ThinkPhase stamps on its degradation
+fallback (``LLMResponse`` / ``LLMStreamChunk``) when the LLM call fails.
+Paired with :data:`DEGRADED_PROVIDER`. Detected downstream by
+:func:`is_degraded_llm_response` so the cognitive loop marks the
+``ActionResult`` honestly (``degraded`` + ``error``) instead of letting
+the canned fallback be processed as a normal answer (W1.2 / G-P1-1)."""
+
+DEGRADED_PROVIDER = "none"
+"""Sentinel ``provider`` value paired with :data:`DEGRADED_MODEL`."""
+
+
+def is_degraded_llm_response(*, model: str, provider: str, finish_reason: str) -> bool:
+    """True iff the response carries the ThinkPhase degradation sentinel.
+
+    Single source of truth for the producer (ThinkPhase fallback) ↔
+    consumer (cognitive loop, voice bridge) contract — callers MUST use
+    this rather than matching the fields as independent literals
+    (anti-pattern #53).
+    """
+    return model == DEGRADED_MODEL and provider == DEGRADED_PROVIDER and finish_reason == "error"
+
+
 class ThinkPhase:
     """Assemble context + call LLM with complexity-based model routing.
 
@@ -109,13 +132,13 @@ class ThinkPhase:
             logger.exception("think_phase_failed")
             degraded = LLMResponse(
                 content=self._degradation_message,
-                model="degraded",
+                model=DEGRADED_MODEL,
                 tokens_in=0,
                 tokens_out=0,
                 latency_ms=0,
                 cost_usd=0.0,
                 finish_reason="error",
-                provider="none",
+                provider=DEGRADED_PROVIDER,
             )
             return degraded, []
 
@@ -175,8 +198,8 @@ class ThinkPhase:
                     delta_text=self._degradation_message,
                     is_final=True,
                     finish_reason="error",
-                    model="degraded",
-                    provider="none",
+                    model=DEGRADED_MODEL,
+                    provider=DEGRADED_PROVIDER,
                 )
 
             return _degraded_iter(), []

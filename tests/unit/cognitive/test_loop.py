@@ -9,6 +9,7 @@ from sovyx.cognitive.gate import CognitiveRequest
 from sovyx.cognitive.loop import CognitiveLoop
 from sovyx.cognitive.perceive import Perception
 from sovyx.cognitive.state import CognitiveStateMachine
+from sovyx.cognitive.think import DEGRADED_MODEL, DEGRADED_PROVIDER
 from sovyx.engine.types import (
     CognitivePhase,
     ConversationId,
@@ -163,6 +164,41 @@ class TestErrorHandling:
         loop = _loop(think=think)
         result = await loop.process_request(_request())
         assert result.error is True
+
+    async def test_think_degradation_sentinel_marks_result_error(self) -> None:
+        """W1.2 / G-P1-1 — the ThinkPhase SWALLOWS the LLM failure and returns
+        its degradation sentinel (no exception escapes), so the outer except
+        never fires. The loop must still mark the ActionResult degraded+error
+        so channels distinguish an LLM failure from a real short answer."""
+        think = _mock_think()
+        think.process = AsyncMock(
+            return_value=(
+                LLMResponse(
+                    content="I'm having trouble thinking clearly right now.",
+                    model=DEGRADED_MODEL,
+                    tokens_in=0,
+                    tokens_out=0,
+                    latency_ms=0,
+                    cost_usd=0.0,
+                    finish_reason="error",
+                    provider=DEGRADED_PROVIDER,
+                ),
+                [],
+            )
+        )
+        loop = _loop(think=think)
+        result = await loop.process_request(_request())
+        assert result.error is True
+        assert result.degraded is True
+        assert result.metadata.get("reason") == "llm_think_degraded"
+
+    async def test_normal_think_response_not_marked_degraded(self) -> None:
+        """A healthy think response must NOT be marked degraded/error."""
+        loop = _loop()
+        result = await loop.process_request(_request())
+        assert result.error is False
+        assert result.degraded is False
+        assert "reason" not in result.metadata
 
     async def test_reflect_failure_still_returns_response(self) -> None:
         reflect = _mock_reflect()

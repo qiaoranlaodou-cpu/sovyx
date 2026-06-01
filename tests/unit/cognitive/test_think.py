@@ -9,7 +9,12 @@ if TYPE_CHECKING:
     import pytest
 
 from sovyx.cognitive.perceive import Perception
-from sovyx.cognitive.think import ThinkPhase
+from sovyx.cognitive.think import (
+    DEGRADED_MODEL,
+    DEGRADED_PROVIDER,
+    ThinkPhase,
+    is_degraded_llm_response,
+)
 from sovyx.context.assembler import AssembledContext
 from sovyx.engine.types import MindId, PerceptionType
 from sovyx.llm.models import LLMResponse
@@ -95,6 +100,15 @@ class TestThinkPhase:
         assert response.finish_reason == "error"
         assert "trouble" in response.content
         assert messages == []
+        # W1.2 — the fallback carries the SSoT degradation sentinel so the
+        # cognitive loop can mark the ActionResult honestly downstream.
+        assert response.model == DEGRADED_MODEL
+        assert response.provider == DEGRADED_PROVIDER
+        assert is_degraded_llm_response(
+            model=response.model,
+            provider=response.provider,
+            finish_reason=response.finish_reason,
+        )
 
     async def test_custom_degradation_message(self) -> None:
         router = _mock_router()
@@ -107,6 +121,32 @@ class TestThinkPhase:
         )
         response, _ = await phase.process(_perception(), MIND, [])
         assert response.content == "Oops!"
+
+
+class TestIsDegradedLlmResponse:
+    """W1.2 — the producer↔consumer SSoT helper (anti-pattern #53)."""
+
+    def test_true_for_sentinel(self) -> None:
+        assert is_degraded_llm_response(
+            model=DEGRADED_MODEL, provider=DEGRADED_PROVIDER, finish_reason="error"
+        )
+
+    def test_false_for_normal_response(self) -> None:
+        assert not is_degraded_llm_response(
+            model="claude-opus-4-8", provider="anthropic", finish_reason="stop"
+        )
+
+    def test_false_when_only_finish_reason_error(self) -> None:
+        # A real provider returning finish_reason="error" (e.g. content
+        # filter) is NOT the ThinkPhase degradation sentinel.
+        assert not is_degraded_llm_response(
+            model="gpt-4o", provider="openai", finish_reason="error"
+        )
+
+    def test_false_when_provider_present_but_model_degraded(self) -> None:
+        assert not is_degraded_llm_response(
+            model=DEGRADED_MODEL, provider="anthropic", finish_reason="error"
+        )
 
 
 class TestModelSelection:

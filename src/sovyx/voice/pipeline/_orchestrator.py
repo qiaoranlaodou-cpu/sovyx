@@ -1838,6 +1838,26 @@ class VoicePipeline(
     # TtsCancelChain mixins at runtime. Anti-pattern #16 / #32 case
     # (b) Phase 5.F.27.
 
+    async def report_cognitive_error(self, *, error: str) -> None:
+        """Surface a cognitive / LLM-layer failure on the voice bus.
+
+        W1.2 / G-P1-1 — the ThinkPhase swallows LLM failures and speaks a
+        canned degradation reply; the only prior signal was a debug log, so
+        the dashboard error-banner widget (bus-keyed) could not tell "LLM
+        down" from a deliberately short answer. The voice↔cognition bridge
+        calls this when the cognitive loop reports ``error=True`` for a
+        non-barge-in turn. Emits the same :class:`PipelineErrorEvent` the
+        orchestrator already emits for a *throwing* cognitive callback, using
+        the per-turn resolved mind id + current utterance id.
+        """
+        await self._emit(
+            PipelineErrorEvent(
+                mind_id=self._current_mind_id,
+                error=error,
+                utterance_id=self.current_utterance_id,
+            )
+        )
+
     # -- Internal helpers ----------------------------------------------------
 
     def _check_frame_drop_signals(self, now_monotonic: float) -> None:
