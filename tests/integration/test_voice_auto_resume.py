@@ -111,7 +111,18 @@ def _make_mind_config() -> SimpleNamespace:
 
 
 def _make_engine_config(tmp_path: Path) -> SimpleNamespace:
-    return SimpleNamespace(data_dir=tmp_path)
+    # Mirror the real EngineConfig.tuning.voice shape the bootstrap reads
+    # (W2.1 STT-failover gate). Default-OFF so these tests exercise the
+    # no-failover path; the real pydantic config always has these fields.
+    return SimpleNamespace(
+        data_dir=tmp_path,
+        tuning=SimpleNamespace(
+            voice=SimpleNamespace(
+                stt_failover_enabled=False,
+                cloud_stt_timeout_seconds=30.0,
+            ),
+        ),
+    )
 
 
 class TestAutoResumeFailurePath:

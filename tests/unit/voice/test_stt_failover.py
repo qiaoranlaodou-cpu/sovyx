@@ -214,3 +214,15 @@ class TestLifecycle:
         await engine.close()
         assert primary.closed
         assert secondary.closed
+
+    def test_state_proxies_primary(self) -> None:
+        # The factory's post-initialize READY guard reads stt.state; the
+        # wrapper must proxy the primary's so the guard stays meaningful.
+        primary = _FakeSTT()
+        primary.state = "ready_sentinel"  # type: ignore[attr-defined]
+        engine = FailoverSTTEngine(primary, _FakeSTT())
+        assert engine.state == "ready_sentinel"
+
+    def test_state_none_when_primary_has_no_state(self) -> None:
+        engine = FailoverSTTEngine(_FakeSTT(), _FakeSTT())
+        assert engine.state is None

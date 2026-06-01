@@ -332,6 +332,15 @@ class VoiceTuningConfig(BaseSettings):
     """Maximum audio duration accepted by the cloud STT endpoint.
     OpenAI's documented cap is 25 MB raw audio (~10 min @ 16 kHz);
     the 600 s ceiling matches that with headroom for retries."""
+
+    stt_failover_enabled: bool = False
+    """W2.1 / G-P1-4 — opt-in automatic STT failover. When ``True`` AND an
+    ``OPENAI_API_KEY`` is configured, the daemon wraps the local Moonshine
+    primary with a CloudSTT secondary via
+    :class:`sovyx.voice.stt_failover.FailoverSTTEngine`, so sustained local
+    STT failure (raise / S2 timeout) RECOVERS via the cloud instead of
+    producing permanent silence. Default OFF (staged adoption + BYOK: cloud
+    STT incurs per-request cost, so it stays opt-in)."""
     auto_select_min_gpu_vram_mb: int = 4_000
     auto_select_high_ram_threshold_mb: int = 16_000
     auto_select_low_ram_threshold_mb: int = 2_048

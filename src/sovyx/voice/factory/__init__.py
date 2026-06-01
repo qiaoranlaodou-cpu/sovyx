@@ -87,6 +87,7 @@ if TYPE_CHECKING:
     from sovyx.voice._snr_estimator import SnrEstimator
     from sovyx.voice.health.contract import BypassOutcome
     from sovyx.voice.pipeline._orchestrator import VoicePipeline
+    from sovyx.voice.stt import STTEngine
 
 
 logger = get_logger(__name__)
@@ -586,6 +587,7 @@ async def create_voice_pipeline(
     output_device: int | str | None = None,  # noqa: ARG001 — reserved for future TTS routing
     allow_inoperative_capture: bool = False,
     tts_engine_preference: str = "auto",
+    secondary_stt: STTEngine | None = None,
 ) -> VoiceBundle:
     """Create a fully initialized VoicePipeline with all components.
 
@@ -682,6 +684,18 @@ async def create_voice_pipeline(
     # ── 2. MoonshineSTT (auto-download via HF Hub) ───────────
     logger.info("voice_factory_creating_stt", language=language)
     stt = _create_stt(language)
+    # W2.1 / G-P1-4 — when the caller (bootstrap) supplies a secondary STT
+    # (CloudSTT, gated on the operator's ``stt_failover_enabled`` flag + an
+    # OPENAI_API_KEY), wrap the local Moonshine primary so sustained primary
+    # failure (raise / S2 timeout) RECOVERS via the secondary instead of
+    # producing permanent silence. The wrapper proxies the primary's
+    # lifecycle ``state`` so the READY guard below still applies, and its
+    # ``initialize()`` brings up both (secondary best-effort).
+    if secondary_stt is not None:
+        from sovyx.voice.stt_failover import FailoverSTTEngine
+
+        stt = FailoverSTTEngine(stt, secondary_stt)
+        logger.info("voice_factory_stt_failover_wired")
     # The constructor only allocates the engine struct; the ONNX session +
     # HF Hub download happen in initialize(). Calling it here guarantees
     # STTState.READY before the pipeline starts consuming speech events —

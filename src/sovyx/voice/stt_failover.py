@@ -93,6 +93,16 @@ class FailoverSTTEngine(STTEngine):
         self._consecutive_failovers = 0
         self._calls_since_probe = 0
 
+    @property
+    def state(self) -> object:
+        """Proxy the primary engine's lifecycle state.
+
+        The factory's post-initialize READY guard reads ``stt.state``; proxying
+        the primary's keeps that guard meaningful when the engine is wrapped
+        (the failover wrapper is only as ready as its primary). ``None`` when
+        the primary exposes no ``state`` (a non-Moonshine primary)."""
+        return getattr(self._primary, "state", None)
+
     async def initialize(self) -> None:
         """Initialize the primary (required) + the secondary (best-effort)."""
         await self._primary.initialize()

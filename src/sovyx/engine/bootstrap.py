@@ -135,6 +135,33 @@ async def _auto_resume_voice_pipeline(
 
     on_perception_cb = _on_perception if cognitive_loop is not None else None
 
+    # W2.1 / G-P1-4 — opt-in STT failover: when the operator enabled it AND an
+    # OPENAI_API_KEY is present, build a CloudSTT secondary so the daemon
+    # RECOVERS sustained local-STT failure (raise / S2 timeout) via the cloud
+    # instead of producing permanent silence. Best-effort: a construction
+    # problem must never block startup — it just leaves failover unwired and
+    # the local primary still works. The key is read from the same
+    # OPENAI_API_KEY env the LLM provider registry uses (no new config path).
+    secondary_stt = None
+    if engine_config.tuning.voice.stt_failover_enabled:
+        _openai_key = os.environ.get("OPENAI_API_KEY", "").strip()
+        if _openai_key:
+            try:
+                from sovyx.voice.stt_cloud import CloudSTT, CloudSTTConfig
+
+                secondary_stt = CloudSTT(
+                    CloudSTTConfig(
+                        api_key=_openai_key,
+                        language=mind_config.language,
+                        api_timeout=engine_config.tuning.voice.cloud_stt_timeout_seconds,
+                    )
+                )
+                logger.info("voice_stt_failover_secondary_built", engine="cloud_whisper")
+            except Exception:  # noqa: BLE001 — never block daemon startup on a secondary
+                logger.warning("voice_stt_failover_secondary_build_failed", exc_info=True)
+        else:
+            logger.info("voice_stt_failover_enabled_no_key", hint="set OPENAI_API_KEY")
+
     bundle = await create_voice_pipeline(
         data_dir=engine_config.data_dir,
         mind_id=str(mind_config.id),
@@ -146,6 +173,7 @@ async def _auto_resume_voice_pipeline(
         tts_engine_preference=getattr(mind_config, "voice_tts_engine", "auto"),
         event_bus=event_bus,
         on_perception=on_perception_cb,
+        secondary_stt=secondary_stt,
         # ``allow_inoperative_capture=True``: even if the mic isn't
         # currently available (USB unplugged, audio service down),
         # daemon still comes up + voice surfaces an error rather than
