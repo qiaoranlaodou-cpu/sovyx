@@ -273,7 +273,9 @@ class TestReportShape:
 
     def test_scan_duration_bounded(self) -> None:
         report = _scan()
-        assert 0.0 <= report.scan_duration_ms < 100.0
+        # Rule #12 / AP #31: non-negative + sane-ceiling invariant, not speed —
+        # a tight wall-clock bound flakes on slow CI (perf is the perf-gate's job).
+        assert 0.0 <= report.scan_duration_ms < 30_000.0
 
     def test_scan_duration_non_negative(self) -> None:
         for _ in range(5):

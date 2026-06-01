@@ -253,9 +253,10 @@ class TestC6CognitiveLoopDependencyGate:
         result = await loop.process_request(req)
         elapsed_ms = (time.perf_counter() - started) * 1000.0
 
-        # Short-circuit within tight time budget (the spec says < 100 ms;
-        # in practice this is sub-millisecond because no I/O).
-        assert elapsed_ms < 100.0, f"Short-circuit too slow: {elapsed_ms:.2f}ms"
+        # Short-circuit is sub-millisecond (no I/O). Rule #12 / AP #31: assert a
+        # generous sane ceiling, not a tight wall-clock bound — the latter flakes
+        # on slow/contended CI (perf is the perf-gate's job).
+        assert elapsed_ms < 5000.0, f"Short-circuit too slow: {elapsed_ms:.2f}ms"
 
         assert isinstance(result, ActionResult)
         assert result.degraded is True

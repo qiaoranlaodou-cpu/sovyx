@@ -134,4 +134,8 @@ class TestScanDurationBounds:
             default_model="",
         )
         assert report.scan_duration_ms >= 0.0
-        assert report.scan_duration_ms < 100.0
+        # Rule #12 / AP #31: the invariant is non-negative + finite/sane-ceiling,
+        # NOT speed. A tight wall-clock bound flakes on slow/contended CI runners
+        # (windows-latest measured 795 ms for an in-memory scan). Perf is the
+        # perf-gate's job; this generous ceiling still catches a runaway scan.
+        assert report.scan_duration_ms < 30_000.0
