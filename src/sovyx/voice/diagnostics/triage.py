@@ -50,6 +50,8 @@ from enum import StrEnum
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from sovyx.voice.diagnostics import _schema
+
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
@@ -328,9 +330,9 @@ def _summary_get(summary: dict[str, Any], *keys: str, default: str = "?") -> str
 
 def _detect_toolkit(summary: dict[str, Any]) -> str:
     tool = (summary.get("tool", "") or summary.get("script_name", "") or "").lower()
-    if "windows" in tool or "voice-diagnostic" in tool:
+    if any(tok in tool for tok in _schema.TOOLKIT_WINDOWS_TOKENS):
         return "windows"
-    if "mac" in tool:
+    if _schema.TOOLKIT_MACOS_TOKEN in tool:
         return "macos"
     # v4.3 Linux: detect via host_capability_summary.kernel_line.
     # The bash SUMMARY.json may emit ``kernel_line: null`` when uname
@@ -454,32 +456,37 @@ def _evaluate_hypotheses(
     if toolkit == "windows":
         h2 = get("H2", "Windows Voice Clarity APO active and destroying signal (anti-pattern #21)")
         # Check audio_endpoints in summary or sovyx-voice-diagnostic.json.
-        endpoints = summary.get("audio_endpoints", [])
+        endpoints = summary.get(_schema.WIN_AUDIO_ENDPOINTS, [])
         active_with_apo = [
-            e for e in endpoints if e.get("is_active") and e.get("voice_clarity_active")
+            e
+            for e in endpoints
+            if e.get(_schema.WIN_ENDPOINT_IS_ACTIVE)
+            and e.get(_schema.WIN_ENDPOINT_VOICE_CLARITY_ACTIVE)
         ]
         for e in active_with_apo:
             h2.add_for(
-                f"endpoint '{e.get('friendly_name')}' has voice_clarity_active=true", weight=0.4
+                f"endpoint '{e.get(_schema.WIN_ENDPOINT_FRIENDLY_NAME)}' "
+                "has voice_clarity_active=true",
+                weight=0.4,
             )
         # Comparator verdict.
-        live = summary.get("live_captures", {})
+        live = summary.get(_schema.WIN_LIVE_CAPTURES, {})
         if isinstance(live, dict):
-            v = live.get("verdict", "")
-            if v == "voice_clarity_destroying_apo_confirmed":
+            v = live.get(_schema.WIN_LIVE_VERDICT, "")
+            if v == _schema.WIN_LIVE_VERDICT_APO_CONFIRMED:
                 h2.add_for(
                     f"WASAPI comparator verdict: {v} "
-                    f"(delta_rms={live.get('delta_rms_dbfs')}, "
-                    f"delta_vad={live.get('delta_vad')})",
+                    f"(delta_rms={live.get(_schema.WIN_LIVE_DELTA_RMS)}, "
+                    f"delta_vad={live.get(_schema.WIN_LIVE_DELTA_VAD)})",
                     weight=0.6,
                 )
-            elif v == "apo_not_culprit":
+            elif v == _schema.WIN_LIVE_VERDICT_APO_NOT_CULPRIT:
                 h2.add_against(f"WASAPI comparator verdict: {v}", weight=0.6)
 
     # --- H3: macOS HAL interceptor (Krisp/Loopback rerouted default) ---
     if toolkit == "macos":
         h3 = get("H3", "macOS HAL plug-in/AU intercepted default mic (Krisp/Loopback/BlackHole)")
-        hal_classifier = root / "D_coreaudiod" / "hal_classifier.json"
+        hal_classifier = root / _schema.MACOS_HAL_CLASSIFIER_PATH
         if hal_classifier.exists():
             try:
                 d = json.loads(hal_classifier.read_text())
@@ -510,16 +517,18 @@ def _evaluate_hypotheses(
     # --- H5: Mic permission denied (cross-OS) ---
     h5 = get("H5", "Microphone permission denied to Sovyx process")
     if toolkit == "windows":
-        consent = summary.get("consent_store", {})
+        consent = summary.get(_schema.WIN_CONSENT_STORE, {})
         if isinstance(consent, dict):
-            global_val = consent.get("user_global_value")
+            global_val = consent.get(_schema.WIN_CONSENT_USER_GLOBAL)
             if global_val == 0:
                 h5.add_for("ConsentStore user_global=0 (denied)", weight=0.5)
-            for app in consent.get("nonpackaged_apps", []):
-                if "python" in (app.get("app_path_enc") or "").lower() and app.get("value") == 0:
-                    h5.add_for(f"NonPackaged python denied: {app.get('app_path_enc')}", weight=0.5)
+            for app in consent.get(_schema.WIN_CONSENT_NONPACKAGED, []):
+                app_path = app.get(_schema.WIN_CONSENT_APP_PATH)
+                denied = app.get(_schema.WIN_CONSENT_APP_VALUE) == 0
+                if "python" in (app_path or "").lower() and denied:
+                    h5.add_for(f"NonPackaged python denied: {app_path}", weight=0.5)
     if toolkit == "macos":
-        tcc = root / "F_session" / "tcc_mic_consents.json"
+        tcc = root / _schema.MACOS_TCC_CONSENTS_PATH
         if tcc.exists():
             try:
                 d = json.loads(tcc.read_text())
@@ -539,12 +548,12 @@ def _evaluate_hypotheses(
 
     # --- H6: Selftest failed (cross-OS, mid-confidence in EVERYTHING) ---
     h6 = get("H6", "Analyzer selftest failed — downstream metrics suspect")
-    if summary.get("analyzer_selftest_status") == "fail":
+    if summary.get(_schema.ANALYZER_SELFTEST_STATUS) == "fail":
         h6.add_for("analyzer_selftest_status=fail — analysis pipeline contaminated", weight=1.0)
 
     # --- H7: Network blocked LLM provider (cross-OS) ---
     h7 = get("H7", "Network blocked LLM/STT/TTS provider — voice pipeline stalls on cloud call")
-    network_data = summary.get("network_llm", [])
+    network_data = summary.get(_schema.NETWORK_LLM, [])
     # NOTE: Linux toolkit currently doesn't put network_llm in SUMMARY.json;
     # extending H7 to scan I_network/* artifacts would be a future improvement.
     #
@@ -559,7 +568,9 @@ def _evaluate_hypotheses(
     failed_endpoints = [n for n in network_data if _endpoint_probed_and_failed(n)]
     for n in failed_endpoints:
         h7.add_for(
-            f"unreachable: {n.get('host')} dns={n.get('dns_ok')} tcp={n.get('tcp_ok')}", weight=0.3
+            f"unreachable: {n.get(_schema.NETWORK_HOST)} "
+            f"dns={n.get(_schema.NETWORK_DNS_OK)} tcp={n.get(_schema.NETWORK_TCP_OK)}",
+            weight=0.3,
         )
 
     # --- H8: Sovyx daemon crash / unhandled exception (cross-OS) ---
@@ -590,7 +601,7 @@ def _evaluate_hypotheses(
     # --- H9: Hardware capability gap (no capture-capable card / device dead) ---
     h9 = get("H9", "Hardware capability gap — no capture-capable audio device detected")
     if toolkit == "linux":
-        target_card_path = root / "C_alsa" / "target_card.txt"
+        target_card_path = root / _schema.LINUX_TARGET_CARD_PATH
         if target_card_path.exists():
             content = target_card_path.read_text(errors="replace").strip()
             if content == "UNRESOLVED":
@@ -598,7 +609,7 @@ def _evaluate_hypotheses(
                     "ALSA target_card UNRESOLVED — no card with PCM capture detected", weight=0.7
                 )
     if toolkit == "macos":
-        coreaudio_dump = root / "C_coreaudio" / "coreaudio_dump.json"
+        coreaudio_dump = root / _schema.MACOS_COREAUDIO_DUMP_PATH
         if coreaudio_dump.exists():
             try:
                 d = json.loads(coreaudio_dump.read_text())
@@ -612,8 +623,8 @@ def _evaluate_hypotheses(
             except Exception:  # noqa: BLE001
                 pass
     if toolkit == "windows":
-        endpoints = summary.get("audio_endpoints", [])
-        active_input = [e for e in endpoints if e.get("is_active")]
+        endpoints = summary.get(_schema.WIN_AUDIO_ENDPOINTS, [])
+        active_input = [e for e in endpoints if e.get(_schema.WIN_ENDPOINT_IS_ACTIVE)]
         if endpoints and not active_input:
             h9.add_for(
                 "Windows MMDevices Capture has 0 ACTIVE endpoints (all disabled/unplugged)",
