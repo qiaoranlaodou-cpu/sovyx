@@ -56,7 +56,7 @@ Gates (in order):
 # 16 zod_twin_completeness           — LENIENT v0.49.38..v0.52.x; STRICT v0.53.x (C, C-P0-1)
 # 17 response_model_presence         — LENIENT v0.49.38..v0.52.x; STRICT v0.53.x (C, C.4 body)
 # 18 boundary_helper_real            — LENIENT v0.49.38..v0.52.x; STRICT v0.53.x (C, C.6 body)
-# 19 name_lock_integrity            — LENIENT v0.49.x; STRICT v0.52.0    (Ω-3, #68 DRAFT) — every docs-internal/* path link in src/sovyx docstrings must resolve (dead link ships to PyPI)
+# 19 name_lock_integrity            — LENIENT v0.49.x; STRICT v0.52.0    (Ω-3, #68 DRAFT) — every docs-internal/* path link in src/sovyx docstrings must resolve. STRICT-when-applicable: SKIPs (exit 0) where docs-internal/ is gitignored-absent (fresh checkout / CI runner / PyPI sdist) — WORKING-TREE gate; full check runs on every dev box + local verify_gates.sh. (v0.49.55 publish FAILED: end-to-end test hard-asserted on CI where docs-internal/ isn't checked out → 76 false violations; fixed v0.49.56.)
 ```
 
 Plus `uv lock --check` on version bumps. Always grep gate summary line — never trust harness exit code (pre-v0.42.2 `2>&1 | tail -N` masked 6 failures; see `feedback_ci_preflight`).

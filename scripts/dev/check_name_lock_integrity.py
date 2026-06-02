@@ -62,6 +62,26 @@ def _resolves(rel: str) -> bool:
 
 
 def main() -> int:
+    # docs-internal/ is gitignored (CLAUDE.md Git section) — it exists in a
+    # developer working tree but is ABSENT in any fresh `git clone`, on CI
+    # runners (actions/checkout omits gitignored paths), and in the PyPI
+    # sdist. This gate validates *working-tree* reference integrity, so it is
+    # only meaningful where docs-internal/ is present. Where it is absent the
+    # gate is structurally inapplicable: every reference would resolve to a
+    # missing target, producing N false "violations". SKIP (PASS, exit 0) in
+    # that case — same STRICT-when-applicable / SKIP-when-absent contract as
+    # Gate 11 (dashboard bundle integrity). This is what lets the end-to-end
+    # ``test_live_repo_has_no_dead_links`` pass on CI while still enforcing the
+    # full check on every dev box + the local verify_gates.sh run.
+    if not (ROOT / "docs-internal").is_dir():
+        print(
+            "Quality Gate 19 — name-lock integrity: SKIP "
+            "(docs-internal/ absent — working-tree-only gate; inapplicable in a "
+            "fresh checkout / CI runner / PyPI sdist where the gitignored "
+            "docs-internal/ tree is not present)"
+        )
+        return 0
+
     violations: list[tuple[str, int, str]] = []
     for path in SRC.rglob("*"):
         if not path.is_file() or path.suffix.lower() not in _EXTS:

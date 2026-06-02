@@ -472,9 +472,14 @@ LOG="$LOG_DIR/19-name-lock-integrity.log"
 if uv run python scripts/dev/check_name_lock_integrity.py >"$LOG" 2>&1; then
     if grep -q "name-lock integrity: PASS" "$LOG"; then
         ok "name-lock integrity — PASS"
+    elif grep -q "name-lock integrity: SKIP" "$LOG"; then
+        # docs-internal/ gitignored-absent (fresh checkout / CI / sdist) —
+        # gate is structurally inapplicable; STRICT-when-applicable contract
+        # (same as Gate 11). Exit 0 SKIP is a valid pass, not a warn.
+        ok "name-lock integrity — SKIP (docs-internal/ absent — inapplicable)"
     else
-        # exit 0 but no PASS line — unexpected shape, warn
-        printf '%s⚠%s gate %d/%d — name-lock integrity LENIENT warn: exit 0 without PASS line; log: %s\n' \
+        # exit 0 but neither PASS nor SKIP — unexpected shape, warn
+        printf '%s⚠%s gate %d/%d — name-lock integrity LENIENT warn: exit 0 without PASS/SKIP line; log: %s\n' \
             "$YELLOW" "$RESET" "$GATE_NUM" "$GATE_TOTAL" "$LOG"
     fi
 else

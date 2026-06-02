@@ -93,6 +93,30 @@ def test_main_passes_clean_tree(
     assert "PASS" in out
 
 
+def test_main_skips_when_docs_internal_absent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # docs-internal/ is gitignored — absent in a fresh checkout / CI / sdist.
+    # There the gate is structurally inapplicable (every reference resolves to
+    # a missing target). It MUST skip-as-pass, not emit N false violations.
+    # This reproduces the v0.49.55 publish failure (76 false violations on the
+    # self-hosted CI runner where docs-internal/ was not checked out).
+    src = tmp_path / "src" / "sovyx"
+    src.mkdir(parents=True)
+    # NOTE: deliberately NO (tmp_path / "docs-internal") directory.
+    (src / "mod.py").write_text(
+        '"""See docs-internal/missions/MISSION-real.md for the rationale."""\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(checker, "ROOT", tmp_path)
+    monkeypatch.setattr(checker, "SRC", src)
+    rc = checker.main()
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "SKIP" in out
+    assert "violation(s)" not in out
+
+
 def test_main_ignores_bare_spec_id(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     # A spec-ID citation carrying NO docs-internal/ prefix is provenance, not a link.
     _make_tree(tmp_path, monkeypatch, '"""Phase 11 Task 11.8 of IMPL-OBSERVABILITY-001."""\n')
@@ -129,4 +153,11 @@ def test_live_repo_has_no_dead_links() -> None:
         text=True,
     )
     assert result.returncode == 0, result.stdout + result.stderr
-    assert "name-lock integrity: PASS" in result.stdout
+    # PASS where docs-internal/ is present (dev box, local verify_gates.sh);
+    # SKIP where it is gitignored-absent (fresh checkout / CI / PyPI sdist).
+    # Both are exit-0 verdicts — the gate is STRICT-when-applicable, never a
+    # hard fail in an environment where the gitignored tree cannot exist.
+    assert (
+        "name-lock integrity: PASS" in result.stdout
+        or "name-lock integrity: SKIP" in result.stdout
+    ), result.stdout
