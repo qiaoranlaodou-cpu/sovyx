@@ -40,6 +40,7 @@ import time
 from typing import TYPE_CHECKING
 
 from sovyx.engine.config import VoiceTuningConfig as _VoiceTuning
+from sovyx.observability.logging import get_logger
 from sovyx.voice.capture._constants import (
     _RING_EPOCH_SHIFT,
     _RING_SAMPLES_MASK,
@@ -54,6 +55,8 @@ if TYPE_CHECKING:
 
 
 __all__ = ["RingMixin"]
+
+logger = get_logger(__name__)
 
 
 class RingMixin:
@@ -72,6 +75,16 @@ class RingMixin:
     _ring_write_index: int
     _ring_state: int
     _tuning: VoiceTuningConfig | None
+
+    # G-P2-9 — mechanical guard for the lock-free invariant. The ring's
+    # no-lock safety relies on every write running to completion
+    # synchronously between await points on the one event loop (see the
+    # module + ``tap_recent_frames`` docstrings). Class-level default so the
+    # mixin owns its own guard state without extending the host ``__init__``
+    # contract; bool is immutable so the shared default is safe (instance
+    # assignments shadow it). True only for the duration of one synchronous
+    # ``_ring_write`` body.
+    _ring_access_active: bool = False
 
     def _allocate_ring_buffer(self, tuning: VoiceTuningConfig) -> None:
         """Allocate (or resize) the 16 kHz-mono int16 ring buffer.
@@ -116,35 +129,57 @@ class RingMixin:
         buf = self._ring_buffer
         if buf is None:
             return
-        cap = self._ring_capacity
-        n = int(window.shape[0])
-        if n <= 0 or cap <= 0:
-            return
-        # v1.3 §4.2 — compute the post-write state once and commit via
-        # a single ``_ring_state = ...`` assignment so cross-loop readers
-        # never observe a half-updated pair. The samples component wraps
-        # at ``_RING_SAMPLES_MASK`` (effectively never, at 16 kHz); the
-        # epoch is preserved by masking the low bits.
-        state = self._ring_state
-        epoch_bits = state & ~_RING_SAMPLES_MASK
-        new_samples = ((state & _RING_SAMPLES_MASK) + n) & _RING_SAMPLES_MASK
-        # If a single window is larger than the buffer (pathological —
-        # 33 s default holds ~1_032 blocks of 16 ms), keep only the tail.
-        if n >= cap:
-            buf[:] = window[-cap:]
-            self._ring_write_index = 0
+        # G-P2-9 — mechanical guard for the lock-free invariant. Observing a
+        # write while another ring write is already in flight means the
+        # "synchronous, between awaits, one event loop" contract has been
+        # broken (an await snuck into the body, or a cross-thread call) —
+        # exactly the silent (index, state) corruption the single-assignment
+        # commit below cannot defend against on its own. Surface it LOUD;
+        # warn-only so a diagnostic can never kill the capture hot path. The
+        # try/finally guarantees the flag clears even on the early returns.
+        if self._ring_access_active:
+            logger.warning(
+                "voice.capture.ring_invariant_violation",
+                op="write",
+                detail=(
+                    "re-entrant ring write — the lock-free ring assumes each "
+                    "write completes synchronously between awaits; an await "
+                    "mid-write or a cross-thread call breaks that invariant"
+                ),
+            )
+        self._ring_access_active = True
+        try:
+            cap = self._ring_capacity
+            n = int(window.shape[0])
+            if n <= 0 or cap <= 0:
+                return
+            # v1.3 §4.2 — compute the post-write state once and commit via
+            # a single ``_ring_state = ...`` assignment so cross-loop readers
+            # never observe a half-updated pair. The samples component wraps
+            # at ``_RING_SAMPLES_MASK`` (effectively never, at 16 kHz); the
+            # epoch is preserved by masking the low bits.
+            state = self._ring_state
+            epoch_bits = state & ~_RING_SAMPLES_MASK
+            new_samples = ((state & _RING_SAMPLES_MASK) + n) & _RING_SAMPLES_MASK
+            # If a single window is larger than the buffer (pathological —
+            # 33 s default holds ~1_032 blocks of 16 ms), keep only the tail.
+            if n >= cap:
+                buf[:] = window[-cap:]
+                self._ring_write_index = 0
+                self._ring_state = epoch_bits | new_samples
+                return
+            start = self._ring_write_index
+            end = start + n
+            if end <= cap:
+                buf[start:end] = window
+            else:
+                head = cap - start
+                buf[start:cap] = window[:head]
+                buf[0 : n - head] = window[head:]
+            self._ring_write_index = (start + n) % cap
             self._ring_state = epoch_bits | new_samples
-            return
-        start = self._ring_write_index
-        end = start + n
-        if end <= cap:
-            buf[start:end] = window
-        else:
-            head = cap - start
-            buf[start:cap] = window[:head]
-            buf[0 : n - head] = window[head:]
-        self._ring_write_index = (start + n) % cap
-        self._ring_state = epoch_bits | new_samples
+        finally:
+            self._ring_access_active = False
 
     async def tap_recent_frames(
         self,

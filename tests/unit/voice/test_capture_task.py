@@ -1861,6 +1861,39 @@ class TestRingStatePackingInvariants:
         assert mark[0] == 1
         assert mark[1] == 512
 
+    def test_ring_write_normal_use_leaves_guard_clear(self) -> None:
+        # G-P2-9 — the lock-free re-entrancy guard must reset after every
+        # normal synchronous write (try/finally), else the next legitimate
+        # write would falsely trip the invariant-violation warning.
+        import numpy as np
+
+        from sovyx.engine.config import VoiceTuningConfig
+
+        task = self._fresh_task()
+        task._allocate_ring_buffer(VoiceTuningConfig())  # noqa: SLF001
+        task._ring_write(np.zeros(512, dtype=np.int16))  # noqa: SLF001
+        assert task._ring_access_active is False  # noqa: SLF001
+
+    def test_ring_write_warns_on_reentrant_access(self) -> None:
+        # G-P2-9 — a write observed while the guard is already held means the
+        # "synchronous between awaits, one event loop" invariant was broken
+        # (an await snuck mid-write, or a cross-thread call). The guard is
+        # warn-only: the write still completes and the flag still resets.
+        import numpy as np
+
+        from sovyx.engine.config import VoiceTuningConfig
+
+        task = self._fresh_task()
+        task._allocate_ring_buffer(VoiceTuningConfig())  # noqa: SLF001
+        task._ring_access_active = True  # noqa: SLF001 — simulate in-flight write
+        with patch("sovyx.voice.capture._ring.logger") as mock_logger:
+            task._ring_write(np.zeros(256, dtype=np.int16))  # noqa: SLF001
+        mock_logger.warning.assert_called_once()
+        assert mock_logger.warning.call_args.args[0] == "voice.capture.ring_invariant_violation"
+        # Warn-only: the write still applied and the guard reset (try/finally).
+        assert task._ring_access_active is False  # noqa: SLF001
+        assert task.samples_written_mark()[1] == 256
+
 
 class TestTapFramesSinceMark:
     """Mark/tap contract — pre-apply contamination is impossible and
