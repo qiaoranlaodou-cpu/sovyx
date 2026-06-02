@@ -62,7 +62,7 @@ import json
 import os
 from enum import StrEnum
 from pathlib import Path
-from typing import Any, NamedTuple
+from typing import TYPE_CHECKING, Any, NamedTuple
 
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.asymmetric.ed25519 import (
@@ -89,6 +89,9 @@ from sovyx.voice.calibration.schema import (
     MeasurementSnapshot,
     ProvenanceTrace,
 )
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
 
 logger = get_logger(__name__)
 
@@ -192,8 +195,39 @@ def _load_trusted_calibration_key() -> Ed25519PublicKey | None:
     return key
 
 
+def _load_operator_calibration_key(data_dir: Path, mind_id: str) -> Ed25519PublicKey | None:
+    """Load the operator-generated per-mind public signing key, if present.
+
+    W1/G-P1-6 — ``sovyx voice generate-signing-key`` (and the dashboard
+    endpoint) write an Ed25519 keypair to
+    ``<data_dir>/<mind_id>/calibration.signing-key.{priv,pub}``, but the
+    verifier historically loaded ONLY the repo-shipped ``_trusted_keys/v1.pub``
+    — so a profile signed with the OPERATOR's key was always
+    ``REJECTED_BAD_SIGNATURE`` and STRICT mode was structurally unusable for
+    anyone who generated their own key. Loading the per-mind public key here
+    (in addition to the repo key) makes operator-generated signing actually
+    verifiable. Best-effort: an absent / unparseable key returns ``None`` (no
+    operator key to trust), never raises — a malformed operator key must not
+    crash profile load.
+    """
+    from sovyx.voice.calibration._key_generation import (  # noqa: PLC0415
+        PUBLIC_KEY_FILENAME,
+    )
+
+    pub_path = data_dir / mind_id / PUBLIC_KEY_FILENAME
+    if not pub_path.is_file():
+        return None
+    try:
+        key = load_pem_public_key(pub_path.read_bytes())
+    except (OSError, ValueError, TypeError):
+        return None
+    return key if isinstance(key, Ed25519PublicKey) else None
+
+
 def _verify_calibration_signature(
     profile: CalibrationProfile,
+    *,
+    extra_trusted_keys: Sequence[Ed25519PublicKey] = (),
 ) -> VerifyResult:
     """Real Ed25519 verification against the calibration trust store.
 
@@ -217,8 +251,12 @@ def _verify_calibration_signature(
     The verifier is pure (no logging, no telemetry); the load path
     branches on the verdict + emits the right structured event.
     """
-    pubkey = _load_trusted_calibration_key()
-    if pubkey is None:
+    keys: list[Ed25519PublicKey] = []
+    repo_key = _load_trusted_calibration_key()
+    if repo_key is not None:
+        keys.append(repo_key)
+    keys.extend(extra_trusted_keys)
+    if not keys:
         return VerifyResult.REJECTED_NO_TRUSTED_KEY
 
     if profile.signature is None:
@@ -239,11 +277,17 @@ def _verify_calibration_signature(
         return VerifyResult.REJECTED_MALFORMED_SIGNATURE
 
     payload = canonical_calibration_payload(profile.canonical_signing_payload())
-    try:
-        pubkey.verify(sig_bytes, payload)
-    except InvalidSignature:
-        return VerifyResult.REJECTED_BAD_SIGNATURE
-    return VerifyResult.ACCEPTED
+    # Accept if the signature verifies against ANY trusted key (the repo
+    # trust store OR the operator's per-mind generated key). Only when NONE
+    # verify is it a bad signature.
+    for key in keys:
+        try:
+            key.verify(sig_bytes, payload)
+        except InvalidSignature:
+            continue
+        else:
+            return VerifyResult.ACCEPTED
+    return VerifyResult.REJECTED_BAD_SIGNATURE
 
 
 def _load_private_signing_key(path: Path) -> Ed25519PrivateKey:
@@ -815,7 +859,14 @@ def load_calibration_profile(
     # canonical narrative + rationale.
     profile_hash = _short_hash(profile.profile_id)
     mind_hash = _short_hash(mind_id)
-    verdict = _verify_calibration_signature(profile)
+    # W1/G-P1-6 — also trust the operator's per-mind generated signing key so
+    # a profile they signed verifies (the repo trust store alone made STRICT
+    # unusable for operator-generated keys).
+    _operator_key = _load_operator_calibration_key(data_dir, mind_id)
+    verdict = _verify_calibration_signature(
+        profile,
+        extra_trusted_keys=(_operator_key,) if _operator_key is not None else (),
+    )
     if verdict == VerifyResult.ACCEPTED:
         signature_status = "accepted"
         logger.debug(

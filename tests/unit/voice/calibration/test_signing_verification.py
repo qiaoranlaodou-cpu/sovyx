@@ -514,3 +514,73 @@ class TestSigningKeyPathMissingObservability:
 
         skipped = [e for e in events if e[0] == "voice.calibration.profile.signing_skipped"]
         assert skipped == [], "signing_skipped must NOT fire when no key was supplied"
+
+
+# ════════════════════════════════════════════════════════════════════
+# W1 / G-P1-6 — operator-generated per-mind key trust
+# ════════════════════════════════════════════════════════════════════
+
+
+@pytest.mark.usefixtures("_swap_trust_store")
+class TestOperatorKeyTrust:
+    """An operator's per-mind generated key is trusted in addition to the
+    repo key — without this, STRICT signing was structurally unusable for
+    anyone who ran `sovyx voice generate-signing-key`."""
+
+    def test_operator_key_accepts_signature_with_no_repo_key(self, tmp_path: Path) -> None:
+        _clear_trust_store()  # repo trust store absent
+        _key_path, operator_key = _generate_keypair(tmp_path)
+
+        profile_unsigned = _profile()
+        payload = canonical_calibration_payload(profile_unsigned.canonical_signing_payload())
+        sig_b64 = base64.b64encode(operator_key.sign(payload)).decode("ascii")
+        signed = replace(profile_unsigned, signature=sig_b64)
+
+        # Pre-G-P1-6: REJECTED_NO_TRUSTED_KEY (repo key absent + no way to pass
+        # the operator key). Now ACCEPTED via extra_trusted_keys.
+        assert (
+            _verify_calibration_signature(signed, extra_trusted_keys=[operator_key.public_key()])
+            == VerifyResult.ACCEPTED
+        )
+
+    def test_other_key_still_rejected(self, tmp_path: Path) -> None:
+        _clear_trust_store()
+        _key_path, operator_key = _generate_keypair(tmp_path)
+        # A second generation yields a distinct key (overwrites the priv file
+        # we don't use here — we only need the key object).
+        _other_path, wrong_key = _generate_keypair(tmp_path)
+
+        profile_unsigned = _profile()
+        payload = canonical_calibration_payload(profile_unsigned.canonical_signing_payload())
+        # Signed by the WRONG key, only the operator key is trusted → reject.
+        sig_b64 = base64.b64encode(wrong_key.sign(payload)).decode("ascii")
+        signed = replace(profile_unsigned, signature=sig_b64)
+        assert (
+            _verify_calibration_signature(signed, extra_trusted_keys=[operator_key.public_key()])
+            == VerifyResult.REJECTED_BAD_SIGNATURE
+        )
+
+    def test_operator_key_loaded_from_per_mind_path(self, tmp_path: Path) -> None:
+        from sovyx.voice.calibration._key_generation import PUBLIC_KEY_FILENAME
+        from sovyx.voice.calibration._persistence import (
+            _load_operator_calibration_key,
+        )
+
+        _key_path, operator_key = _generate_keypair(tmp_path)
+        mind_dir = tmp_path / "aria"
+        mind_dir.mkdir()
+        pub_pem = operator_key.public_key().public_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PublicFormat.SubjectPublicKeyInfo,
+        )
+        (mind_dir / PUBLIC_KEY_FILENAME).write_bytes(pub_pem)
+
+        loaded = _load_operator_calibration_key(tmp_path, "aria")
+        assert loaded is not None
+
+    def test_absent_operator_key_returns_none(self, tmp_path: Path) -> None:
+        from sovyx.voice.calibration._persistence import (
+            _load_operator_calibration_key,
+        )
+
+        assert _load_operator_calibration_key(tmp_path, "nonexistent-mind") is None
