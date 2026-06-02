@@ -169,6 +169,60 @@ class RestartMixin:
     ) -> None: ...
     def _allocate_ring_buffer(self, tuning: VoiceTuningConfig) -> None: ...
 
+    def _build_normalizer(self, *, source_rate: int, source_channels: int) -> FrameNormalizer:
+        """Construct the :class:`FrameNormalizer` for a freshly-opened stream.
+
+        Single construction site for the capture DSP chain. Previously this
+        ~30-line ``FrameNormalizer(...)`` call was duplicated 8× across the
+        initial-open path (``_capture_task.py``) and every restart path in this
+        mixin — a proven drift class (anti-pattern #16): any new normalizer
+        parameter had to be threaded through all 8 identical blocks. Only the
+        per-stream ``source_rate`` / ``source_channels`` vary; every other
+        argument is the task's configured-at-startup DSP chain read from
+        ``self``.
+
+        F5/F6: AGC2 is default-on per ``VoiceTuningConfig.agc2_enabled``
+        (commit 2e36893); operators revert via
+        ``SOVYX_TUNING__VOICE__AGC2_ENABLED=false``. The factory returns
+        ``None`` when disabled — ``FrameNormalizer`` accepts ``None`` as the
+        no-op default so callers need no ``if`` branch.
+        """
+        _agc2_tuning = self._tuning if self._tuning is not None else _VoiceTuning()
+        from sovyx.voice._agc2_adaptive_floor import build_agc2_adaptive_floor
+
+        return FrameNormalizer(
+            source_rate=source_rate,
+            source_channels=source_channels,
+            agc2=build_agc2_if_enabled(
+                enabled=_agc2_tuning.agc2_enabled,
+                sample_rate=source_rate,
+                adaptive_floor=build_agc2_adaptive_floor(
+                    enabled=_agc2_tuning.voice_agc2_adaptive_floor_enabled,
+                    window_seconds=_agc2_tuning.voice_agc2_adaptive_floor_window_seconds,
+                    quantile=_agc2_tuning.voice_agc2_adaptive_floor_quantile,
+                    sample_rate=source_rate,
+                ),
+                vad_feedback_enabled=_agc2_tuning.voice_agc2_vad_feedback_enabled,
+            ),
+            aec=self._aec,
+            render_provider=self._render_provider,
+            double_talk_detector=self._double_talk_detector,
+            noise_suppressor=self._noise_suppressor,
+            snr_estimator=self._snr_estimator,
+            dither_enabled=self._dither_enabled,
+            dither_amplitude_lsb=self._dither_amplitude_lsb,
+            wiener_entropy_check_enabled=self._wiener_entropy_check_enabled,
+            wiener_entropy_threshold=self._wiener_entropy_threshold,
+            resample_peak_check_enabled=self._resample_peak_check_enabled,
+            phase_inversion_auto_recovery_enabled=self._phase_inversion_auto_recovery_enabled,
+            # Phase 5.A.2 — multi-mind keying for SNR + noise-floor
+            # heartbeat aggregators. Each AudioCaptureTask is bound to
+            # one VoicePipeline → one configured mind. Audio-quality
+            # samples are hardware-level (not per-turn) so the
+            # configured-at-startup mind_id is the correct granularity.
+            mind_id=self._pipeline.config.mind_id,
+        )
+
     async def request_exclusive_restart(self) -> ExclusiveRestartResult:
         """Re-open the capture stream in WASAPI exclusive mode.
 
@@ -313,44 +367,11 @@ class RestartMixin:
         self._host_api_name = info.host_api
         if entry is not None:
             self._resolved_device_name = entry.name
-        # F5/F6: AGC2 default-on per VoiceTuningConfig.agc2_enabled
-        # (commit 2e36893). Operators can revert via
-        # SOVYX_TUNING__VOICE__AGC2_ENABLED=false. The factory
-        # returns None when disabled — FrameNormalizer accepts None
-        # as the no-op default so the call site needs no ``if`` branch.
-        _agc2_tuning = self._tuning if self._tuning is not None else _VoiceTuning()
-        from sovyx.voice._agc2_adaptive_floor import build_agc2_adaptive_floor
-
-        self._normalizer = FrameNormalizer(
+        # Rebuild the capture DSP chain via the single construction
+        # site (RestartMixin._build_normalizer) — was duplicated 8×.
+        self._normalizer = self._build_normalizer(
             source_rate=info.sample_rate,
             source_channels=info.channels,
-            agc2=build_agc2_if_enabled(
-                enabled=_agc2_tuning.agc2_enabled,
-                sample_rate=info.sample_rate,
-                adaptive_floor=build_agc2_adaptive_floor(
-                    enabled=_agc2_tuning.voice_agc2_adaptive_floor_enabled,
-                    window_seconds=_agc2_tuning.voice_agc2_adaptive_floor_window_seconds,
-                    quantile=_agc2_tuning.voice_agc2_adaptive_floor_quantile,
-                    sample_rate=info.sample_rate,
-                ),
-                vad_feedback_enabled=_agc2_tuning.voice_agc2_vad_feedback_enabled,
-            ),
-            aec=self._aec,
-            render_provider=self._render_provider,
-            double_talk_detector=self._double_talk_detector,
-            noise_suppressor=self._noise_suppressor,
-            snr_estimator=self._snr_estimator,
-            dither_enabled=self._dither_enabled,
-            dither_amplitude_lsb=self._dither_amplitude_lsb,
-            wiener_entropy_check_enabled=self._wiener_entropy_check_enabled,
-            wiener_entropy_threshold=self._wiener_entropy_threshold,
-            resample_peak_check_enabled=self._resample_peak_check_enabled,
-            phase_inversion_auto_recovery_enabled=self._phase_inversion_auto_recovery_enabled,
-            # Phase 5.A.2 — multi-mind keying for SNR + noise-floor
-            # heartbeat aggregators. Same configured-at-startup mind_id
-            # the original FrameNormalizer was constructed with at
-            # capture_task.start (see _capture_task.py mind_id wire-up).
-            mind_id=self._pipeline.config.mind_id,
         )
         # T32 — emit CaptureRestartFrame BEFORE the ring epoch
         # increment so the dashboard's restart-history timeline
@@ -470,44 +491,11 @@ class RestartMixin:
         self._host_api_name = info.host_api
         if entry is not None:
             self._resolved_device_name = entry.name
-        # F5/F6: AGC2 default-on per VoiceTuningConfig.agc2_enabled
-        # (commit 2e36893). Operators can revert via
-        # SOVYX_TUNING__VOICE__AGC2_ENABLED=false. The factory
-        # returns None when disabled — FrameNormalizer accepts None
-        # as the no-op default so the call site needs no ``if`` branch.
-        _agc2_tuning = self._tuning if self._tuning is not None else _VoiceTuning()
-        from sovyx.voice._agc2_adaptive_floor import build_agc2_adaptive_floor
-
-        self._normalizer = FrameNormalizer(
+        # Rebuild the capture DSP chain via the single construction
+        # site (RestartMixin._build_normalizer) — was duplicated 8×.
+        self._normalizer = self._build_normalizer(
             source_rate=info.sample_rate,
             source_channels=info.channels,
-            agc2=build_agc2_if_enabled(
-                enabled=_agc2_tuning.agc2_enabled,
-                sample_rate=info.sample_rate,
-                adaptive_floor=build_agc2_adaptive_floor(
-                    enabled=_agc2_tuning.voice_agc2_adaptive_floor_enabled,
-                    window_seconds=_agc2_tuning.voice_agc2_adaptive_floor_window_seconds,
-                    quantile=_agc2_tuning.voice_agc2_adaptive_floor_quantile,
-                    sample_rate=info.sample_rate,
-                ),
-                vad_feedback_enabled=_agc2_tuning.voice_agc2_vad_feedback_enabled,
-            ),
-            aec=self._aec,
-            render_provider=self._render_provider,
-            double_talk_detector=self._double_talk_detector,
-            noise_suppressor=self._noise_suppressor,
-            snr_estimator=self._snr_estimator,
-            dither_enabled=self._dither_enabled,
-            dither_amplitude_lsb=self._dither_amplitude_lsb,
-            wiener_entropy_check_enabled=self._wiener_entropy_check_enabled,
-            wiener_entropy_threshold=self._wiener_entropy_threshold,
-            resample_peak_check_enabled=self._resample_peak_check_enabled,
-            phase_inversion_auto_recovery_enabled=self._phase_inversion_auto_recovery_enabled,
-            # Phase 5.A.2 — multi-mind keying for SNR + noise-floor
-            # heartbeat aggregators. Same configured-at-startup mind_id
-            # the original FrameNormalizer was constructed with at
-            # capture_task.start (see _capture_task.py mind_id wire-up).
-            mind_id=self._pipeline.config.mind_id,
         )
         # Reset the ring buffer — stale frames from the pre-error stream
         # would mislead any integrity probe issued immediately after the
@@ -620,44 +608,11 @@ class RestartMixin:
         self._host_api_name = info.host_api
         if entry is not None:
             self._resolved_device_name = entry.name
-        # F5/F6: AGC2 default-on per VoiceTuningConfig.agc2_enabled
-        # (commit 2e36893). Operators can revert via
-        # SOVYX_TUNING__VOICE__AGC2_ENABLED=false. The factory
-        # returns None when disabled — FrameNormalizer accepts None
-        # as the no-op default so the call site needs no ``if`` branch.
-        _agc2_tuning = self._tuning if self._tuning is not None else _VoiceTuning()
-        from sovyx.voice._agc2_adaptive_floor import build_agc2_adaptive_floor
-
-        self._normalizer = FrameNormalizer(
+        # Rebuild the capture DSP chain via the single construction
+        # site (RestartMixin._build_normalizer) — was duplicated 8×.
+        self._normalizer = self._build_normalizer(
             source_rate=info.sample_rate,
             source_channels=info.channels,
-            agc2=build_agc2_if_enabled(
-                enabled=_agc2_tuning.agc2_enabled,
-                sample_rate=info.sample_rate,
-                adaptive_floor=build_agc2_adaptive_floor(
-                    enabled=_agc2_tuning.voice_agc2_adaptive_floor_enabled,
-                    window_seconds=_agc2_tuning.voice_agc2_adaptive_floor_window_seconds,
-                    quantile=_agc2_tuning.voice_agc2_adaptive_floor_quantile,
-                    sample_rate=info.sample_rate,
-                ),
-                vad_feedback_enabled=_agc2_tuning.voice_agc2_vad_feedback_enabled,
-            ),
-            aec=self._aec,
-            render_provider=self._render_provider,
-            double_talk_detector=self._double_talk_detector,
-            noise_suppressor=self._noise_suppressor,
-            snr_estimator=self._snr_estimator,
-            dither_enabled=self._dither_enabled,
-            dither_amplitude_lsb=self._dither_amplitude_lsb,
-            wiener_entropy_check_enabled=self._wiener_entropy_check_enabled,
-            wiener_entropy_threshold=self._wiener_entropy_threshold,
-            resample_peak_check_enabled=self._resample_peak_check_enabled,
-            phase_inversion_auto_recovery_enabled=self._phase_inversion_auto_recovery_enabled,
-            # Phase 5.A.2 — multi-mind keying for SNR + noise-floor
-            # heartbeat aggregators. Same configured-at-startup mind_id
-            # the original FrameNormalizer was constructed with at
-            # capture_task.start (see _capture_task.py mind_id wire-up).
-            mind_id=self._pipeline.config.mind_id,
         )
         # T32 — emit CaptureRestartFrame for the revert pair. MANUAL
         # reason because the shared restart is always initiated by an
@@ -860,44 +815,11 @@ class RestartMixin:
         self._input_device = info.device_index
         self._host_api_name = info.host_api
         self._resolved_device_name = alsa_entry.name
-        # F5/F6: AGC2 default-on per VoiceTuningConfig.agc2_enabled
-        # (commit 2e36893). Operators can revert via
-        # SOVYX_TUNING__VOICE__AGC2_ENABLED=false. The factory
-        # returns None when disabled — FrameNormalizer accepts None
-        # as the no-op default so the call site needs no ``if`` branch.
-        _agc2_tuning = self._tuning if self._tuning is not None else _VoiceTuning()
-        from sovyx.voice._agc2_adaptive_floor import build_agc2_adaptive_floor
-
-        self._normalizer = FrameNormalizer(
+        # Rebuild the capture DSP chain via the single construction
+        # site (RestartMixin._build_normalizer) — was duplicated 8×.
+        self._normalizer = self._build_normalizer(
             source_rate=info.sample_rate,
             source_channels=info.channels,
-            agc2=build_agc2_if_enabled(
-                enabled=_agc2_tuning.agc2_enabled,
-                sample_rate=info.sample_rate,
-                adaptive_floor=build_agc2_adaptive_floor(
-                    enabled=_agc2_tuning.voice_agc2_adaptive_floor_enabled,
-                    window_seconds=_agc2_tuning.voice_agc2_adaptive_floor_window_seconds,
-                    quantile=_agc2_tuning.voice_agc2_adaptive_floor_quantile,
-                    sample_rate=info.sample_rate,
-                ),
-                vad_feedback_enabled=_agc2_tuning.voice_agc2_vad_feedback_enabled,
-            ),
-            aec=self._aec,
-            render_provider=self._render_provider,
-            double_talk_detector=self._double_talk_detector,
-            noise_suppressor=self._noise_suppressor,
-            snr_estimator=self._snr_estimator,
-            dither_enabled=self._dither_enabled,
-            dither_amplitude_lsb=self._dither_amplitude_lsb,
-            wiener_entropy_check_enabled=self._wiener_entropy_check_enabled,
-            wiener_entropy_threshold=self._wiener_entropy_threshold,
-            resample_peak_check_enabled=self._resample_peak_check_enabled,
-            phase_inversion_auto_recovery_enabled=self._phase_inversion_auto_recovery_enabled,
-            # Phase 5.A.2 — multi-mind keying for SNR + noise-floor
-            # heartbeat aggregators. Same configured-at-startup mind_id
-            # the original FrameNormalizer was constructed with at
-            # capture_task.start (see _capture_task.py mind_id wire-up).
-            mind_id=self._pipeline.config.mind_id,
         )
         # T32 — emit CaptureRestartFrame BEFORE the ring-buffer
         # epoch increment. APO_DEGRADED + bypass_tier=2
@@ -1114,44 +1036,11 @@ class RestartMixin:
         self._input_device = info.device_index
         self._host_api_name = info.host_api
         self._resolved_device_name = session_entry.name
-        # F5/F6: AGC2 default-on per VoiceTuningConfig.agc2_enabled
-        # (commit 2e36893). Operators can revert via
-        # SOVYX_TUNING__VOICE__AGC2_ENABLED=false. The factory
-        # returns None when disabled — FrameNormalizer accepts None
-        # as the no-op default so the call site needs no ``if`` branch.
-        _agc2_tuning = self._tuning if self._tuning is not None else _VoiceTuning()
-        from sovyx.voice._agc2_adaptive_floor import build_agc2_adaptive_floor
-
-        self._normalizer = FrameNormalizer(
+        # Rebuild the capture DSP chain via the single construction
+        # site (RestartMixin._build_normalizer) — was duplicated 8×.
+        self._normalizer = self._build_normalizer(
             source_rate=info.sample_rate,
             source_channels=info.channels,
-            agc2=build_agc2_if_enabled(
-                enabled=_agc2_tuning.agc2_enabled,
-                sample_rate=info.sample_rate,
-                adaptive_floor=build_agc2_adaptive_floor(
-                    enabled=_agc2_tuning.voice_agc2_adaptive_floor_enabled,
-                    window_seconds=_agc2_tuning.voice_agc2_adaptive_floor_window_seconds,
-                    quantile=_agc2_tuning.voice_agc2_adaptive_floor_quantile,
-                    sample_rate=info.sample_rate,
-                ),
-                vad_feedback_enabled=_agc2_tuning.voice_agc2_vad_feedback_enabled,
-            ),
-            aec=self._aec,
-            render_provider=self._render_provider,
-            double_talk_detector=self._double_talk_detector,
-            noise_suppressor=self._noise_suppressor,
-            snr_estimator=self._snr_estimator,
-            dither_enabled=self._dither_enabled,
-            dither_amplitude_lsb=self._dither_amplitude_lsb,
-            wiener_entropy_check_enabled=self._wiener_entropy_check_enabled,
-            wiener_entropy_threshold=self._wiener_entropy_threshold,
-            resample_peak_check_enabled=self._resample_peak_check_enabled,
-            phase_inversion_auto_recovery_enabled=self._phase_inversion_auto_recovery_enabled,
-            # Phase 5.A.2 — multi-mind keying for SNR + noise-floor
-            # heartbeat aggregators. Same configured-at-startup mind_id
-            # the original FrameNormalizer was constructed with at
-            # capture_task.start (see _capture_task.py mind_id wire-up).
-            mind_id=self._pipeline.config.mind_id,
         )
         # T32 — emit CaptureRestartFrame for the Linux revert pair.
         # Two legitimate semantics: (a) revert from a prior
@@ -1429,42 +1318,11 @@ class RestartMixin:
         self._input_device = info.device_index
         self._host_api_name = info.host_api
         self._resolved_device_name = target_entry.name
-        # F5/F6: AGC2 default-on per VoiceTuningConfig.agc2_enabled
-        # (commit 2e36893). Operators can revert via
-        # SOVYX_TUNING__VOICE__AGC2_ENABLED=false.
-        _agc2_tuning = self._tuning if self._tuning is not None else _VoiceTuning()
-        from sovyx.voice._agc2_adaptive_floor import build_agc2_adaptive_floor
-
-        self._normalizer = FrameNormalizer(
+        # Rebuild the capture DSP chain via the single construction
+        # site (RestartMixin._build_normalizer) — was duplicated 8×.
+        self._normalizer = self._build_normalizer(
             source_rate=info.sample_rate,
             source_channels=info.channels,
-            agc2=build_agc2_if_enabled(
-                enabled=_agc2_tuning.agc2_enabled,
-                sample_rate=info.sample_rate,
-                adaptive_floor=build_agc2_adaptive_floor(
-                    enabled=_agc2_tuning.voice_agc2_adaptive_floor_enabled,
-                    window_seconds=_agc2_tuning.voice_agc2_adaptive_floor_window_seconds,
-                    quantile=_agc2_tuning.voice_agc2_adaptive_floor_quantile,
-                    sample_rate=info.sample_rate,
-                ),
-                vad_feedback_enabled=_agc2_tuning.voice_agc2_vad_feedback_enabled,
-            ),
-            aec=self._aec,
-            render_provider=self._render_provider,
-            double_talk_detector=self._double_talk_detector,
-            noise_suppressor=self._noise_suppressor,
-            snr_estimator=self._snr_estimator,
-            dither_enabled=self._dither_enabled,
-            dither_amplitude_lsb=self._dither_amplitude_lsb,
-            wiener_entropy_check_enabled=self._wiener_entropy_check_enabled,
-            wiener_entropy_threshold=self._wiener_entropy_threshold,
-            resample_peak_check_enabled=self._resample_peak_check_enabled,
-            phase_inversion_auto_recovery_enabled=self._phase_inversion_auto_recovery_enabled,
-            # Phase 5.A.2 — multi-mind keying for SNR + noise-floor
-            # heartbeat aggregators. Same configured-at-startup mind_id
-            # the original FrameNormalizer was constructed with at
-            # capture_task.start (see _capture_task.py mind_id wire-up).
-            mind_id=self._pipeline.config.mind_id,
         )
         # T32 — emit CaptureRestartFrame for the rotation. Tier 2
         # bypass = APO_DEGRADED reason + bypass_tier=2.
@@ -1751,42 +1609,11 @@ class RestartMixin:
         if new_endpoint_guid:
             self._endpoint_guid = new_endpoint_guid
 
-        # Rebuild the normalizer for the new sample rate / channel count
-        # — same shape as request_host_api_rotate's rebuild block at
-        # _restart_mixin.py:1410-1435.
-        _agc2_tuning = self._tuning if self._tuning is not None else _VoiceTuning()
-        from sovyx.voice._agc2_adaptive_floor import build_agc2_adaptive_floor
-
-        self._normalizer = FrameNormalizer(
+        # Rebuild the capture DSP chain via the single construction
+        # site (RestartMixin._build_normalizer) — was duplicated 8×.
+        self._normalizer = self._build_normalizer(
             source_rate=info.sample_rate,
             source_channels=info.channels,
-            agc2=build_agc2_if_enabled(
-                enabled=_agc2_tuning.agc2_enabled,
-                sample_rate=info.sample_rate,
-                adaptive_floor=build_agc2_adaptive_floor(
-                    enabled=_agc2_tuning.voice_agc2_adaptive_floor_enabled,
-                    window_seconds=_agc2_tuning.voice_agc2_adaptive_floor_window_seconds,
-                    quantile=_agc2_tuning.voice_agc2_adaptive_floor_quantile,
-                    sample_rate=info.sample_rate,
-                ),
-                vad_feedback_enabled=_agc2_tuning.voice_agc2_vad_feedback_enabled,
-            ),
-            aec=self._aec,
-            render_provider=self._render_provider,
-            double_talk_detector=self._double_talk_detector,
-            noise_suppressor=self._noise_suppressor,
-            snr_estimator=self._snr_estimator,
-            dither_enabled=self._dither_enabled,
-            dither_amplitude_lsb=self._dither_amplitude_lsb,
-            wiener_entropy_check_enabled=self._wiener_entropy_check_enabled,
-            wiener_entropy_threshold=self._wiener_entropy_threshold,
-            resample_peak_check_enabled=self._resample_peak_check_enabled,
-            phase_inversion_auto_recovery_enabled=self._phase_inversion_auto_recovery_enabled,
-            # Phase 5.A.2 — multi-mind keying for SNR + noise-floor
-            # heartbeat aggregators. Same configured-at-startup mind_id
-            # the original FrameNormalizer was constructed with at
-            # capture_task.start (see _capture_task.py mind_id wire-up).
-            mind_id=self._pipeline.config.mind_id,
         )
 
         # Anti-pattern #29 — emit the CaptureRestartFrame BEFORE

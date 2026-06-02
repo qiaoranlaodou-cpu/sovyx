@@ -49,9 +49,7 @@ from typing import TYPE_CHECKING, Any
 from sovyx.engine.config import VoiceTuningConfig as _VoiceTuning
 from sovyx.observability.logging import get_logger
 from sovyx.observability.tasks import spawn
-from sovyx.voice._agc2 import build_agc2_if_enabled
 from sovyx.voice._chaos import ChaosInjector, ChaosSite
-from sovyx.voice._frame_normalizer import FrameNormalizer
 
 # T1.4 step 5 — module-level constants extracted to
 # ``voice/capture/_constants``. Re-exported via the explicit
@@ -219,6 +217,7 @@ if TYPE_CHECKING:
     from sovyx.engine.config import VoiceTuningConfig
     from sovyx.voice._aec import AecProcessor, RenderPcmProvider
     from sovyx.voice._double_talk_detector import DoubleTalkDetector
+    from sovyx.voice._frame_normalizer import FrameNormalizer
     from sovyx.voice._noise_suppression import NoiseSuppressor
     from sovyx.voice._snr_estimator import SnrEstimator
     from sovyx.voice.device_enum import DeviceEntry
@@ -712,45 +711,12 @@ class AudioCaptureTask(EpochMixin, RingMixin, LifecycleMixin, LoopMixin, Restart
         self._ensure_endpoint_guid(entry)
         self._allocate_ring_buffer(tuning)
 
-        # F5/F6: AGC2 default-on per VoiceTuningConfig.agc2_enabled
-        # (commit 2e36893). Operators can revert via
-        # SOVYX_TUNING__VOICE__AGC2_ENABLED=false. The factory
-        # returns None when disabled — FrameNormalizer accepts None
-        # as the no-op default so the call site needs no ``if`` branch.
-        _agc2_tuning = self._tuning if self._tuning is not None else _VoiceTuning()
-        from sovyx.voice._agc2_adaptive_floor import build_agc2_adaptive_floor
-
-        self._normalizer = FrameNormalizer(
+        # Construct the capture DSP chain. See RestartMixin._build_normalizer
+        # — single construction site shared by the initial-open path (here)
+        # and every restart path (anti-pattern #16; was duplicated 8×).
+        self._normalizer = self._build_normalizer(
             source_rate=info.sample_rate,
             source_channels=info.channels,
-            agc2=build_agc2_if_enabled(
-                enabled=_agc2_tuning.agc2_enabled,
-                sample_rate=info.sample_rate,
-                adaptive_floor=build_agc2_adaptive_floor(
-                    enabled=_agc2_tuning.voice_agc2_adaptive_floor_enabled,
-                    window_seconds=_agc2_tuning.voice_agc2_adaptive_floor_window_seconds,
-                    quantile=_agc2_tuning.voice_agc2_adaptive_floor_quantile,
-                    sample_rate=info.sample_rate,
-                ),
-                vad_feedback_enabled=_agc2_tuning.voice_agc2_vad_feedback_enabled,
-            ),
-            aec=self._aec,
-            render_provider=self._render_provider,
-            double_talk_detector=self._double_talk_detector,
-            noise_suppressor=self._noise_suppressor,
-            snr_estimator=self._snr_estimator,
-            dither_enabled=self._dither_enabled,
-            dither_amplitude_lsb=self._dither_amplitude_lsb,
-            wiener_entropy_check_enabled=self._wiener_entropy_check_enabled,
-            wiener_entropy_threshold=self._wiener_entropy_threshold,
-            resample_peak_check_enabled=self._resample_peak_check_enabled,
-            phase_inversion_auto_recovery_enabled=self._phase_inversion_auto_recovery_enabled,
-            # Phase 5.A.2 — multi-mind keying for SNR + noise-floor
-            # heartbeat aggregators. Each AudioCaptureTask is bound to
-            # one VoicePipeline → one configured mind. Audio-quality
-            # samples are hardware-level (not per-turn) so the
-            # configured-at-startup mind_id is the correct granularity.
-            mind_id=self._pipeline.config.mind_id,
         )
         if not self._normalizer.is_passthrough:
             logger.info(
