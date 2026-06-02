@@ -303,11 +303,12 @@ def doctor_voice(
     full_diag: bool = typer.Option(
         False,
         "--full-diag",
-        help="Run the full bundled voice diagnostic toolkit "
-        "(8-12 min, interactive — will ask you to speak in short "
-        "windows) and triage the result in-process. Linux-only. "
-        "Mutually exclusive with --fix; chain them in separate "
-        "invocations if needed.",
+        help="Run the platform-native forensic voice diagnostic + "
+        "triage the result in-process. Linux: bundled bash toolkit "
+        "(8-12 min, interactive — speak when prompted). Windows: native "
+        "WASAPI/APO/mic-consent probes (non-interactive). macOS: not yet "
+        "supported (use 'sovyx doctor voice'). Mutually exclusive with "
+        "--fix; chain them in separate invocations if needed.",
     ),
     non_interactive: bool = typer.Option(
         False,
@@ -445,13 +446,24 @@ def doctor_voice(
     success. Exit codes (see module-level constants) distinguish the
     outcomes so shell wrappers can branch.
 
-    With ``--full-diag`` (Linux-only) the command runs the bundled
-    forensic diagnostic toolkit end-to-end (8-12 min interactive),
-    captures a multi-MB tarball with hardware/kernel/PipeWire/PortAudio
-    snapshots + recorded audio, then runs the typed triage analyzer
-    in-process and renders a verdict + the suggested fix command (if
-    any). Mutually exclusive with ``--fix``: full-diag observes,
-    ``--fix`` mutates; chain them in separate invocations.
+    With ``--full-diag`` the command runs a platform-native forensic
+    diagnostic, writes a tarball in the shared Windows-v2/Linux schema,
+    then runs the typed triage analyzer in-process and renders a verdict
+    + the suggested fix command (if any):
+
+    * **Linux** — the bundled bash toolkit end-to-end (8-12 min
+      interactive), capturing a multi-MB tarball with
+      hardware/kernel/PipeWire/PortAudio snapshots + recorded audio.
+    * **Windows** (W3.2) — the native producer: WASAPI/APO (Voice
+      Clarity) + microphone-consent probes composed into the Windows-v2
+      tarball. Non-interactive (no speech prompts); Phase 1 omits the
+      live shared-vs-exclusive signal comparator (W3.1 Phase 2).
+    * **macOS** — not yet supported (no native producer); falls through
+      to ``EXIT_DOCTOR_UNSUPPORTED`` — use ``sovyx doctor voice`` for the
+      cross-platform health checks.
+
+    Mutually exclusive with ``--fix``: full-diag observes, ``--fix``
+    mutates; chain them in separate invocations.
     """
     if full_diag and fix:
         raise typer.BadParameter(
@@ -740,7 +752,9 @@ def _run_voice_full_diag(*, non_interactive: bool, surgical: bool = False) -> in
 
     Returns the doctor-voice exit code:
         * EXIT_DOCTOR_OK on a clean run with verdict rendered.
-        * EXIT_DOCTOR_UNSUPPORTED on non-Linux / missing bash.
+        * EXIT_DOCTOR_UNSUPPORTED on macOS / missing bash (Windows
+          dispatches to the native producer above — see
+          :func:`_run_windows_full_diag` — and never reaches here).
         * EXIT_DOCTOR_USER_ABORTED on a non-TTY shell without
           ``--non-interactive`` (the diag would dead-lock waiting for
           speech prompts).
